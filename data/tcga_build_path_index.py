@@ -26,7 +26,7 @@ from kidney_vlm.jsonl import write_jsonl
 # -----------------
 # Config (edit me)
 # -----------------
-PROJECTS = ["TCGA-KICH"]
+PROJECTS = ["TCGA-KIRC"]
 OUT_INDEX = Path("data/tcga_path_index.jsonl")
 RAW_ROOT = Path("data/raw/tcga/path")
 
@@ -179,7 +179,7 @@ def main() -> None:
                 "md5sum": md5sum,
                 "raw_svs_path": str(raw_svs_path),
                 "tiles_dir": str(tiles_dir),
-                "meta": {
+                "labels": {
                     "primary_diagnosis": primary_diagnosis,
                     "tumor_stage": tumor_stage,
                     "tumor_grade": tumor_grade,
