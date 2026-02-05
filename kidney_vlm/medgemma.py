@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import torch
 from PIL import Image
@@ -25,6 +25,23 @@ class MedGemma:
         )
         self.processor = AutoProcessor.from_pretrained(config.model_id)
 
+    def _move_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Move tensors to model device without breaking integer tensors.
+
+        Important: input_ids must stay integer dtype. Only float tensors (pixel_values)
+        should be cast to bf16/fp16.
+        """
+        out: Dict[str, Any] = {}
+        for k, v in inputs.items():
+            if isinstance(v, torch.Tensor):
+                if v.is_floating_point():
+                    out[k] = v.to(self.model.device, dtype=self.config.dtype)
+                else:
+                    out[k] = v.to(self.model.device)
+            else:
+                out[k] = v
+        return out
+
     @torch.inference_mode()
     def generate(
         self,
@@ -38,7 +55,6 @@ class MedGemma:
         """Generate text conditioned on 1+ images."""
         content = [{"type": "image", "image": img} for img in images]
         content.append({"type": "text", "text": prompt})
-
         messages = [{"role": "user", "content": content}]
 
         inputs = self.processor.apply_chat_template(
@@ -49,12 +65,11 @@ class MedGemma:
             return_tensors="pt",
         )
 
-        # Use the model's device (device_map="auto" can shard across GPUs)
-        inputs = inputs.to(self.model.device, dtype=self.config.dtype)
+        inputs = self._move_inputs(dict(inputs))
 
-        gen_kwargs = {
-            "max_new_tokens": max_new_tokens,
-            "do_sample": do_sample,
+        gen_kwargs: Dict[str, Any] = {
+            "max_new_tokens": int(max_new_tokens),
+            "do_sample": bool(do_sample),
         }
         if temperature is not None:
             gen_kwargs["temperature"] = float(temperature)

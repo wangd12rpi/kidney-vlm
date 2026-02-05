@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List
 
 
 @dataclass(frozen=True)
@@ -14,6 +14,7 @@ class TCGACase:
     label: str
     svs_path: Path
     tiles_dir: Path
+    labels: Dict[str, Any]
 
 
 def load_tcga_path_index(index_path: str | Path) -> List[TCGACase]:
@@ -33,6 +34,7 @@ def load_tcga_path_index(index_path: str | Path) -> List[TCGACase]:
                     label=obj["label"],
                     svs_path=Path(obj["raw_svs_path"]),
                     tiles_dir=Path(obj["tiles_dir"]),
+                    labels=obj.get("labels") or {},
                 )
             )
     return cases
