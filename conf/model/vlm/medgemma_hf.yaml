@@ -1,0 +1,3 @@
+name: medgemma_hf
+model_name_or_path: google/medgemma-4b-it
+trust_remote_code: true

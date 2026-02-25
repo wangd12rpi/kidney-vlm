@@ -1,0 +1,29 @@
+raw_root: ${project.root_dir}/data/raw
+staging_root: ${project.root_dir}/data/staging
+registry_root: ${project.root_dir}/data/registry
+unified_registry_path: ${data.registry_root}/unified.parquet
+manifests_root: ${data.registry_root}/manifests
+cache_validation:
+  min_size_bytes: 1
+  validate_size: true
+core_columns:
+  - sample_id
+  - source
+  - patient_id
+  - study_id
+  - split
+  - pathology_wsi_paths
+  - radiology_image_paths
+  - pathology_mask_paths
+  - radiology_mask_paths
+  - pathology_feature_paths
+  - radiology_feature_paths
+  - biomarkers_text
+  - question
+  - answer
+source:
+  name: unknown
+  download:
+    enabled: false
+    timeout_seconds: 60
+  records: []

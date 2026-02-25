@@ -1,0 +1,4 @@
+name: trident
+trident_root: ${project.root_dir}/external/trident
+slide_encoder: titan
+patch_encoder: conch_v15

@@ -1,0 +1,51 @@
+data:
+  source:
+    name: tcga
+    download:
+      enabled: false
+      skip_existing: true
+      include:
+        pathology: true
+        radiology: true
+        reports: true
+      max_pathology_downloads:
+      max_report_downloads:
+      max_radiology_series_downloads:
+      max_series_per_study:
+    tcga:
+      project_ids:
+        - TCGA-KIRC
+        - TCGA-KIRP
+        - TCGA-KICH
+      split_ratios:
+        train: 0.9
+        test: 0.1
+      gdc:
+        base_url: https://api.gdc.cancer.gov
+        timeout_seconds: 120
+        page_size: 200
+        max_retries: 3
+        retry_backoff_seconds: 2.0
+        max_cases:
+        max_pathology_files:
+        max_report_files:
+        pathology_data_formats:
+          - SVS
+        pathology_data_types:
+          - Slide Image
+        report_data_formats:
+          - PDF
+        report_data_types:
+          - Pathology Report
+          - Clinical Supplement
+        report_data_categories:
+          - Clinical
+      tcia:
+        enabled: true
+        base_url: https://services.cancerimagingarchive.net/nbia-api/services
+        api_version: v1
+        timeout_seconds: 120
+        max_retries: 3
+        retry_backoff_seconds: 2.0
+        collections: []
+        max_studies_per_collection:

@@ -1,0 +1,12 @@
+defaults:
+  - data: global
+  - model/vlm: medgemma_hf
+  - model/pathology: trident
+  - model/radiology: foundation_placeholder
+  - model/segmentation: pathology_placeholder
+  - train: qa
+  - _self_
+
+project:
+  name: kidney-vlm
+  root_dir: ${oc.env:PWD}

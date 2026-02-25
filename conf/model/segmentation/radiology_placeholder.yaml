@@ -1,0 +1,3 @@
+radiology:
+  name: radiology_segmentation_placeholder
+  adapter_class: SegmentationAdapterBase
