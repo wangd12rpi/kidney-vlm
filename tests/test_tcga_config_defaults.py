@@ -12,3 +12,7 @@ def test_tcga_project_defaults_include_kidney_projects() -> None:
     assert project_ids == ["TCGA-KIRC", "TCGA-KIRP", "TCGA-KICH"]
     assert float(cfg.data.source.tcga.split_ratios.train) == 0.9
     assert float(cfg.data.source.tcga.split_ratios.test) == 0.1
+    assert bool(cfg.data.source.tcga.tcia.enabled) is True
+    assert bool(cfg.data.source.tcga.tcia.fetch_series_metadata) is True
+    assert bool(cfg.data.source.tcga.gdc.fetch_ssm_mutations) is True
+    assert "VHL" in list(cfg.data.source.tcga.gdc.mutation_gene_panel)

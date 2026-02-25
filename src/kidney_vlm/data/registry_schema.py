@@ -15,8 +15,9 @@ CORE_COLUMNS = [
     "radiology_image_paths",
     "pathology_mask_paths",
     "radiology_mask_paths",
-    "pathology_feature_paths",
-    "radiology_feature_paths",
+    "pathology_tile_embedding_paths",
+    "pathology_slide_embedding_paths",
+    "radiology_embedding_paths",
     "biomarkers_text",
     "question",
     "answer",
@@ -27,8 +28,9 @@ LIST_COLUMNS = [
     "radiology_image_paths",
     "pathology_mask_paths",
     "radiology_mask_paths",
-    "pathology_feature_paths",
-    "radiology_feature_paths",
+    "pathology_tile_embedding_paths",
+    "pathology_slide_embedding_paths",
+    "radiology_embedding_paths",
 ]
 
 TEXT_COLUMNS = [

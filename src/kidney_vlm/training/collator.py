@@ -11,6 +11,10 @@ def _normalize_list(value: Any) -> list[str]:
         return [str(item) for item in value]
     if isinstance(value, tuple):
         return [str(item) for item in value]
+    if hasattr(value, "tolist"):
+        converted = value.tolist()
+        if isinstance(converted, list):
+            return [str(item) for item in converted]
     return [str(value)]
 
 
@@ -41,12 +45,21 @@ class QACollator:
             return_tensors="pt",
         )
         encoded_inputs["labels"] = encoded_labels["input_ids"]
-        encoded_inputs["pathology_feature_paths"] = [
-            _normalize_list(feature.get("pathology_feature_paths", [])) for feature in features
+        pathology_tile_embedding_paths = [
+            _normalize_list(feature.get("pathology_tile_embedding_paths", []))
+            for feature in features
         ]
-        encoded_inputs["radiology_feature_paths"] = [
-            _normalize_list(feature.get("radiology_feature_paths", [])) for feature in features
+        pathology_slide_embedding_paths = [
+            _normalize_list(feature.get("pathology_slide_embedding_paths", []))
+            for feature in features
         ]
+        radiology_embedding_paths = [
+            _normalize_list(feature.get("radiology_embedding_paths", []))
+            for feature in features
+        ]
+        encoded_inputs["pathology_tile_embedding_paths"] = pathology_tile_embedding_paths
+        encoded_inputs["pathology_slide_embedding_paths"] = pathology_slide_embedding_paths
+        encoded_inputs["radiology_embedding_paths"] = radiology_embedding_paths
         encoded_inputs["pathology_image_paths"] = [
             _normalize_list(feature.get("pathology_wsi_paths", [])) for feature in features
         ]

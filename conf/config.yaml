@@ -9,4 +9,4 @@ defaults:
 
 project:
   name: kidney-vlm
-  root_dir: ${oc.env:PWD}
+  root_dir: ${oc.env:KIDNEY_VLM_ROOT,${oc.env:PWD}}

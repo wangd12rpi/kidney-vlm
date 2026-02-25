@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -8,15 +9,25 @@ from typing import Any
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
+BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
+SRC = BOOTSTRAP_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from kidney_vlm.repo_root import find_repo_root
 from kidney_vlm.data.manifest import write_run_manifest
 from kidney_vlm.data.registry_io import read_parquet_or_empty, write_registry_parquet
-from kidney_vlm.data.sources.tcga import APIQueryError, GDCClient, TCIAClient, build_tcga_registry_rows
+from kidney_vlm.data.sources.tcga import (
+    APIQueryError,
+    GDCClient,
+    TCIAClient,
+    build_tcga_registry_rows,
+    index_ssm_hits_by_case_and_patient,
+)
 from kidney_vlm.data.unified_registry import replace_source_slice
+
+ROOT = find_repo_root(Path(__file__))
+os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 
 
 def load_cfg(source_name: str = "tcga", overrides: list[str] | None = None) -> DictConfig:
@@ -36,6 +47,8 @@ def load_cfg(source_name: str = "tcga", overrides: list[str] | None = None) -> D
         override_cfg = OmegaConf.from_dotlist(overrides)
         merged = OmegaConf.merge(merged, override_cfg)
 
+    OmegaConf.set_struct(merged, False)
+    merged.project.root_dir = str(ROOT)
     return merged
 
 
@@ -60,7 +73,14 @@ def _fetch_tcga_payloads(
     tcga_cfg: DictConfig,
     gdc_client: GDCClient,
     tcia_client: TCIAClient | None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, list[dict[str, str]]]]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, list[dict[str, Any]]],
+    dict[str, list[dict[str, str]]],
+    list[dict[str, Any]],
+]:
     project_ids = [str(project_id) for project_id in list(tcga_cfg.project_ids)]
     if not project_ids:
         raise ValueError("No TCGA projects configured. Set data.source.tcga.project_ids in tcga.yaml.")
@@ -87,7 +107,8 @@ def _fetch_tcga_payloads(
         max_files=_optional_int(tcga_cfg.gdc.max_report_files),
     )
 
-    tcia_studies_by_patient: dict[str, list[dict[str, str]]] = {}
+    tcia_studies_by_patient: dict[str, list[dict[str, Any]]] = {}
+    tcia_series_by_patient: dict[str, list[dict[str, str]]] = {}
     if tcia_client is not None and bool(tcga_cfg.tcia.enabled):
         configured_collections = [str(x) for x in list(tcga_cfg.tcia.collections)]
         collections = configured_collections or project_ids
@@ -95,8 +116,22 @@ def _fetch_tcga_payloads(
             collections=collections,
             max_studies_per_collection=_optional_int(tcga_cfg.tcia.max_studies_per_collection),
         )
+        if bool(tcga_cfg.tcia.fetch_series_metadata):
+            tcia_series_by_patient = tcia_client.fetch_series_by_patient(
+                studies_by_patient=tcia_studies_by_patient,
+                max_series_per_study=_optional_int(tcga_cfg.tcia.max_series_per_study_metadata),
+            )
 
-    return cases, pathology_files, report_files, tcia_studies_by_patient
+    ssm_hits: list[dict[str, Any]] = []
+    if bool(tcga_cfg.gdc.fetch_ssm_mutations):
+        mutation_gene_panel = [str(gene) for gene in list(tcga_cfg.gdc.mutation_gene_panel)]
+        ssm_hits = gdc_client.fetch_ssm_hits(
+            project_ids=project_ids,
+            gene_symbols=mutation_gene_panel,
+            max_hits=_optional_int(tcga_cfg.gdc.max_ssm_hits),
+        )
+
+    return cases, pathology_files, report_files, tcia_studies_by_patient, tcia_series_by_patient, ssm_hits
 
 
 def _first_linked_case(file_hit: dict[str, Any]) -> tuple[str, str, str]:
@@ -180,7 +215,7 @@ def _download_gdc_plan(
 def _download_tcia_series(
     tcia_client: TCIAClient,
     *,
-    tcia_studies_by_patient: dict[str, list[dict[str, str]]],
+    tcia_studies_by_patient: dict[str, list[dict[str, Any]]],
     patient_ids: set[str],
     raw_root: Path,
     source_name: str,
@@ -269,11 +304,15 @@ def main() -> None:
         )
 
     print(f"Pulling metadata for projects: {project_ids}")
-    cases, pathology_files, report_files, tcia_studies_by_patient = _fetch_tcga_payloads(
-        tcga_cfg=tcga_cfg,
-        gdc_client=gdc_client,
-        tcia_client=tcia_client,
+    cases, pathology_files, report_files, tcia_studies_by_patient, tcia_series_by_patient, ssm_hits = (
+        _fetch_tcga_payloads(
+            tcga_cfg=tcga_cfg,
+            gdc_client=gdc_client,
+            tcia_client=tcia_client,
+        )
     )
+    ssm_mutations_by_case_id, ssm_mutations_by_patient_id = index_ssm_hits_by_case_and_patient(ssm_hits)
+    mutation_gene_panel = [str(gene) for gene in list(tcga_cfg.gdc.mutation_gene_panel)]
 
     download_cfg = cfg.data.source.download
     download_enabled = bool(download_cfg.enabled)
@@ -343,12 +382,18 @@ def main() -> None:
         pathology_files=pathology_files,
         report_files=report_files,
         tcia_studies_by_patient=tcia_studies_by_patient,
+        tcia_series_by_patient=tcia_series_by_patient,
         downloaded_pathology_by_file_id=downloaded_pathology_by_file_id,
         downloaded_reports_by_file_id=downloaded_reports_by_file_id,
+        ssm_mutations_by_case_id=ssm_mutations_by_case_id,
+        ssm_mutations_by_patient_id=ssm_mutations_by_patient_id,
+        mutation_gene_panel=mutation_gene_panel,
         downloaded_tcia_series_by_patient=downloaded_tcia_series_by_patient,
         raw_root=Path(str(cfg.data.raw_root)),
         source_name=source_name,
         split_ratios=_split_ratios(tcga_cfg),
+        show_progress=True,
+        progress_desc="Building tcga rows",
     )
 
     staging_root = Path(str(cfg.data.staging_root))
@@ -375,6 +420,11 @@ def main() -> None:
                 "pathology_files": len(pathology_files),
                 "report_files": len(report_files),
                 "radiology_patients": len(tcia_studies_by_patient),
+                "tcia_series_patients": len(tcia_series_by_patient),
+                "tcia_series_records": sum(len(entries) for entries in tcia_series_by_patient.values()),
+                "ssm_hits": len(ssm_hits),
+                "mutation_case_count": len(ssm_mutations_by_case_id),
+                "mutation_patient_count": len(ssm_mutations_by_patient_id),
             },
             "download_counts": {
                 "pathology_files": pathology_download_count,
@@ -391,6 +441,10 @@ def main() -> None:
     print(f"Pathology files pulled: {len(pathology_files)}")
     print(f"Report PDF files pulled: {len(report_files)}")
     print(f"Radiology patients pulled: {len(tcia_studies_by_patient)}")
+    print(f"TCIA series metadata records pulled: {sum(len(entries) for entries in tcia_series_by_patient.values())}")
+    print(f"SSM mutation hits pulled: {len(ssm_hits)}")
+    print(f"Mutation case index size: {len(ssm_mutations_by_case_id)}")
+    print(f"Mutation patient index size: {len(ssm_mutations_by_patient_id)}")
     print(f"Rows written: {len(source_df)}")
     print(f"Staging parquet: {staging_path}")
     print(f"Unified parquet: {unified_path}")

@@ -3,10 +3,20 @@ from __future__ import annotations
 
 import argparse
 import ast
+import sys
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
+SRC = BOOTSTRAP_ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from kidney_vlm.repo_root import find_repo_root
+
+ROOT = find_repo_root(Path(__file__))
 
 
 def parse_args() -> argparse.Namespace:
@@ -18,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--registry",
-        default="/Users/wdn/tsa/kidney-vlm/data/registry/unified.parquet",
+        default=str(ROOT / "data" / "registry" / "unified.parquet"),
         help="Path to unified parquet registry.",
     )
     parser.add_argument(
@@ -29,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--samples-per-source",
         type=int,
-        default=3,
+        default=1,
         help="How many sample rows to print per source.",
     )
     parser.add_argument(
@@ -151,6 +161,19 @@ def split_counts(frame: pd.DataFrame) -> str:
     return ", ".join(parts) if parts else "none"
 
 
+def _display_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+    if hasattr(value, "tolist") and not isinstance(value, str):
+        try:
+            return str(value.tolist())
+        except Exception:
+            return str(value)
+    return str(value)
+
+
 def print_samples(
     source_frame: pd.DataFrame,
     *,
@@ -159,6 +182,8 @@ def print_samples(
     sample_rows: int,
     seed: int,
 ) -> None:
+    del path_columns
+
     if source_frame.empty:
         print("Sample rows: none")
         return
@@ -166,28 +191,21 @@ def print_samples(
     if sample_rows <= 0:
         return
 
-    view = source_frame.copy()
-    count_columns: list[str] = []
-    for column in path_columns:
-        count_col = f"{column}_n"
-        view[count_col] = view[column].map(lambda x: len(as_list(x)))
-        count_columns.append(count_col)
-
-    base_columns = [col for col in ["sample_id", "source", "patient_id", "study_id", "split"] if col in view.columns]
-    selected_columns = base_columns + count_columns
-
-    if not selected_columns:
-        print("Sample rows: no displayable columns")
-        return
-
-    count = min(sample_rows, len(view))
-    if len(view) > count:
-        sample = view.sample(n=count, random_state=seed)
+    count = min(sample_rows, len(source_frame))
+    if len(source_frame) > count:
+        sample = source_frame.sample(n=count, random_state=seed)
     else:
-        sample = view.head(count)
+        sample = source_frame.head(count)
 
-    print(f"Sample rows ({source}):")
-    print(sample[selected_columns].to_string(index=False))
+    for idx, (_, row) in enumerate(sample.iterrows(), start=1):
+        if count == 1:
+            print(f"Sample row ({source}):")
+        else:
+            print(f"Sample row {idx}/{count} ({source}):")
+        for column in source_frame.columns:
+            print(f"{column}: {_display_value(row[column])}")
+        if idx < count:
+            print("-" * 80)
 
 
 def main() -> None:

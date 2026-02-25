@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 
-ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src"
+BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
+SRC = BOOTSTRAP_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kidney_vlm.data.hf_dataset import load_hf_dataset_from_registry
+from kidney_vlm.repo_root import find_repo_root
 from kidney_vlm.training.trainer_hf import build_training_arguments
+
+ROOT = find_repo_root(Path(__file__))
+os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 
 
 def load_cfg():

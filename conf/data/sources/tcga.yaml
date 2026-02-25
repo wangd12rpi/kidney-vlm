@@ -2,7 +2,7 @@ data:
   source:
     name: tcga
     download:
-      enabled: false
+      enabled: true
       skip_existing: true
       include:
         pathology: true
@@ -29,6 +29,24 @@ data:
         max_cases:
         max_pathology_files:
         max_report_files:
+        fetch_ssm_mutations: true
+        max_ssm_hits:
+        mutation_gene_panel:
+          - VHL
+          - PBRM1
+          - BAP1
+          - SETD2
+          - KDM5C
+          - MTOR
+          - TP53
+          - PTEN
+          - TSC1
+          - TSC2
+          - FH
+          - MET
+          - FLCN
+          - PIK3CA
+          - ARID1A
         pathology_data_formats:
           - SVS
         pathology_data_types:
@@ -47,5 +65,7 @@ data:
         timeout_seconds: 120
         max_retries: 3
         retry_backoff_seconds: 2.0
+        fetch_series_metadata: true
         collections: []
         max_studies_per_collection:
+        max_series_per_study_metadata:

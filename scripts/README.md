@@ -3,6 +3,8 @@
 ## Runnable Scripts
 - `scripts/data/01_build_tcga_source.py`
   - Builds/refreshes TCGA source rows (GDC+TCIA metadata join) and replaces `source='tcga'` in unified registry.
+  - Pulls TCIA study + series metadata by default even when payload downloads are disabled.
+  - Pulls targeted GDC mutation metadata for a kidney-focused gene panel by default.
   - Downloads pathology SVS, TCIA radiology series zips, and GDC PDF reports when enabled.
   - Example metadata-only run:
     - `uv run python scripts/data/01_build_tcga_source.py data.source.download.enabled=false`
@@ -10,9 +12,10 @@
     - `uv run python scripts/data/01_build_tcga_source.py data.source.download.enabled=true`
 - `scripts/data/02_print_registry_status.py`
   - Prints per-source database status and checks local existence of referenced binaries in path columns (`*_path`, `*_paths`).
-  - Reports missing reference counts and prints a few sample rows per source.
+  - Reports missing reference counts and prints one sampled row per source by default.
+  - Sample output is printed as `field: value` lines (one field per line), not table format.
   - Example:
-    - `uv run python scripts/data/02_print_registry_status.py --samples-per-source 3 --missing-examples 5`
+    - `uv run python scripts/data/02_print_registry_status.py --samples-per-source 1 --missing-examples 5`
 - `scripts/data/print_registry_debug.py`
   - Standalone parquet viewer for debugging (`no yaml` required).
   - Example:
