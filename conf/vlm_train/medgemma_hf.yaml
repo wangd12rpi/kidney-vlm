@@ -1,0 +1,16 @@
+name: medgemma_hf
+model_name_or_path: google/medgemma-4b-it
+trust_remote_code: true
+instantiate_model: false
+always_frozen_prefixes:
+  - pathology
+  - radiology
+  - segmentation
+projector_prefixes:
+  - projector
+  - projectors
+batch_size: 2
+num_epochs: 1
+learning_rate: 2e-5
+output_dir: ${project.root_dir}/outputs/train/vlm
+freeze_projectors: false

@@ -1,0 +1,46 @@
+task: projector_train_qa
+
+# I/O
+source_registry_path: ${data.unified_registry_path}
+output_parquet_path: ${project.root_dir}/data/qa/projector_train_qa.parquet
+overwrite_output: false
+
+# Selection/debug
+require_pathology: false
+first_n: 2
+print_first_n: 2
+
+# Prompting
+instruction: "Describe the pathology image."
+system_prompt: >-
+  You are a medical pathology captioning assistant. Given metadata and pathology report text,
+  write one highly detailed pathology image caption suitable for vision-language projector training.
+  Output exactly one caption (single paragraph) with 8-12 sentences and approximately 160-260 words.
+  Include detailed morphology: tissue context, dominant architecture, cytologic appearance, nuclear features,
+  stromal/background findings, necrosis/hemorrhage/inflammation if present, and a concise diagnostic synthesis.
+  Stay factual and grounded in the provided information, do not mention metadata or reports, and do not use bullet points.
+metadata_fields:
+  - project_id
+  - disease_type
+  - primary_diagnosis
+  - tumor_grade
+  - tumor_stage
+  - ajcc_pathologic_stage
+  - ajcc_pathologic_t
+  - ajcc_pathologic_n
+  - ajcc_pathologic_m
+  - kidney_histology_subtype
+  - biomarkers_text
+max_reports_per_sample: 1
+report_max_pages:
+report_text_max_chars: 12000
+
+# Azure OpenAI
+azure_openai:
+  endpoint: ${oc.env:AZURE_OPENAI_ENDPOINT,https://azure-openai-radi.cognitiveservices.azure.com/}
+  deployment: ${oc.env:AZURE_OPENAI_DEPLOYMENT,gpt-5.1}
+  api_version: ${oc.env:AZURE_OPENAI_API_VERSION,2024-12-01-preview}
+  api_key_env: AZURE_OPENAI_API_KEY
+  max_completion_tokens: 2500
+  max_retries: 3
+  retry_sleep_seconds: 2.0

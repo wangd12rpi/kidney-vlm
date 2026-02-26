@@ -34,16 +34,16 @@ def main() -> None:
         )
 
     train_dataset = load_hf_dataset_from_registry(registry_path, split_filter="train")
-    stage_cfg = cfg.train.stages.vlm
+    stage_cfg = cfg.vlm_train
     args = build_training_arguments(stage_cfg)
 
     print("Stage 2 (VLM) training scaffold ready.")
     print(f"Train rows: {len(train_dataset)}")
     print(f"Output dir: {args.output_dir}")
     print(f"Freeze projectors in stage 2: {bool(stage_cfg.freeze_projectors)}")
-    if not bool(cfg.train.instantiate_model):
+    if not bool(cfg.vlm_train.instantiate_model):
         print(
-            "Model instantiation is disabled by config (train.instantiate_model=false). "
+            "Model instantiation is disabled by config (vlm_train.instantiate_model=false). "
             "Enable it and wire model-specific I/O once MedGemma checkpoint/API are finalized. "
             "This script assumes stage-1 projector training has already completed."
         )

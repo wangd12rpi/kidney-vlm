@@ -17,3 +17,7 @@ outputs/
 # IDE
 .idea/
 .vscode/
+
+# Local secrets
+.env
+.env.*

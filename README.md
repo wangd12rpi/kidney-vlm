@@ -66,9 +66,11 @@ uv run python scripts/model/03_train_projectors.py
 uv run python scripts/model/04_train_vlm.py
 ```
 
-`conf/train/qa.yaml` defines stage-specific hyperparameters:
-- `train.stages.projectors`: stage 1
-- `train.stages.vlm`: stage 2
+Stage-scoped configs now live under:
+- `conf/qa_genereation/`
+- `conf/embeding_extraction/`
+- `conf/projector_train/`
+- `conf/vlm_train/`
 
 Multi-image support:
 - Each registry row already supports list-valued path columns.

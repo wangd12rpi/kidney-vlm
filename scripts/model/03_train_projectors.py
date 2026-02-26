@@ -34,17 +34,17 @@ def main() -> None:
         )
 
     train_dataset = load_hf_dataset_from_registry(registry_path, split_filter="train")
-    stage_cfg = cfg.train.stages.projectors
+    stage_cfg = cfg.projector_train
     args = build_training_arguments(stage_cfg)
 
     print("Stage 1 (projectors) training scaffold ready.")
     print(f"Train rows: {len(train_dataset)}")
     print(f"Output dir: {args.output_dir}")
-    print(f"Always frozen prefixes: {list(cfg.train.always_frozen_prefixes)}")
-    print(f"Projector prefixes: {list(cfg.train.projector_prefixes)}")
-    if not bool(cfg.train.instantiate_model):
+    print(f"Always frozen prefixes: {list(cfg.projector_train.always_frozen_prefixes)}")
+    print(f"Projector prefixes: {list(cfg.projector_train.projector_prefixes)}")
+    if not bool(cfg.projector_train.instantiate_model):
         print(
-            "Model instantiation is disabled by config (train.instantiate_model=false). "
+            "Model instantiation is disabled by config (projector_train.instantiate_model=false). "
             "Enable it and wire model assembly to train only projector modules in this stage."
         )
         return
