@@ -1,0 +1,28 @@
+data:
+  source:
+    name: kits23
+    kits23:
+      dataset_dir: ${data.raw_root}/kits23/dataset
+      pairs_root: ${data.raw_root}/kits23/pairs
+      image_glob: "**/*.png"
+      split_ratios:
+        train: 0.8
+        val: 0.1
+        test: 0.1
+      extract:
+        enabled: false
+        target_axis: 0
+        skip_existing: true
+        max_cases:
+      features:
+        enabled: false
+        attach_existing: true
+        output_root: ${data.source.kits23.pairs_root}/embeddings/medsiglip-448
+        model_id: google/medsiglip-448
+        batch_size: 32
+        device:
+        overwrite_existing: false
+        max_images:
+        skip_errors: true
+        use_tensorflow_resize: true
+        hf_token_env_var: HF_TOKEN

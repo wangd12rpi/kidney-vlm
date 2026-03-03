@@ -10,6 +10,14 @@
     - `uv run python scripts/data/01_build_tcga_source.py data.source.download.enabled=false`
   - Example full download run:
     - `uv run python scripts/data/01_build_tcga_source.py data.source.download.enabled=true`
+- `scripts/data/01_build_kits23_source.py`
+  - Builds/refreshes KITS23 source rows from extracted radiology slice/mask PNG pairs.
+  - Optionally extracts foreground 2D slice/mask pairs from NIfTI (`imaging.nii.gz`, `segmentation.nii.gz`) first.
+  - Replaces `source='kits23'` in unified registry and writes a run manifest.
+  - Example build from existing pairs:
+    - `uv run python scripts/data/01_build_kits23_source.py data.source.kits23.extract.enabled=false`
+  - Example extraction + build:
+    - `uv run python scripts/data/01_build_kits23_source.py data.source.kits23.extract.enabled=true data.source.kits23.dataset_dir=/path/to/kits23`
 - `scripts/data/02_print_registry_status.py`
   - Prints per-source database status and checks local existence of referenced binaries in path columns (`*_path`, `*_paths`).
   - Reports missing reference counts and prints one sampled row per source by default.

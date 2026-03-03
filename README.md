@@ -31,6 +31,7 @@ Run one source at a time.
 
 ```bash
 uv run python scripts/data/01_build_tcga_source.py
+uv run python scripts/data/01_build_kits23_source.py
 ```
 
 TCGA project selection is config-driven in:
@@ -48,6 +49,20 @@ TCGA project selection is config-driven in:
    - TCIA radiology series zip files from `getImage`
    - GDC clinical/pathology PDF reports
 7. Rebuilds the TCGA slice in `data/registry/unified.parquet` and emits a manifest.
+
+`01_build_kits23_source.py`:
+1. Optionally extracts foreground 2D CT slice/mask PNG pairs from KITS23 NIfTI volumes.
+2. Optionally extracts MedSigLIP patch-token features (`google/medsiglip-448`) per slice into `.pt` files.
+3. Builds one registry row per paired slice (`radiology_image_paths` + `radiology_mask_paths`) and attaches `radiology_embedding_paths` when `.pt` files exist.
+4. Replaces `source='kits23'` in `data/registry/unified.parquet` and emits a manifest.
+
+Example KITS23 extraction + feature run:
+```bash
+uv run python scripts/data/01_build_kits23_source.py \
+  data.source.kits23.extract.enabled=true \
+  data.source.kits23.features.enabled=true \
+  data.source.kits23.dataset_dir=/path/to/kits23
+```
 
 Split policy for TCGA default config:
 - `train=0.9`
