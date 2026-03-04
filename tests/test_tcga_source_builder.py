@@ -162,6 +162,8 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
     row1 = frame[frame["patient_id"] == "TCGA-AA-0001"].iloc[0]
     assert len(row1["pathology_wsi_paths"]) == 2
     assert len(row1["radiology_image_paths"]) == 2
+    assert all(not str(path).startswith("/") for path in row1["pathology_wsi_paths"])
+    assert all(not str(path).startswith("/") for path in row1["radiology_image_paths"])
     assert bool(row1["has_pathology"]) is True
     assert bool(row1["has_radiology"]) is True
     assert row1["tumor_stage"] == "Stage II"
@@ -183,6 +185,7 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
     row2 = frame[frame["patient_id"] == "TCGA-BB-0002"].iloc[0]
     assert len(row2["pathology_wsi_paths"]) == 0
     assert len(row2["radiology_image_paths"]) == 1
+    assert all(not str(path).startswith("/") for path in row2["radiology_image_paths"])
     assert bool(row2["has_pathology"]) is False
     assert bool(row2["has_radiology"]) is True
     assert row2["vital_status"] == "Dead"
@@ -218,3 +221,26 @@ def test_task_survival_days_is_numeric_or_null() -> None:
     )
     row = frame.iloc[0]
     assert pd.isna(row["task_survival_days"])
+
+
+def test_mutation_flags_are_null_when_mutation_query_unavailable() -> None:
+    frame = build_tcga_registry_rows(
+        cases=[
+            {
+                "case_id": "case-4",
+                "submitter_id": "TCGA-DD-0004",
+                "project": {"project_id": "TCGA-KIRC"},
+                "diagnoses": [{}],
+                "demographic": {},
+            }
+        ],
+        pathology_files=[],
+        tcia_studies_by_patient={},
+        raw_root=Path("/tmp/raw"),
+        source_name="tcga",
+        split_ratios={"train": 1.0},
+        mutation_query_succeeded=False,
+        mutation_gene_panel=["VHL"],
+    )
+    row = frame.iloc[0]
+    assert pd.isna(row["has_mutation_vhl"])

@@ -419,7 +419,7 @@ class TitanSlideEncoder(BaseSlideEncoder):
         self.enc_name = 'titan'
         assert pretrained, "TitanSlideEncoder has no non-pretrained models. Please load with pretrained=True."
         from transformers import AutoModel 
-        model = AutoModel.from_pretrained('MahmoodLab/TITAN', trust_remote_code=True)
+        model = AutoModel.from_pretrained('MahmoodLab/TITAN', trust_remote_code=True, device_map="cuda")
         precision = torch.float16
         embedding_dim = 768
         return model, precision, embedding_dim

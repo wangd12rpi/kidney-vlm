@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ def test_hydra_compose_root_config() -> None:
 
     repo_root = Path(__file__).resolve().parents[1]
     conf_dir = repo_root / "conf"
+    os.environ["KIDNEY_VLM_ROOT"] = str(repo_root)
 
     with initialize_config_dir(version_base=None, config_dir=str(conf_dir)):
         cfg = compose(config_name="config")

@@ -21,3 +21,6 @@ outputs/
 # Local secrets
 .env
 .env.*
+
+data/features
+data/registry/*

@@ -80,6 +80,7 @@ def _fetch_tcga_payloads(
     dict[str, list[dict[str, Any]]],
     dict[str, list[dict[str, str]]],
     list[dict[str, Any]],
+    bool,
 ]:
     project_ids = [str(project_id) for project_id in list(tcga_cfg.project_ids)]
     if not project_ids:
@@ -123,15 +124,28 @@ def _fetch_tcga_payloads(
             )
 
     ssm_hits: list[dict[str, Any]] = []
+    mutation_query_succeeded = False
     if bool(tcga_cfg.gdc.fetch_ssm_mutations):
         mutation_gene_panel = [str(gene) for gene in list(tcga_cfg.gdc.mutation_gene_panel)]
-        ssm_hits = gdc_client.fetch_ssm_hits(
-            project_ids=project_ids,
-            gene_symbols=mutation_gene_panel,
-            max_hits=_optional_int(tcga_cfg.gdc.max_ssm_hits),
-        )
+        try:
+            ssm_hits = gdc_client.fetch_ssm_hits(
+                project_ids=project_ids,
+                gene_symbols=mutation_gene_panel,
+                max_hits=_optional_int(tcga_cfg.gdc.max_ssm_hits),
+            )
+            mutation_query_succeeded = True
+        except APIQueryError as exc:
+            print(f"[warning] GDC SSM query failed; mutation fields will be null. {exc}")
 
-    return cases, pathology_files, report_files, tcia_studies_by_patient, tcia_series_by_patient, ssm_hits
+    return (
+        cases,
+        pathology_files,
+        report_files,
+        tcia_studies_by_patient,
+        tcia_series_by_patient,
+        ssm_hits,
+        mutation_query_succeeded,
+    )
 
 
 def _first_linked_case(file_hit: dict[str, Any]) -> tuple[str, str, str]:
@@ -304,7 +318,15 @@ def main() -> None:
         )
 
     print(f"Pulling metadata for projects: {project_ids}")
-    cases, pathology_files, report_files, tcia_studies_by_patient, tcia_series_by_patient, ssm_hits = (
+    (
+        cases,
+        pathology_files,
+        report_files,
+        tcia_studies_by_patient,
+        tcia_series_by_patient,
+        ssm_hits,
+        mutation_query_succeeded,
+    ) = (
         _fetch_tcga_payloads(
             tcga_cfg=tcga_cfg,
             gdc_client=gdc_client,
@@ -390,6 +412,8 @@ def main() -> None:
         mutation_gene_panel=mutation_gene_panel,
         downloaded_tcia_series_by_patient=downloaded_tcia_series_by_patient,
         raw_root=Path(str(cfg.data.raw_root)),
+        project_root=ROOT,
+        mutation_query_succeeded=mutation_query_succeeded,
         source_name=source_name,
         split_ratios=_split_ratios(tcga_cfg),
         show_progress=True,

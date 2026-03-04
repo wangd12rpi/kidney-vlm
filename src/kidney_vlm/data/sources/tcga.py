@@ -803,6 +803,31 @@ def _to_float_or_none(value: Any) -> float | None:
         return None
 
 
+def _infer_project_root_from_raw_root(raw_root: Path) -> Path:
+    resolved = raw_root.expanduser().resolve()
+    if resolved.name == "raw" and resolved.parent.name == "data":
+        return resolved.parent.parent
+    return resolved.parent
+
+
+def _to_project_relative_path(path_value: str | Path, project_root: Path) -> str:
+    text = str(path_value).strip()
+    if not text:
+        return ""
+    if "://" in text:
+        return text
+
+    path_obj = Path(text).expanduser()
+    if not path_obj.is_absolute():
+        return path_obj.as_posix().lstrip("/")
+
+    resolved = path_obj.resolve()
+    try:
+        return resolved.relative_to(project_root).as_posix()
+    except ValueError:
+        return resolved.as_posix().lstrip("/")
+
+
 def _infer_kidney_histology_subtype(project_id: str) -> str:
     normalized = str(project_id).strip().upper()
     mapping = {
@@ -881,6 +906,8 @@ def build_tcga_registry_rows(
     mutation_gene_panel: list[str] | None = None,
     tcia_series_by_patient: dict[str, list[dict[str, str]]] | None = None,
     downloaded_tcia_series_by_patient: dict[str, list[dict[str, str]]] | None = None,
+    project_root: Path | None = None,
+    mutation_query_succeeded: bool = True,
     show_progress: bool = True,
     progress_desc: str = "Building TCGA rows",
 ) -> pd.DataFrame:
@@ -896,6 +923,11 @@ def build_tcga_registry_rows(
     tcia_series_by_patient = tcia_series_by_patient or {}
     downloaded_tcia_series_by_patient = downloaded_tcia_series_by_patient or {}
     mutation_gene_panel_upper = [str(gene).strip().upper() for gene in mutation_gene_panel if str(gene).strip()]
+    resolved_project_root = (
+        Path(project_root).expanduser().resolve()
+        if project_root is not None
+        else _infer_project_root_from_raw_root(raw_root)
+    )
 
     pathology_by_case: dict[str, list[dict[str, str]]] = {}
     pathology_by_patient: dict[str, list[dict[str, str]]] = {}
@@ -923,7 +955,7 @@ def build_tcga_registry_rows(
             file_entry = {
                 "file_id": file_id,
                 "file_name": file_name,
-                "local_path": str(local_path),
+                "local_path": _to_project_relative_path(local_path, resolved_project_root),
             }
 
             if case_id:
@@ -953,7 +985,7 @@ def build_tcga_registry_rows(
             report_entry = {
                 "file_id": file_id,
                 "file_name": file_name,
-                "local_path": str(local_path),
+                "local_path": _to_project_relative_path(local_path, resolved_project_root),
             }
             if case_id:
                 reports_by_case.setdefault(case_id, []).append(report_entry)
@@ -999,47 +1031,60 @@ def build_tcga_registry_rows(
         report_file_names = sorted({entry["file_name"] for entry in report_entries if entry.get("file_name")})
 
         mutation_entries = ssm_mutations_by_case_id.get(case_id, ssm_mutations_by_patient_id.get(patient_id, []))
-        mutated_gene_symbols = sorted(
-            {
-                str(gene).strip().upper()
-                for entry in mutation_entries
-                for gene in list(entry.get("gene_symbols", []))
-                if str(gene).strip()
-            }
-        )
-        mutation_ssm_ids = sorted(
-            {
-                str(entry.get("ssm_id", "")).strip()
-                for entry in mutation_entries
-                if str(entry.get("ssm_id", "")).strip()
-            }
-        )
-        mutation_types = sorted(
-            {
-                str(entry.get("mutation_type", "")).strip()
-                for entry in mutation_entries
-                if str(entry.get("mutation_type", "")).strip()
-            }
-        )
-        mutation_consequence_terms = sorted(
-            {
-                str(term).strip()
-                for entry in mutation_entries
-                for term in list(entry.get("consequence_terms", []))
-                if str(term).strip()
-            }
-        )
+        mutation_observed = mutation_query_succeeded and len(mutation_entries) > 0
+        if mutation_observed:
+            mutated_gene_symbols = sorted(
+                {
+                    str(gene).strip().upper()
+                    for entry in mutation_entries
+                    for gene in list(entry.get("gene_symbols", []))
+                    if str(gene).strip()
+                }
+            )
+            mutation_ssm_ids = sorted(
+                {
+                    str(entry.get("ssm_id", "")).strip()
+                    for entry in mutation_entries
+                    if str(entry.get("ssm_id", "")).strip()
+                }
+            )
+            mutation_types = sorted(
+                {
+                    str(entry.get("mutation_type", "")).strip()
+                    for entry in mutation_entries
+                    if str(entry.get("mutation_type", "")).strip()
+                }
+            )
+            mutation_consequence_terms = sorted(
+                {
+                    str(term).strip()
+                    for entry in mutation_entries
+                    for term in list(entry.get("consequence_terms", []))
+                    if str(term).strip()
+                }
+            )
+        else:
+            mutated_gene_symbols = []
+            mutation_ssm_ids = []
+            mutation_types = []
+            mutation_consequence_terms = []
         mutation_gene_set = set(mutated_gene_symbols)
         kidney_driver_gene_mutations = [gene for gene in mutation_gene_panel_upper if gene in mutation_gene_set]
         days_to_last_follow_up = str(diagnosis.get("days_to_last_follow_up", "")).strip()
         overall_survival_days = _coalesce_text(days_to_death, days_to_last_follow_up)
         overall_survival_days_numeric = _to_float_or_none(overall_survival_days)
-        survival_event = bool(days_to_death)
+        if str(days_to_death).strip():
+            survival_event: bool | None = True
+        elif str(days_to_last_follow_up).strip():
+            survival_event = False
+        else:
+            survival_event = None
         kidney_histology_subtype = _infer_kidney_histology_subtype(project_id)
 
         radiology_entries = tcia_studies_by_patient.get(patient_id, [])
         series_metadata_entries = tcia_series_by_patient.get(patient_id, [])
-        radiology_paths: list[str] = []
+        radiology_study_fallback_paths: list[str] = []
+        radiology_series_fallback_paths: list[str] = []
         radiology_uri_paths: list[str] = []
         tcia_study_uids: list[str] = []
         tcia_collections: list[str] = []
@@ -1047,13 +1092,19 @@ def build_tcga_registry_rows(
         tcia_study_descriptions: list[str] = []
         tcia_modalities: list[str] = []
         for entry in radiology_entries:
-            collection = str(entry.get("collection", "")).strip()
+            collection = str(entry.get("collection", "")).strip() or project_id
             study_uid = str(entry.get("study_instance_uid", "")).strip()
             study_date = str(entry.get("study_date", "")).strip()
             study_description = str(entry.get("study_description", "")).strip()
             modalities_in_study = _to_text_list(entry.get("modalities_in_study", []))
             if study_uid:
                 radiology_uri_paths.append(f"tcia://{collection}/{patient_id}/{study_uid}")
+                study_fallback = (
+                    raw_root / source_name / "radiology" / collection / patient_id / study_uid
+                )
+                radiology_study_fallback_paths.append(
+                    _to_project_relative_path(study_fallback, resolved_project_root)
+                )
                 tcia_study_uids.append(study_uid)
             elif collection:
                 radiology_uri_paths.append(f"tcia://{collection}/{patient_id}")
@@ -1093,6 +1144,17 @@ def build_tcga_registry_rows(
                 if str(entry.get("modality", "")).strip()
             ]
         )
+        for entry in series_metadata_entries:
+            collection = str(entry.get("collection", "")).strip() or project_id
+            study_uid = str(entry.get("study_instance_uid", "")).strip()
+            series_uid = str(entry.get("series_instance_uid", "")).strip()
+            if study_uid and series_uid:
+                series_fallback = (
+                    raw_root / source_name / "radiology" / collection / patient_id / study_uid / f"{series_uid}.zip"
+                )
+                radiology_series_fallback_paths.append(
+                    _to_project_relative_path(series_fallback, resolved_project_root)
+                )
 
         downloaded_series_entries = downloaded_tcia_series_by_patient.get(patient_id, [])
         tcia_series_uids = sorted(
@@ -1113,12 +1175,16 @@ def build_tcga_registry_rows(
         )
         radiology_download_paths = sorted(
             {
-                str(entry.get("local_path", ""))
+                _to_project_relative_path(str(entry.get("local_path", "")), resolved_project_root)
                 for entry in downloaded_series_entries
                 if str(entry.get("local_path", "")).strip()
             }
         )
-        radiology_paths = radiology_download_paths if radiology_download_paths else sorted(set(radiology_uri_paths))
+        radiology_paths = radiology_download_paths
+        if not radiology_paths:
+            radiology_paths = sorted(set(radiology_series_fallback_paths))
+        if not radiology_paths:
+            radiology_paths = sorted(set(radiology_study_fallback_paths))
 
         split = assign_split(patient_id, split_ratios)
         sample_id = make_sample_id(source_name, patient_id, case_id or patient_id, modality_scope="patient_study")
@@ -1173,8 +1239,8 @@ def build_tcga_registry_rows(
             "mutation_types": mutation_types,
             "mutation_consequence_terms": mutation_consequence_terms,
             "mutated_gene_symbols": mutated_gene_symbols,
-            "mutation_event_count": len(mutation_entries),
-            "mutation_unique_gene_count": len(mutated_gene_symbols),
+            "mutation_event_count": len(mutation_entries) if mutation_observed else None,
+            "mutation_unique_gene_count": len(mutated_gene_symbols) if mutation_observed else None,
             "kidney_driver_gene_mutations": kidney_driver_gene_mutations,
             "pathology_file_ids": pathology_file_ids,
             "tcia_collections": sorted(set(tcia_collections)),
@@ -1194,7 +1260,7 @@ def build_tcga_registry_rows(
             "has_radiology": bool(radiology_paths),
         }
         for gene in mutation_gene_panel_upper:
-            row[f"has_mutation_{gene.lower()}"] = gene in mutation_gene_set
+            row[f"has_mutation_{gene.lower()}"] = (gene in mutation_gene_set) if mutation_observed else None
         rows.append(row)
 
     if show_progress:
