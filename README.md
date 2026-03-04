@@ -1,4 +1,4 @@
-# Kidney VLM Research Scaffold
+# Kidney VLM 
 
 This repository provides a clean starting point for kidney multimodal research with:
 - Hydra hierarchical configs (`conf/`)
@@ -11,7 +11,6 @@ This repository provides a clean starting point for kidney multimodal research w
 - `conf/`: runtime, data, and model configs.
 - `scripts/`: source-specific dataset build scripts and training/extraction entry scripts.
 - `src/`: reusable library modules.
-- `tests/`: smoke and contract tests.
 
 ## Script Naming Convention
 - Runnable scripts always use a leading verb (`build`, `extract`, `run`, `train`).
@@ -26,37 +25,49 @@ uv run pytest
 
 All runnable scripts set `project.root_dir` to the repository root detected from the nearest `.git` directory.
 
-## Data Construction (Simple Per-Source Scripts)
-Run one source at a time.
+## Add New Source 
+This is the main way to extend the project.
 
+1. Pull the latest unified registry from HF Hub:
 ```bash
-uv run python scripts/data/01_build_tcga_source.py
+uv run python scripts/data/pull_registry_from_hf.py --repo-id wangd12/kidney_vlm
+```
+2. Create a new source builder from the template:
+```bash
+cp scripts/templates/source_template.py scripts/data/01_build_<source>_source.py
+```
+3. Add source config:
+- `conf/data/sources/<source>.yaml`
+4. Implement source-specific pull/harmonization in `01_build_<source>_source.py`.
+5. Run your source builder:
+```bash
+uv run python scripts/data/01_build_<source>_source.py
+```
+6. Verify registry status:
+```bash
+uv run python scripts/data/print_registry_status.py --source <source> --samples-per-source 2
+```
+7. Push updated unified registry:
+```bash
+uv run python scripts/data/push_registry_to_hf.py --repo-id wangd12/kidney_vlm --commit-message "update <source> rows"
 ```
 
-TCGA project selection is config-driven in:
-- `conf/data/sources/tcga.yaml`
-- Default projects: `TCGA-KIRC`, `TCGA-KIRP`, `TCGA-KICH`
+Note that:
+- All path fields in registry must be relative to project root (examples: `data/raw/...`, `data/features/...`).
+- Unknown labels/ground truth should be `null`, not placeholder `false`.
+- Source builders should use source-slice replacement so only rows for that `source` are replaced.
+- Current HF pull script is replace-only (no automatic merge logic).
+- Always pull latest HF registry first, then the your source builder, then push.
 
-`01_build_tcga_source.py`:
-1. Loads Hydra base config + source config.
-2. Pulls case metadata + clinical fields from GDC (including survival/task labels and extended pathology staging fields).
-3. Pulls pathology slide metadata and PDF report metadata from GDC.
-4. Pulls radiology study + series metadata from TCIA and joins by TCGA patient ID.
-5. Pulls targeted GDC mutation calls for common kidney genes and emits per-case mutation labels/features.
-6. Optionally downloads payloads when `data.source.download.enabled=true`:
-   - pathology SVS files from GDC `/data/<file_id>`
-   - TCIA radiology series zip files from `getImage`
-   - GDC clinical/pathology PDF reports
-7. Rebuilds the TCGA slice in `data/registry/unified.parquet` and emits a manifest.
+## Data Construction (Per Source)
+Run one source at a time with its builder script:
+```bash
+uv run python scripts/data/01_build_<source>_source.py
+```
 
-Split policy for TCGA default config:
-- `train=0.9`
-- `test=0.1`
-
-## Add a New Source
-1. Copy `scripts/templates/source_template.py` to `scripts/data/01_build_<source>_source.py`.
-2. Add `conf/data/sources/<source>.yaml`.
-3. Implement source-specific pull + normalization logic.
+Built-in TCGA source:
+- Script: `scripts/data/01_build_tcga_source.py`
+- Config: `conf/data/sources/tcga.yaml`
 
 ## Model Pipeline Scripts (Ordered)
 ```bash
@@ -77,8 +88,3 @@ Multi-image support:
 - Collation keeps `pathology_*` and `radiology_*` paths as lists per sample.
 - Projectors support tensor inputs shaped `[batch, n_images, dim]` for each modality.
 
-## TRIDENT
-Expected local path:
-- `${project.root_dir}/external/trident`
-
-The adapter in `src/kidney_vlm/pathology/trident_adapter.py` adds this vendored directory to `sys.path` and imports TRIDENT modules if present.
