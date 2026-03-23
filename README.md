@@ -69,17 +69,58 @@ Built-in TCGA source:
 - Script: `scripts/data/01_build_tcga_source.py`
 - Config: `conf/data/sources/tcga.yaml`
 
-## Model Pipeline Scripts (Ordered)
+Built-in PMC-OA CT-only source:
+- Script: `scripts/data/01_build_pmc_oa_source.py`
+- Config: `conf/data/sources/pmc_oa.yaml`
+- Output registry: `data/registry/pmc_oa_ct.parquet`
+- Note: this exception dataset does not write image paths into `data/registry/unified.parquet`; it keeps the CT-only image-caption rows in its own registry parquet instead.
+- Feature extraction for this source is also separate from the main unified pipeline and uses `scripts/model/01_extract_pmc_oa_features.py`.
+
+## Model Pipeline Scripts
+Main unified-dataset pipeline:
 ```bash
 uv run python scripts/model/01_extract_pathology_features.py
 uv run python scripts/model/02_run_segmentation.py
-uv run python scripts/model/03_train_projectors.py
 uv run python scripts/model/04_train_vlm.py
+```
+
+Separate PMC-OA CT projector-pretraining pipeline:
+```bash
+uv run python scripts/model/01_extract_pmc_oa_features.py
+uv run python scripts/model/03_train_projectors.py
+```
+
+PMC-OA projector training notes:
+- Prerequisites:
+  - Build the PMC-OA source first with `scripts/data/01_build_pmc_oa_source.py`.
+  - Extract PMC-OA radiology features first with `scripts/model/01_extract_pmc_oa_features.py`.
+- Script: `scripts/model/03_train_projectors.py`
+- Config: `conf/projector_train/default.yaml`
+- Registry: `data/registry/pmc_oa_ct.parquet`
+- Feature config loaded by the script: `conf/embedding_extraction/radiology/medsiglip_pmc_oa.yaml`
+- Default feature field: `radiology_embedding_paths`
+- Default caption field: `caption_text`
+- Default fallback caption fields: `biomarkers_text`
+- Default splits: `train` / `val`
+- Default output dir: `outputs/train/projectors/pmc_oa_caption`
+- Example override:
+```bash
+uv run python scripts/model/03_train_projectors.py projector_train.max_train_rows=128 projector_train.num_epochs=3
+```
+
+PMC-OA extraction notes:
+- Registry: `data/registry/pmc_oa_ct.parquet`
+- Config: `conf/embedding_extraction/radiology/medsiglip_pmc_oa.yaml`
+- Output features: `data/raw/pmc_oa/features/<image-name>.h5`
+- Registry field updated: `radiology_embedding_paths`
+- Limit a resumable run with:
+```bash
+uv run python scripts/model/01_extract_pmc_oa_features.py embedding_extraction.radiology.max_images=128
 ```
 
 Stage-scoped configs now live under:
 - `conf/qa_genereation/`
-- `conf/embeding_extraction/`
+- `conf/embedding_extraction/`
 - `conf/projector_train/`
 - `conf/vlm_train/`
 
@@ -87,4 +128,3 @@ Multi-image support:
 - Each registry row already supports list-valued path columns.
 - Collation keeps `pathology_*` and `radiology_*` paths as lists per sample.
 - Projectors support tensor inputs shaped `[batch, n_images, dim]` for each modality.
-

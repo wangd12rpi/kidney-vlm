@@ -1,0 +1,43 @@
+data:
+  source:
+    name: pmc_oa
+    pmc_oa:
+      dataset_root: ${data.raw_root}/pmc_oa
+      features_root: ${.dataset_root}/features
+      split_files:
+        train: train.jsonl
+        val: valid.jsonl
+        test: test.jsonl
+      image_dir: images
+      output_registry_path: ${data.registry_root}/pmc_oa_ct.parquet
+      selected_splits:
+        - train
+        - val
+        - test
+      verify_image_paths: true
+      skip_rows_with_missing_images: false
+      skip_invalid_records: true
+      fail_on_missing_split_files: true
+      show_progress: true
+      max_rows_total:
+      max_rows_per_split: {}
+      filters:
+        include_patterns:
+          - '(?i)\b(?:computed|computerized)\s+tomograph(?:y|ic)\b'
+          - '(?i)\bmicro[- ]?ct\b'
+          - '(?i)\bhrct\b'
+          - '(?i)\bcat scan\b'
+          - '(?i)\b(?:axial|coronal|sagittal|contrast(?:-enhanced)?|plain|enhanced|helical|spiral|chest|abdominal?|pelvic|brain|head|neck|thoracic|lung|renal|kidney)\s+ct\b'
+          - '(?i)\bct\s+(?:scan|scans|image|images|guided|guidance|angiograph(?:y|ic)?|urography|urogram|colonography|myelography|slice|slices|findings?|reveals|show(?:ing|s)?|demonstrat(?:es|ing)|before|after)\b'
+        exclude_patterns:
+          - '(?i)\bconnective tissue\s*\(ct\)'
+          - '(?i)\bcytotrophoblast\s*\(ct\)'
+          - '(?i)\bcontrol\s*\(ct\)'
+        ambiguous_modality_patterns:
+          - '(?i)\b(?:light|electron|transmission electron|scanning electron|confocal|fluorescence)\s+microscop(?:y|ic)\b'
+          - '(?i)\b(?:histolog(?:y|ic)|histopatholog(?:y|ic)|immunohistochem(?:istry|ical))\b'
+          - '(?i)\b(?:mri|mr image(?:s)?|mr imaging|magnetic resonance(?: imaging)?)\b'
+          - '(?i)\b(?:pet|positron emission tomography)\b'
+          - '(?i)\b(?:ultrasound|sonograph(?:y|ic)|echograph(?:y|ic))\b'
+          - '(?i)\b(?:radiograph|x-?ray)\b'
+          - '(?i)\b(?:conventional|clinical|gross)\s+photograph(?:y)?\b'

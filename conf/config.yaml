@@ -1,9 +1,9 @@
 defaults:
   - data: global
   - qa_genereation: qa
-  - embeding_extraction/pathology: trident
-  - embeding_extraction/radiology: foundation_placeholder
-  - embeding_extraction/segmentation: pathology_placeholder
+  - embedding_extraction/pathology: trident
+  - embedding_extraction/radiology: foundation_placeholder
+  - embedding_extraction/segmentation: pathology_placeholder
   - projector_train: default
   - vlm_train: medgemma_hf
   - _self_

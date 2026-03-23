@@ -10,6 +10,15 @@
     - `uv run python scripts/data/01_build_tcga_source.py data.source.download.enabled=false`
   - Example full download run:
     - `uv run python scripts/data/01_build_tcga_source.py data.source.download.enabled=true`
+- `scripts/data/01_build_pmc_oa_source.py`
+  - Builds a CT-only PMC-OA image-caption registry from `data/raw/pmc_oa/{train,valid,test}.jsonl`.
+  - Uses caption-based CT matching and drops captions that also mention clearly different modalities (for example microscopy, MRI, PET, ultrasound, or x-ray) to stay conservative.
+  - Keeps image paths repo-relative (for example `data/raw/pmc_oa/images/<file>.jpg`) instead of resolving the `images` symlink target.
+  - Writes the CT slice to a separate registry parquet (`data/registry/pmc_oa_ct.parquet`) and intentionally does not modify `data/registry/unified.parquet`.
+  - Example:
+    - `uv run python scripts/data/01_build_pmc_oa_source.py`
+  - Example small debug run:
+    - `uv run python scripts/data/01_build_pmc_oa_source.py data.source.pmc_oa.max_rows_total=200`
 - `scripts/data/02_print_registry_status.py`
   - Prints per-source database status and checks local existence of referenced binaries in path columns (`*_path`, `*_paths`).
   - Reports missing reference counts and prints one sampled row per source by default.
@@ -26,7 +35,17 @@
   - Example:
     - `uv run python scripts/data/generate_stage1_projector_caption_examples.py --source tcga --examples 3`
 - `scripts/model/01_extract_pathology_features.py`
-  - Checks TRIDENT integration and feature extraction scaffold entrypoint.
+  - Extracts TRIDENT pathology features for the main unified registry (`data/registry/unified.parquet`).
+  - Reads `pathology_wsi_paths` and writes slide/tile outputs back into the unified registry.
+  - This is the main-dataset pathology extractor and does not process the separate PMC-OA pretraining registry.
+- `scripts/model/01_extract_pmc_oa_features.py`
+  - Extracts MedSigLIP CT image features for the PMC-OA pretraining registry (`data/registry/pmc_oa_ct.parquet`).
+  - Saves one HDF5 feature file per image under `data/raw/pmc_oa/features/`, mirroring the image filename/path, and writes repo-relative paths into `radiology_embedding_paths`.
+  - Supports limiting how many new images to extract and skipping images whose canonical feature file already exists.
+  - Example:
+    - `uv run python scripts/model/01_extract_pmc_oa_features.py`
+  - Example small resumable run:
+    - `uv run python scripts/model/01_extract_pmc_oa_features.py embedding_extraction.radiology.max_images=128`
 - `scripts/model/02_run_segmentation.py`
   - Segmentation scaffold entrypoint.
 - `scripts/model/03_train_projectors.py`

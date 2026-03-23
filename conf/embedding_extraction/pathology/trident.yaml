@@ -11,7 +11,7 @@ min_tissue_proportion: 0.0
 batch_limit: 1024
 save_format: h5
 features_root: ${project.root_dir}/data/features
-coords_root: ${embeding_extraction.pathology.features_root}/coords_${.target_magnification}x_${.patch_size}px_${.patch_overlap}px_overlap
+coords_root: ${embedding_extraction.pathology.features_root}/coords_${.target_magnification}x_${.patch_size}px_${.patch_overlap}px_overlap
 overwrite_existing: false
 skip_errors: true
 verbose: true

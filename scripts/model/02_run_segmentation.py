@@ -27,10 +27,10 @@ def load_cfg():
 def main() -> None:
     cfg = load_cfg()
     radiology_cfg = OmegaConf.load(
-        ROOT / "conf" / "embeding_extraction" / "segmentation" / "radiology_placeholder.yaml"
+        ROOT / "conf" / "embedding_extraction" / "segmentation" / "radiology_placeholder.yaml"
     )
     print("Segmentation scaffold ready.")
-    print(f"Pathology segmentation config: {cfg.embeding_extraction.segmentation.pathology.name}")
+    print(f"Pathology segmentation config: {cfg.embedding_extraction.segmentation.pathology.name}")
     print(f"Radiology segmentation config: {radiology_cfg.radiology.name}")
     print(
         "Concrete segmentation model wiring is intentionally deferred. "
