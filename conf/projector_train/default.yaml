@@ -1,3 +1,4 @@
+name: pmc_oa_pretrain
 instantiate_model: true
 always_frozen_prefixes:
   - pathology
@@ -20,9 +21,10 @@ seed: 42
 device: auto
 precision: bfloat16
 log_every_steps: 20
+resume_projector_path:
 output_dir: ${project.root_dir}/outputs/train/projectors/pmc_oa_caption
-registry_path: ${data.source.pmc_oa.output_registry_path}
-dataset_name: ${embedding_extraction.radiology.dataset_name}
+registry_path: ${project.root_dir}/data/registry/pmc_oa_ct.parquet
+dataset_name: patch_features
 feature_field: radiology_embedding_paths
 caption_field: caption_text
 fallback_caption_fields:

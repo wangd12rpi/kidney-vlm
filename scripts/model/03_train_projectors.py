@@ -7,6 +7,7 @@ from pathlib import Path
 
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
+import torch
 
 BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
 SRC = BOOTSTRAP_ROOT / "src"
@@ -27,19 +28,10 @@ os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 def load_cfg(overrides: list[str] | None = None) -> DictConfig:
     conf_dir = ROOT / "conf"
     with initialize_config_dir(version_base=None, config_dir=str(conf_dir)):
-        base_cfg = compose(config_name="config")
+        base_cfg = compose(config_name="config", overrides=overrides or [])
     OmegaConf.set_struct(base_cfg, False)
-
-    source_cfg = OmegaConf.load(conf_dir / "data" / "sources" / "pmc_oa.yaml")
-    radiology_cfg = OmegaConf.create(
-        {"embedding_extraction": {"radiology": OmegaConf.load(conf_dir / "embedding_extraction" / "radiology" / "medsiglip_pmc_oa.yaml")}}
-    )
-    merged = OmegaConf.merge(base_cfg, source_cfg, radiology_cfg)
-    if overrides:
-        merged = OmegaConf.merge(merged, OmegaConf.from_dotlist(overrides))
-    OmegaConf.set_struct(merged, False)
-    merged.project.root_dir = str(ROOT)
-    return merged
+    base_cfg.project.root_dir = str(ROOT)
+    return base_cfg
 
 
 def _optional_int(value) -> int | None:
@@ -49,6 +41,20 @@ def _optional_int(value) -> int | None:
     if not text:
         return None
     return int(text)
+
+
+def _optional_path(value) -> Path | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = (ROOT / path).resolve()
+    else:
+        path = path.resolve()
+    return path
 
 
 def main() -> None:
@@ -61,8 +67,8 @@ def main() -> None:
         registry_path = registry_path.resolve()
     if not registry_path.exists():
         raise FileNotFoundError(
-            f"PMC-OA projector registry not found at '{registry_path}'. "
-            "Build the PMC-OA source and extract H5 features first."
+            f"Projector-training registry not found at '{registry_path}'. "
+            "Build the source registry and extract the configured visual features first."
         )
 
     train_dataset = PMCOACaptionDataset(
@@ -94,7 +100,7 @@ def main() -> None:
 
     if train_dataset.feature_token_count != 1:
         raise ValueError(
-            "PMC-OA projector training expects pooled image features with one token per sample, "
+            "This projector training path expects pooled image features with one token per sample, "
             f"but the dataset reported feature_token_count={train_dataset.feature_token_count}."
         )
 
@@ -106,12 +112,15 @@ def main() -> None:
             f"dataset feature_dim={visual_input_dim}."
         )
 
-    print("Stage 1 PMC-OA projector training")
+    stage_name = str(stage_cfg.get("name", "projector_train")).strip() or "projector_train"
+    print(f"Projector training stage: {stage_name}")
     print(f"Train rows: {len(train_dataset)}")
     if eval_dataset is not None:
         print(f"Val rows: {len(eval_dataset)}")
     print(f"Registry: {registry_path}")
     print(f"Feature dataset: {stage_cfg.dataset_name}")
+    print(f"Feature field: {stage_cfg.feature_field}")
+    print(f"Caption field: {stage_cfg.caption_field}")
     print(f"Inferred visual feature shape: ({train_dataset.feature_token_count}, {visual_input_dim})")
     print(f"Output dir: {stage_cfg.output_dir}")
     print(f"Always frozen prefixes: {list(stage_cfg.always_frozen_prefixes)}")
@@ -133,6 +142,21 @@ def main() -> None:
         gradient_checkpointing=bool(stage_cfg.model.get("gradient_checkpointing", True)),
         use_cache=bool(stage_cfg.model.get("use_cache", False)),
     )
+    resume_projector_path = _optional_path(stage_cfg.get("resume_projector_path"))
+    if resume_projector_path is not None:
+        if not resume_projector_path.exists():
+            raise FileNotFoundError(f"Projector checkpoint not found at '{resume_projector_path}'.")
+        checkpoint = torch.load(resume_projector_path, map_location="cpu")
+        projector_state_dict = checkpoint.get("projector_state_dict")
+        if projector_state_dict is None:
+            raise KeyError(
+                f"Checkpoint '{resume_projector_path}' does not contain 'projector_state_dict'."
+            )
+        model.projector.load_state_dict(projector_state_dict)
+        checkpoint_metadata = checkpoint.get("metadata") or {}
+        print(f"Loaded projector checkpoint: {resume_projector_path}")
+        if checkpoint_metadata:
+            print(f"Checkpoint metadata: {checkpoint_metadata}")
     apply_training_stage(
         model,
         stage="projectors",

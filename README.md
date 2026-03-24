@@ -5,7 +5,7 @@ This repository provides a clean starting point for kidney multimodal research w
 - Parquet source-of-truth registry (`pandas`)
 - Hugging Face Datasets ingestion for training
 - Pathology TRIDENT integration scaffold
-- Two-stage training scaffold: projector training then VLM training
+- Three-stage training structure: PMC-OA projector pretraining, TCGA caption-stage projector tuning, then Qwen LoRA instruction tuning
 
 ## Layout
 - `conf/`: runtime, data, and model configs.
@@ -76,55 +76,124 @@ Built-in PMC-OA CT-only source:
 - Note: this exception dataset does not write image paths into `data/registry/unified.parquet`; it keeps the CT-only image-caption rows in its own registry parquet instead.
 - Feature extraction for this source is also separate from the main unified pipeline and uses `scripts/model/01_extract_pmc_oa_features.py`.
 
-## Model Pipeline Scripts
-Main unified-dataset pipeline:
+## Parquet Files
+Main source registries:
+- `data/registry/unified.parquet`
+  - Main shared registry for the TCGA and future main-pipeline datasets.
+  - Source builders replace only their own `source` slice in this file.
+  - Feature extraction writes paths such as `pathology_tile_embedding_paths`, `pathology_slide_embedding_paths`, and future radiology feature paths back into this registry.
+- `data/registry/pmc_oa_ct.parquet`
+  - Separate exception registry for the PMC-OA CT caption pretraining dataset.
+  - This file is intentionally not merged into `data/registry/unified.parquet`.
+  - MedSigLIP feature extraction writes `radiology_embedding_paths` back into this registry.
+
+Derived training parquets:
+- `data/qa/projector_train_qa.parquet`
+  - Specialized caption-training parquet derived from the TCGA rows in `data/registry/unified.parquet`.
+  - Used for the caption-stage projector training.
+- `data/qa/vlm_instruct_qa.parquet`
+  - Specialized instruction-tuning parquet derived from `data/qa/projector_train_qa.parquet`.
+  - Used for the final VQA/MCQ-style instruction fine-tuning stage.
+
+## Data Preparation Workflow
+Target order:
+1. Build the source registry.
+2. Extract image features and write feature paths back into the relevant registry parquet.
+3. Run segmentation if needed.
+
+Notes:
+- Segmentation is optional and is not required for the current pretraining datasets.
+- Feature extraction is dataset-specific:
+  - PMC-OA radiology pretraining uses MedSigLIP features.
+  - TCGA pathology training uses TRIDENT pathology features.
+
+Concrete data-prep commands currently in the repo:
+
+TCGA / main-pipeline data:
 ```bash
-uv run python scripts/model/01_extract_pathology_features.py
+uv run python scripts/data/01_build_tcga_source.py
+uv run python scripts/model/01_extract_pathology_features.py embedding_extraction/pathology=trident_slide
+# optional / scaffold
 uv run python scripts/model/02_run_segmentation.py
-uv run python scripts/model/04_train_vlm.py
 ```
 
-Separate PMC-OA CT projector-pretraining pipeline:
+PMC-OA radiology pretraining data:
 ```bash
+uv run python scripts/data/01_build_pmc_oa_source.py
 uv run python scripts/model/01_extract_pmc_oa_features.py
+```
+
+## Training Workflow
+Target order:
+1. Pretrain the radiology projector on PMC-OA.
+2. Pretrain the pathology projector on its pathology pretraining dataset.
+   - The order of steps 1 and 2 does not matter.
+3. Train both projectors jointly on the specialized caption dataset.
+4. Run instruction fine-tuning on the specialized VQA / MCQ dataset.
+
+Current repo mapping:
+- `conf/projector_train/default.yaml`
+  - PMC-OA radiology-projector pretraining on CT captions.
+- `conf/projector_train/tcga_caption.yaml`
+  - Caption-stage projector tuning on the specialized TCGA caption parquet.
+- `conf/vlm_train/qwen_lora.yaml`
+  - Final Qwen LoRA instruction-tuning scaffold.
+
+Concrete training commands currently available:
+
+PMC-OA radiology-projector pretraining:
+```bash
 uv run python scripts/model/03_train_projectors.py
 ```
 
-PMC-OA projector training notes:
-- Prerequisites:
-  - Build the PMC-OA source first with `scripts/data/01_build_pmc_oa_source.py`.
-  - Extract PMC-OA radiology features first with `scripts/model/01_extract_pmc_oa_features.py`.
-- Script: `scripts/model/03_train_projectors.py`
-- Config: `conf/projector_train/default.yaml`
-- Registry: `data/registry/pmc_oa_ct.parquet`
-- Feature config loaded by the script: `conf/embedding_extraction/radiology/medsiglip_pmc_oa.yaml`
-- Default feature field: `radiology_embedding_paths`
-- Default caption field: `caption_text`
-- Default fallback caption fields: `biomarkers_text`
-- Default splits: `train` / `val`
-- Default output dir: `outputs/train/projectors/pmc_oa_caption`
-- Example override:
+TCGA caption-stage projector tuning:
 ```bash
-uv run python scripts/model/03_train_projectors.py projector_train.max_train_rows=128 projector_train.num_epochs=3
+uv run python scripts/qa/01_gen_projector_train_qa.py qa_genereation=tcga_caption
+uv run python scripts/model/03_train_projectors.py projector_train=tcga_caption
 ```
 
-PMC-OA extraction notes:
-- Registry: `data/registry/pmc_oa_ct.parquet`
-- Config: `conf/embedding_extraction/radiology/medsiglip_pmc_oa.yaml`
-- Output features: `data/raw/pmc_oa/features/<image-name>.h5`
-- Registry field updated: `radiology_embedding_paths`
-- Limit a resumable run with:
+Qwen LoRA instruction-tuning stage:
 ```bash
-uv run python scripts/model/01_extract_pmc_oa_features.py embedding_extraction.radiology.max_images=128
+uv run python scripts/qa/01_gen_projector_train_qa.py qa_genereation=tcga_instruct
+uv run python scripts/model/04_train_vlm.py
 ```
 
-Stage-scoped configs now live under:
+Current implementation status:
+- The PMC-OA radiology-projector pretraining path is implemented.
+- The specialized TCGA caption dataset generation path is implemented.
+- The specialized instruct dataset generation path is implemented and is built from the caption parquet.
+- A dedicated pathology-only projector pretraining pipeline is not yet a separate first-class entrypoint in the repo.
+- A true joint two-projector caption trainer is not yet wired end to end.
+- The final Qwen LoRA multimodal trainer is still a scaffold entrypoint.
+
+## Side Dataset-Creation Pipeline
+This is the separate dataset-construction path used to create the specialized supervision sets:
+
+1. Create the specialized caption dataset from TCGA:
+```bash
+uv run python scripts/qa/01_gen_projector_train_qa.py qa_genereation=tcga_caption
+```
+
+2. Create the specialized instruct dataset from the TCGA caption dataset:
+```bash
+uv run python scripts/qa/01_gen_projector_train_qa.py qa_genereation=tcga_instruct
+```
+
+Config groups used by these workflows:
 - `conf/qa_genereation/`
 - `conf/embedding_extraction/`
 - `conf/projector_train/`
 - `conf/vlm_train/`
 
+Useful configs:
+- `conf/embedding_extraction/pathology/trident.yaml`
+  - Main pathology extractor preset.
+- `conf/embedding_extraction/pathology/trident_slide.yaml`
+  - Pathology extraction preset that writes slide embeddings needed by the caption and instruct stages.
+- `conf/embedding_extraction/radiology/medsiglip_pmc_oa.yaml`
+  - PMC-OA MedSigLIP radiology extractor preset.
+
 Multi-image support:
-- Each registry row already supports list-valued path columns.
+- Each registry row supports list-valued path columns.
 - Collation keeps `pathology_*` and `radiology_*` paths as lists per sample.
 - Projectors support tensor inputs shaped `[batch, n_images, dim]` for each modality.

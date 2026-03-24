@@ -5,7 +5,7 @@ defaults:
   - embedding_extraction/radiology: foundation_placeholder
   - embedding_extraction/segmentation: pathology_placeholder
   - projector_train: default
-  - vlm_train: medgemma_hf
+  - vlm_train: qwen_lora
   - _self_
 
 project:

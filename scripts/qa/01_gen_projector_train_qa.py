@@ -24,9 +24,9 @@ ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 
 
-def load_cfg():
+def load_cfg(overrides: list[str] | None = None):
     with initialize_config_dir(version_base=None, config_dir=str(ROOT / "conf")):
-        cfg = compose(config_name="config")
+        cfg = compose(config_name="config", overrides=overrides or [])
     OmegaConf.set_struct(cfg, False)
     return cfg
 
@@ -178,7 +178,7 @@ def _generate_caption(
 
 
 def main() -> None:
-    cfg = load_cfg()
+    cfg = load_cfg(overrides=sys.argv[1:])
     qa_cfg = cfg.qa_genereation
 
     registry_path = Path(str(qa_cfg.source_registry_path)).expanduser()
@@ -241,7 +241,7 @@ def main() -> None:
     print_first_n = int(qa_cfg.print_first_n)
 
     generated_rows: list[dict[str, Any]] = []
-    loop = tqdm(rows_to_process, total=len(rows_to_process), desc="Generating projector QA captions")
+    loop = tqdm(rows_to_process, total=len(rows_to_process), desc="Generating derived supervision rows")
     for idx, row in enumerate(loop, start=1):
         sample_id = str(row.get("sample_id", "")).strip()
         report_paths_raw = _as_list(row.get("report_pdf_paths"))
@@ -294,6 +294,10 @@ def main() -> None:
             "answer": caption,
             "caption_model": str(azure_cfg.deployment),
         }
+        for field_name in metadata_fields:
+            if field_name in qa_row:
+                continue
+            qa_row[field_name] = row.get(field_name)
         generated_rows.append(qa_row)
 
         if idx <= print_first_n:

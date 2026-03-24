@@ -21,6 +21,7 @@ def test_projector_caption_collator_pads_features_and_targets() -> None:
         prompt_text="caption this ct",
         prompt_max_length=8,
         target_max_length=6,
+        use_chatml=False,
     )
     batch = collator(
         [
