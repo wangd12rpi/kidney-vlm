@@ -1,0 +1,67 @@
+name: tcga_caption
+instantiate_model: true
+always_frozen_prefixes:
+  - pathology
+  - radiology
+  - segmentation
+projector_prefixes:
+  - projector
+  - projectors
+batch_size: 1
+eval_batch_size: 4
+num_epochs: 2
+learning_rate: 5e-4
+weight_decay: 0.0
+gradient_accumulation_steps: 16
+max_grad_norm: 1.0
+warmup_ratio: 0.03
+warmup_steps: 0
+num_workers: 4
+seed: 42
+device: auto
+precision: bfloat16
+log_every_steps: 20
+resume_projector_path: ${project.root_dir}/outputs/train/projectors/pmc_oa_caption/last/projector.pt
+output_dir: ${project.root_dir}/outputs/train/projectors/tcga_caption
+registry_path: ${project.root_dir}/data/qa/projector_train_qa.parquet
+dataset_name: features
+feature_field: pathology_slide_embedding_paths
+caption_field: answer
+fallback_caption_fields:
+  - caption
+train_split: train
+val_split: val
+test_split:
+max_train_rows:
+max_val_rows:
+max_eval_batches:
+max_train_batches_per_epoch:
+prompt_text: Describe the pathology slide in a concise, medically grounded caption.
+system_text: You are a medical pathology captioning assistant.
+use_chatml: true
+prompt_max_length: 128
+target_max_length: 384
+prepend_bos_token: true
+append_eos_token: true
+
+wandb:
+  enabled: true
+  project: kidney-vlm-projectors
+  entity:
+  name:
+  group: tcga_caption
+  job_type: finetune_projector
+  mode: online
+  tags:
+    - tcga
+    - projector
+    - caption
+    - finetune
+
+model:
+  llm_model_name_or_path: Qwen/Qwen3.5-9B-Base
+  llm_dtype: bfloat16
+  freeze_llm: true
+  gradient_checkpointing: true
+  use_cache: false
+  trust_remote_code: true

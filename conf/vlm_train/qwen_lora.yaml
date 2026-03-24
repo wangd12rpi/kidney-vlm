@@ -1,0 +1,46 @@
+name: qwen_lora
+model_family: qwen
+model_name_or_path: Qwen/Qwen3.5-9B-Instruct
+trust_remote_code: true
+instantiate_model: false
+registry_path: ${project.root_dir}/data/qa/vlm_instruct_qa.parquet
+feature_field: pathology_slide_embedding_paths
+question_field: question
+answer_field: answer
+always_frozen_prefixes:
+  - pathology
+  - radiology
+  - segmentation
+projector_prefixes:
+  - projector
+  - projectors
+batch_size: 1
+eval_batch_size: 1
+num_epochs: 1
+learning_rate: 2e-5
+weight_decay: 0.0
+gradient_accumulation_steps: 16
+warmup_ratio: 0.03
+warmup_steps: 0
+logging_steps: 10
+save_steps: 100
+eval_steps: 100
+output_dir: ${project.root_dir}/outputs/train/vlm/qwen_lora
+freeze_projectors: false
+load_projector_path: ${project.root_dir}/outputs/train/projectors/tcga_caption/last/projector.pt
+report_to: []
+
+lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  bias: none
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj

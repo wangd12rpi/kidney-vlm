@@ -1,0 +1,3 @@
+defaults:
+  - projecter_train_qa
+  - _self_

@@ -1,0 +1,41 @@
+task: tcga_instruct_qa
+
+source_registry_path: ${project.root_dir}/data/qa/projector_train_qa.parquet
+output_parquet_path: ${project.root_dir}/data/qa/vlm_instruct_qa.parquet
+overwrite_output: false
+
+require_pathology: false
+first_n:
+print_first_n: 2
+
+instruction: >-
+  You are given kidney cancer pathology metadata and report text. Answer the user request
+  using concise, clinically grounded language.
+system_prompt: >-
+  You are a multimodal kidney pathology assistant preparing supervised instruction-tuning data.
+  Produce a single direct answer to the user instruction using only the provided metadata and
+  report evidence. If the report is insufficient, say so briefly instead of hallucinating.
+metadata_fields:
+  - project_id
+  - disease_type
+  - primary_diagnosis
+  - tumor_grade
+  - tumor_stage
+  - ajcc_pathologic_stage
+  - ajcc_pathologic_t
+  - ajcc_pathologic_n
+  - ajcc_pathologic_m
+  - kidney_histology_subtype
+  - biomarkers_text
+max_reports_per_sample: 1
+report_max_pages:
+report_text_max_chars: 12000
+
+azure_openai:
+  endpoint: ${oc.env:AZURE_OPENAI_ENDPOINT,https://azure-openai-radi.cognitiveservices.azure.com/}
+  deployment: ${oc.env:AZURE_OPENAI_DEPLOYMENT,gpt-5.1}
+  api_version: ${oc.env:AZURE_OPENAI_API_VERSION,2024-12-01-preview}
+  api_key_env: AZURE_OPENAI_API_KEY
+  max_completion_tokens: 1800
+  max_retries: 3
+  retry_sleep_seconds: 2.0
