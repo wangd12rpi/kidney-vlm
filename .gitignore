@@ -24,3 +24,6 @@ outputs/
 
 data/features
 data/registry/*
+
+*.log
+scripts/model/wandb

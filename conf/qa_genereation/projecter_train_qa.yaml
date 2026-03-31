@@ -7,7 +7,12 @@ overwrite_output: false
 
 # Selection/debug
 require_pathology: false
-first_n: 2
+allowed_project_ids:
+  - TCGA-KIRC
+  - TCGA-KIRP
+require_patch_embeddings: true
+require_existing_patch_embedding_files: true
+first_n:
 print_first_n: 2
 
 # Prompting
@@ -15,7 +20,7 @@ instruction: "Describe the pathology image."
 system_prompt: >-
   You are a medical pathology captioning assistant. Given metadata and pathology report text,
   write one highly detailed pathology image caption suitable for vision-language projector training.
-  Output exactly one caption (single paragraph) with 8-12 sentences and approximately 160-260 words.
+  Output exactly one caption (single paragraph) with 4-8 sentences and approximately 80-140 words.
   Include detailed morphology: tissue context, dominant architecture, cytologic appearance, nuclear features,
   stromal/background findings, necrosis/hemorrhage/inflammation if present, and a concise diagnostic synthesis.
   Stay factual and grounded in the provided information, do not mention metadata or reports, and do not use bullet points.

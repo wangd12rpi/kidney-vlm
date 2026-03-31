@@ -1,4 +1,27 @@
-instantiate_model: false
+instantiate_model: true
+model_name_or_path: Qwen/Qwen3.5-9B
+trust_remote_code: true
+qa_parquet_path: ${project.root_dir}/data/qa/projector_train_qa.parquet
+pathology_embedding_dim: 768
+batch_size: 1
+num_epochs: 15
+learning_rate: 5e-4
+weight_decay: 0.01
+gradient_accumulation_steps: 4
+grad_clip_norm: 1.0
+max_patch_tokens: 1024
+max_text_length: 1024
+dataloader_num_workers: 0
+device: cuda:0
+torch_dtype: bfloat16
+autocast_dtype: bfloat16
+attn_implementation:
+gradient_checkpointing: true
+seed: 42
+max_train_samples:
+validation_fraction: 0.05
+save_every_epoch: false
+save_name: pathology_projector.pt
 always_frozen_prefixes:
   - pathology
   - radiology
@@ -6,7 +29,14 @@ always_frozen_prefixes:
 projector_prefixes:
   - projector
   - projectors
-batch_size: 4
-num_epochs: 1
-learning_rate: 1e-3
 output_dir: ${project.root_dir}/outputs/train/projectors
+wandb:
+  enabled: true
+  project: kidney-vlm
+  entity:
+  run_name: projector_stage1_qwen3_9b
+  mode: online
+  tags:
+    - projector
+    - pathology
+    - qwen

@@ -65,6 +65,20 @@ def _to_prompt_value(value: Any) -> str:
     return str(value).strip()
 
 
+def _existing_local_relative_paths(value: Any) -> list[str]:
+    existing_paths: list[str] = []
+    for raw_path in _as_list(value):
+        local_path = _normalize_local_path(raw_path)
+        if not local_path.exists():
+            continue
+        try:
+            relative_path = local_path.relative_to(ROOT).as_posix()
+        except ValueError:
+            relative_path = local_path.as_posix()
+        existing_paths.append(relative_path)
+    return existing_paths
+
+
 def _extract_pdf_text(pdf_path: Path, max_chars: int, max_pages: int | None) -> str:
     try:
         from pypdf import PdfReader
@@ -200,6 +214,16 @@ def main() -> None:
     if bool(qa_cfg.require_pathology) and "pathology_wsi_paths" in registry_df.columns:
         registry_df = registry_df[registry_df["pathology_wsi_paths"].map(lambda v: len(_as_list(v)) > 0)]
 
+    allowed_project_ids = [str(value).strip() for value in qa_cfg.get("allowed_project_ids", []) if str(value).strip()]
+    if allowed_project_ids and "project_id" in registry_df.columns:
+        registry_df = registry_df[registry_df["project_id"].isin(allowed_project_ids)]
+
+    if bool(qa_cfg.get("require_patch_embeddings", False)) and "pathology_tile_embedding_paths" in registry_df.columns:
+        registry_df = registry_df[registry_df["pathology_tile_embedding_paths"].map(lambda v: len(_as_list(v)) > 0)]
+
+    if bool(qa_cfg.get("require_existing_patch_embedding_files", False)) and "pathology_tile_embedding_paths" in registry_df.columns:
+        registry_df = registry_df[registry_df["pathology_tile_embedding_paths"].map(lambda v: len(_existing_local_relative_paths(v)) > 0)]
+
     first_n = qa_cfg.get("first_n")
     if first_n is not None and str(first_n).strip():
         registry_df = registry_df.head(int(first_n))
@@ -281,12 +305,13 @@ def main() -> None:
         qa_row = {
             "sample_id": sample_id,
             "source": str(row.get("source", "")),
+            "project_id": str(row.get("project_id", "")),
             "patient_id": str(row.get("patient_id", "")),
             "study_id": str(row.get("study_id", "")),
             "split": str(row.get("split", "")),
-            "pathology_wsi_paths": _as_list(row.get("pathology_wsi_paths")),
-            "pathology_tile_embedding_paths": _as_list(row.get("pathology_tile_embedding_paths")),
-            "pathology_slide_embedding_paths": _as_list(row.get("pathology_slide_embedding_paths")),
+            "pathology_wsi_paths": _existing_local_relative_paths(row.get("pathology_wsi_paths")),
+            "pathology_tile_embedding_paths": _existing_local_relative_paths(row.get("pathology_tile_embedding_paths")),
+            "pathology_slide_embedding_paths": _existing_local_relative_paths(row.get("pathology_slide_embedding_paths")),
             "report_pdf_paths": [str(path) for path in report_paths],
             "instruction": instruction_text,
             "question": instruction_text,

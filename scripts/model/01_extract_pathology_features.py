@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -87,6 +88,87 @@ def _local_wsi_paths(value: Any) -> list[str]:
         seen.add(normalized)
         paths.append(normalized)
     return paths
+
+
+def _tcga_sample_type_code(slide_stem: str) -> str:
+    match = re.search(r"-([0-9]{2}[A-Z])-[0-9]{2}-", str(slide_stem).upper())
+    if match is None:
+        return ""
+    return str(match.group(1))
+
+
+def _is_normal_tcga_slide(slide_stem: str) -> bool:
+    sample_type_code = _tcga_sample_type_code(slide_stem)
+    return sample_type_code.startswith("11")
+
+
+def _slide_kind_rank(slide_stem: str) -> int:
+    upper_stem = str(slide_stem).upper()
+    if "-DX" in upper_stem:
+        return 0
+    if "-TS" in upper_stem:
+        return 1
+    return 2
+
+
+def _existing_patch_count_for_slide(
+    slide_stem: str,
+    *,
+    patch_features_dir: Path,
+    coords_root: Path,
+    save_format: str,
+) -> int | None:
+    patch_features_path = patch_features_dir / f"{slide_stem}.{save_format}"
+    coords_path = coords_root / "patches" / f"{slide_stem}_patches.h5"
+
+    patch_ready = _is_valid_patch_features(patch_features_path) if save_format == "h5" else _is_valid_patch_tensor(patch_features_path)
+    if not patch_ready:
+        return None
+
+    return _read_patch_count(coords_path, patch_features_path, save_format)
+
+
+def _select_case_wsi_paths(
+    case_wsi_paths: list[str],
+    *,
+    patch_features_dir: Path,
+    coords_root: Path,
+    save_format: str,
+) -> list[str]:
+    if not case_wsi_paths:
+        return []
+
+    ranked_paths: list[tuple[tuple[Any, ...], str]] = []
+    for normalized_wsi_path in case_wsi_paths:
+        slide_path = Path(normalized_wsi_path)
+        slide_stem = slide_path.stem
+        existing_patch_count = _existing_patch_count_for_slide(
+            slide_stem,
+            patch_features_dir=patch_features_dir,
+            coords_root=coords_root,
+            save_format=save_format,
+        )
+        sort_key = (
+            1 if _is_normal_tcga_slide(slide_stem) else 0,
+            _slide_kind_rank(slide_stem),
+            0 if existing_patch_count is not None else 1,
+            -(existing_patch_count or 0),
+            slide_path.name.upper(),
+        )
+        ranked_paths.append((sort_key, normalized_wsi_path))
+
+    ranked_paths.sort(key=lambda item: item[0])
+    return [ranked_paths[0][1]]
+
+
+def _filter_existing_embedding_paths(paths: list[str], selected_slide_stem: str | None) -> list[str]:
+    if not selected_slide_stem:
+        return paths
+    filtered_paths: list[str] = []
+    for path_value in paths:
+        if Path(str(path_value)).stem == selected_slide_stem:
+            filtered_paths.append(str(path_value))
+    return filtered_paths
 
 
 def _is_valid_h5(path: Path, required_keys: tuple[str, ...]) -> bool:
@@ -246,7 +328,18 @@ def main() -> None:
     else:
         coords_root = coords_root.resolve()
 
-    total_wsi_refs = sum(len(_local_wsi_paths(value)) for value in registry_df.get("pathology_wsi_paths", []))
+    total_wsi_refs = 0
+    for row_idx in registry_df.index.tolist():
+        row = registry_df.loc[row_idx]
+        case_wsi_paths = _local_wsi_paths(row.get("pathology_wsi_paths"))
+        selected_case_wsi_paths = _select_case_wsi_paths(
+            case_wsi_paths,
+            patch_features_dir=patch_features_dir,
+            coords_root=coords_root,
+            save_format=save_format,
+        )
+        total_wsi_refs += len(selected_case_wsi_paths)
+
     if total_wsi_refs == 0:
         print("No local pathology_wsi_paths found in registry. Nothing to extract.")
         return
@@ -293,13 +386,20 @@ def main() -> None:
     for row_idx in case_loop:
         row = registry_df.loc[row_idx]
         case_wsi_paths = _local_wsi_paths(row.get("pathology_wsi_paths"))
+        selected_case_wsi_paths = _select_case_wsi_paths(
+            case_wsi_paths,
+            patch_features_dir=patch_features_dir,
+            coords_root=coords_root,
+            save_format=save_format,
+        )
         case_tile_paths: list[str] = []
         case_patch_counts: list[int] = []
         case_slide_paths: list[str] = []
         seen_tile: set[str] = set()
         seen_slide: set[str] = set()
+        selected_slide_stem = Path(selected_case_wsi_paths[0]).stem if selected_case_wsi_paths else None
 
-        for normalized_wsi_path in case_wsi_paths:
+        for normalized_wsi_path in selected_case_wsi_paths:
             slide_path = Path(normalized_wsi_path)
             slide_stem = slide_path.stem
 
@@ -419,10 +519,13 @@ def main() -> None:
                     seen_slide.add(slide_emb_path)
 
         if extract_patch_only:
-            final_case_slide_paths = [
+            final_case_slide_paths = _filter_existing_embedding_paths(
+                [
                 _to_registry_relative_path(path_value)
                 for path_value in _as_list(registry_df.at[row_idx, "pathology_slide_embedding_paths"])
-            ]
+                ],
+                selected_slide_stem,
+            )
         else:
             final_case_slide_paths = case_slide_paths
 
