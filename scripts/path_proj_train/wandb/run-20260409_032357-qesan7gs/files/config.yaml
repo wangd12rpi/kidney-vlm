@@ -1,0 +1,154 @@
+_wandb:
+    value:
+        cli_version: 0.25.1
+        e:
+            69c55az3m9n6nb3la05kyijv6fskfqkq:
+                codePath: scripts/path_proj_train/04_train_path_projectors.py
+                codePathLocal: 04_train_path_projectors.py
+                cpu_count: 40
+                cpu_count_logical: 40
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "830970236928"
+                        used: "690566504448"
+                email: d0nnw0n9@gmail.com
+                executable: /home/exouser/kidney-vlm/.venv/bin/python
+                git:
+                    commit: e90435a0f6e7e05a4e6b28a51b774e65a31db3d2
+                    remote: https://github.com/wangd12rpi/kidney-vlm
+                gpu: NVIDIA H100 80GB HBM3
+                gpu_count: 2
+                gpu_nvidia:
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H100 80GB HBM3
+                      uuid: GPU-6139046a-b005-8fe5-a837-f8270472ab72
+                    - architecture: Hopper
+                      cudaCores: 16896
+                      memoryTotal: "85520809984"
+                      name: NVIDIA H100 80GB HBM3
+                      uuid: GPU-7a133173-7046-3ed9-121c-91b917b7f441
+                host: kidney-vlm
+                memory:
+                    total: "495109369856"
+                os: Linux-6.17.0-19-generic-x86_64-with-glibc2.39
+                program: /home/exouser/kidney-vlm/scripts/path_proj_train/04_train_path_projectors.py
+                python: CPython 3.12.3
+                root: /home/exouser/kidney-vlm/scripts/path_proj_train
+                startedAt: "2026-04-09T03:23:57.867697Z"
+                writerId: 69c55az3m9n6nb3la05kyijv6fskfqkq
+        m: []
+        python_version: 3.12.3
+        t:
+            "1":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 50
+            "2":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 50
+            "3":
+                - 2
+                - 15
+                - 16
+                - 61
+            "4": 3.12.3
+            "5": 0.25.1
+            "6": 5.2.0
+            "12": 0.25.1
+            "13": linux-x86_64
+always_frozen_prefixes:
+    value:
+        - pathology
+        - radiology
+        - segmentation
+attn_implementation:
+    value: null
+autocast_dtype:
+    value: bfloat16
+batch_size:
+    value: 4
+dataloader_num_workers:
+    value: 0
+device:
+    value: cuda:0
+grad_clip_norm:
+    value: 1
+gradient_accumulation_steps:
+    value: 8
+gradient_checkpointing:
+    value: true
+instantiate_model:
+    value: true
+learning_rate:
+    value: 5e-05
+lr_scheduler_type:
+    value: cosine
+max_patch_tokens:
+    value: 1024
+max_text_length:
+    value: 1024
+max_train_samples:
+    value: null
+modality_tag:
+    value: path
+model_name_or_path:
+    value: Qwen/Qwen3.5-9B
+num_epochs:
+    value: 10
+output_dir:
+    value: /home/exouser/kidney-vlm/outputs/train/path_projectors
+patch_token_dropout_prob:
+    value: 0.1
+pathology_embedding_dim:
+    value: 768
+projector_depth:
+    value: 2
+projector_dropout:
+    value: 0.1
+projector_mlp_ratio:
+    value: 4
+projector_num_heads:
+    value: 8
+projector_num_latents:
+    value: 256
+projector_prefixes:
+    value:
+        - projector
+        - projectors
+projector_type:
+    value: resampler
+qa_parquet_path:
+    value: /home/exouser/kidney-vlm/data/path_proj_train/path_proj_train_qa.parquet
+seed:
+    value: 42
+torch_dtype:
+    value: bfloat16
+trust_remote_code:
+    value: true
+validation_fraction:
+    value: 0.05
+wandb:
+    value:
+        enabled: true
+        entity: null
+        mode: online
+        project: kidney-vlm
+        run_name: path_projector_stage1_qwen3_9b
+        tags:
+            - path_projector
+            - pathology
+            - qwen
+warmup_ratio:
+    value: 0.05
+warmup_steps:
+    value: null
+weight_decay:
+    value: 0.01

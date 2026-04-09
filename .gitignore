@@ -27,3 +27,5 @@ data/registry/*
 
 *.log
 scripts/model/wandb
+
+wandb*.json

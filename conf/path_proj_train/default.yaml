@@ -1,0 +1,58 @@
+instantiate_model: true
+modality_tag: path
+model_name_or_path: Qwen/Qwen3.5-9B
+trust_remote_code: true
+qa_parquet_path: ${project.root_dir}/data/path_proj_train/path_proj_train_qa.parquet
+pathology_embedding_dim: 768
+
+# Path projector preset A: simple MLP baseline
+# projector_type: mlp
+# projector_dropout: 0.05
+
+# Path projector preset B: Perceiver-style resampler
+projector_type: resampler
+projector_num_latents: 256
+projector_depth: 2
+projector_num_heads: 8
+projector_mlp_ratio: 4.0
+projector_dropout: 0.1
+
+batch_size: 4
+num_epochs: 10
+learning_rate: 5e-5
+weight_decay: 0.01
+gradient_accumulation_steps: 8
+grad_clip_norm: 1.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.05
+warmup_steps:
+max_patch_tokens: 1024
+patch_token_dropout_prob: 0.10
+max_text_length: 1024
+dataloader_num_workers: 0
+device: cuda:0
+torch_dtype: bfloat16
+autocast_dtype: bfloat16
+attn_implementation:
+gradient_checkpointing: true
+seed: 42
+max_train_samples:
+validation_fraction: 0.05
+always_frozen_prefixes:
+  - pathology
+  - radiology
+  - segmentation
+projector_prefixes:
+  - projector
+  - projectors
+output_dir: ${project.root_dir}/outputs/train/path_projectors
+wandb:
+  enabled: true
+  project: kidney-vlm
+  entity:
+  run_name: path_projector_stage1_qwen3_9b
+  mode: online
+  tags:
+    - path_projector
+    - pathology
+    - qwen

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from kidney_vlm.data.sources.tcga import assign_split, build_tcga_registry_rows
+from kidney_vlm.data.sources.tcga import APIQueryError, TCIAClient, assign_split, build_tcga_registry_rows
 
 
 def test_build_tcga_registry_rows_multimodal_lists() -> None:
@@ -195,6 +195,49 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
     assert bool(row2["task_survival_event"]) is True
 
 
+def test_build_tcga_registry_rows_keeps_all_tcga_slide_kinds() -> None:
+    frame = build_tcga_registry_rows(
+        cases=[
+            {
+                "case_id": "case-slide-kinds",
+                "submitter_id": "TCGA-EE-0005",
+                "project": {"project_id": "TCGA-KIRC"},
+                "diagnoses": [{}],
+                "demographic": {},
+            }
+        ],
+        pathology_files=[
+            {
+                "file_id": "dx",
+                "file_name": "TCGA-EE-0005-01Z-00-DX1.svs",
+                "cases": [{"case_id": "case-slide-kinds", "submitter_id": "TCGA-EE-0005", "project": {"project_id": "TCGA-KIRC"}}],
+            },
+            {
+                "file_id": "ts",
+                "file_name": "TCGA-EE-0005-01Z-00-TS1.svs",
+                "cases": [{"case_id": "case-slide-kinds", "submitter_id": "TCGA-EE-0005", "project": {"project_id": "TCGA-KIRC"}}],
+            },
+            {
+                "file_id": "bs",
+                "file_name": "TCGA-EE-0005-01Z-00-BS1.svs",
+                "cases": [{"case_id": "case-slide-kinds", "submitter_id": "TCGA-EE-0005", "project": {"project_id": "TCGA-KIRC"}}],
+            },
+        ],
+        tcia_studies_by_patient={},
+        raw_root=Path("/tmp/raw"),
+        source_name="tcga",
+        split_ratios={"train": 1.0},
+    )
+
+    row = frame.iloc[0]
+    slide_names = {Path(path).name for path in row["pathology_wsi_paths"]}
+    assert slide_names == {
+        "TCGA-EE-0005-01Z-00-DX1.svs",
+        "TCGA-EE-0005-01Z-00-TS1.svs",
+        "TCGA-EE-0005-01Z-00-BS1.svs",
+    }
+
+
 def test_assign_split_is_deterministic() -> None:
     split_1 = assign_split("TCGA-AA-0001", {"train": 0.9, "test": 0.1})
     split_2 = assign_split("TCGA-AA-0001", {"train": 0.9, "test": 0.1})
@@ -244,3 +287,28 @@ def test_mutation_flags_are_null_when_mutation_query_unavailable() -> None:
     )
     row = frame.iloc[0]
     assert pd.isna(row["has_mutation_vhl"])
+
+
+def test_tcia_fetch_studies_by_patient_skips_bad_collection(monkeypatch) -> None:
+    client = TCIAClient()
+
+    def fake_fetch_patient_studies(collection: str, max_studies: int | None = None):
+        if collection == "TCGA-BAD":
+            raise APIQueryError("non-json response")
+        return [
+            {
+                "PatientID": "TCGA-AA-0001",
+                "StudyInstanceUID": "1.2.3",
+                "StudyDate": "2020-01-01",
+            }
+        ]
+
+    monkeypatch.setattr(client, "fetch_patient_studies", fake_fetch_patient_studies)
+
+    studies_by_patient = client.fetch_studies_by_patient(
+        collections=["TCGA-BAD", "TCGA-KIRC"],
+        max_studies_per_collection=None,
+    )
+
+    assert set(studies_by_patient) == {"TCGA-AA-0001"}
+    assert studies_by_patient["TCGA-AA-0001"][0]["collection"] == "TCGA-KIRC"

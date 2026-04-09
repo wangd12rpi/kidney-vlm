@@ -45,6 +45,10 @@ DEFAULT_CASE_FIELDS = [
     "demographic.year_of_birth",
 ]
 
+DEFAULT_PROJECT_FIELDS = [
+    "project_id",
+]
+
 DEFAULT_PATHOLOGY_FILE_FIELDS = [
     "file_id",
     "file_name",
@@ -170,6 +174,27 @@ class GDCClient:
         }
         return self._post_hits("cases", payload, max_records=max_cases)
 
+    def fetch_projects(
+        self,
+        *,
+        project_id_pattern: str | None = None,
+        fields: list[str] | None = None,
+        max_projects: int | None = None,
+    ) -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {
+            "fields": ",".join(fields or DEFAULT_PROJECT_FIELDS),
+            "sort": "project_id:asc",
+        }
+        if project_id_pattern:
+            payload["filters"] = {
+                "op": "=",
+                "content": {
+                    "field": "project_id",
+                    "value": str(project_id_pattern),
+                },
+            }
+        return self._post_hits("projects", payload, max_records=max_projects)
+
     def fetch_pathology_files(
         self,
         project_ids: list[str],
@@ -219,6 +244,29 @@ class GDCClient:
             "sort": "file_name:asc",
         }
         return self._post_hits("files", payload, max_records=max_files)
+
+    def fetch_files_by_ids(
+        self,
+        file_ids: list[str],
+        *,
+        fields: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_file_ids = [str(file_id).strip() for file_id in file_ids if str(file_id).strip()]
+        if not normalized_file_ids:
+            return []
+
+        payload = {
+            "filters": {
+                "op": "in",
+                "content": {
+                    "field": "file_id",
+                    "value": normalized_file_ids,
+                },
+            },
+            "fields": ",".join(fields or DEFAULT_PATHOLOGY_FILE_FIELDS),
+            "sort": "file_name:asc",
+        }
+        return self._post_hits("files", payload, max_records=len(normalized_file_ids))
 
     def fetch_report_files(
         self,
@@ -439,7 +487,16 @@ class TCIAClient:
         if response is None or last_exc is not None:
             raise APIQueryError(f"TCIA request failed for endpoint '{endpoint}': {last_exc}") from last_exc
 
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as exc:
+            response_preview = (response.text or "").strip().replace("\n", " ")
+            if len(response_preview) > 200:
+                response_preview = f"{response_preview[:200]}..."
+            raise APIQueryError(
+                f"TCIA returned a non-JSON response for endpoint '{endpoint}' with params {params}: "
+                f"{response_preview or '[empty response]'}"
+            ) from exc
 
     def fetch_patient_studies(self, collection: str, max_studies: int | None = None) -> list[dict[str, Any]]:
         payload = self._get_json(
@@ -530,7 +587,11 @@ class TCIAClient:
         by_patient: dict[str, list[dict[str, Any]]] = {}
 
         for collection in collections:
-            studies = self.fetch_patient_studies(collection=collection, max_studies=max_studies_per_collection)
+            try:
+                studies = self.fetch_patient_studies(collection=collection, max_studies=max_studies_per_collection)
+            except APIQueryError as exc:
+                print(f"[warning] Skipping TCIA collection '{collection}' after metadata fetch failure: {exc}")
+                continue
             for study in studies:
                 patient_id = _first_non_empty(
                     study,
@@ -586,7 +647,14 @@ class TCIAClient:
                 seen_study_uids.add(study_uid)
 
                 collection = str(study.get("collection", "")).strip()
-                series_records = self.fetch_series_for_study(study_uid, max_series=max_series_per_study)
+                try:
+                    series_records = self.fetch_series_for_study(study_uid, max_series=max_series_per_study)
+                except APIQueryError as exc:
+                    print(
+                        f"[warning] Skipping TCIA series metadata for study '{study_uid}' "
+                        f"(collection '{collection}') after fetch failure: {exc}"
+                    )
+                    continue
                 for series in series_records:
                     series_uid = _first_non_empty(
                         series,

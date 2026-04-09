@@ -8,12 +8,18 @@ target_magnification: 20
 patch_size: 512
 patch_overlap: 0
 min_tissue_proportion: 0.0
-batch_limit: 2048
+allowed_slide_kinds:
+  - DX
+batch_limit: 512
+patch_loader_num_workers: 8
 save_format: h5
 features_root: ${project.root_dir}/data/features
 coords_root: ${embeding_extraction.pathology.features_root}/coords_${.target_magnification}x_${.patch_size}px_${.patch_overlap}px_overlap
 overwrite_existing: false
 skip_errors: true
-verbose: true
+verbose: false
+timing_debug: false
+temp_download_root:
+file_metadata_chunk_size: 200
 patch_encoder_kwargs: {}
 slide_encoder_kwargs: {}

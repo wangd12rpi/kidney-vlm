@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 
-DEFAULT_PROJECTOR_PROMPT_TEXTS = (
+DEFAULT_PATHOLOGY_PROJECTOR_PROMPT_TEXTS = (
     "Describe the pathology image.\nCaption:",
     "Summarize the pathology image.\nCaption:",
     "Provide a pathology caption for this image.\nCaption:",
@@ -70,6 +70,23 @@ def _load_h5_patch_features(path: Path, max_patch_tokens: int) -> torch.Tensor:
     return torch.from_numpy(features).to(dtype=torch.float32)
 
 
+def _apply_patch_token_dropout(patch_tensor: torch.Tensor, dropout_prob: float) -> torch.Tensor:
+    if patch_tensor.ndim != 2:
+        raise ValueError(f"Expected 2D pathology patch tensor, got shape {tuple(patch_tensor.shape)}")
+
+    keep_prob = float(dropout_prob)
+    if keep_prob <= 0.0 or patch_tensor.shape[0] <= 1:
+        return patch_tensor
+    if keep_prob > 1.0:
+        raise ValueError(f"patch_token_dropout_prob must be in [0, 1], got {dropout_prob}")
+
+    scores = torch.rand(patch_tensor.shape[0], device=patch_tensor.device)
+    keep_mask = scores >= keep_prob
+    if not torch.any(keep_mask):
+        keep_mask[torch.argmax(scores)] = True
+    return patch_tensor[keep_mask]
+
+
 @dataclass
 class QACollator:
     tokenizer: Any | None = None
@@ -128,21 +145,25 @@ class QACollator:
 
 
 @dataclass
-class ProjectorQACollator:
+class PathologyProjectorQACollator:
     tokenizer: Any
     root_dir: str | Path
     max_text_length: int = 512
     max_patch_tokens: int = 128
+    patch_token_dropout_prob: float = 0.0
     instruction_field: str = "instruction"
     answer_field: str = "answer"
     pathology_embedding_field: str = "pathology_tile_embedding_paths"
-    prompt_texts: tuple[str, ...] = DEFAULT_PROJECTOR_PROMPT_TEXTS
+    prompt_texts: tuple[str, ...] = DEFAULT_PATHOLOGY_PROJECTOR_PROMPT_TEXTS
 
     def __post_init__(self) -> None:
         self.root_dir = Path(self.root_dir).expanduser().resolve()
+        self.patch_token_dropout_prob = float(self.patch_token_dropout_prob)
+        if not 0.0 <= self.patch_token_dropout_prob <= 1.0:
+            raise ValueError("PathologyProjectorQACollator.patch_token_dropout_prob must be in [0, 1].")
         self.prompt_texts = tuple(str(prompt).strip() for prompt in self.prompt_texts if str(prompt).strip())
         if not self.prompt_texts:
-            raise ValueError("ProjectorQACollator requires at least one prompt text.")
+            raise ValueError("PathologyProjectorQACollator requires at least one prompt text.")
 
     def _select_prompt_text(self) -> str:
         return random.choice(self.prompt_texts)
@@ -165,7 +186,7 @@ class ProjectorQACollator:
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
         if not features:
-            raise ValueError("ProjectorQACollator received an empty batch.")
+            raise ValueError("PathologyProjectorQACollator received an empty batch.")
 
         pad_token_id = self.tokenizer.pad_token_id
         if pad_token_id is None:
@@ -182,7 +203,9 @@ class ProjectorQACollator:
             text_input_ids.append(input_ids)
             text_labels.append(labels)
             patch_path = _resolve_existing_path(self.root_dir, feature.get(self.pathology_embedding_field, []))
-            pathology_tensors.append(_load_h5_patch_features(patch_path, max_patch_tokens=self.max_patch_tokens))
+            patch_tensor = _load_h5_patch_features(patch_path, max_patch_tokens=self.max_patch_tokens)
+            patch_tensor = _apply_patch_token_dropout(patch_tensor, self.patch_token_dropout_prob)
+            pathology_tensors.append(patch_tensor)
             for key in metadata_keys:
                 metadata[key].append(feature.get(key))
 

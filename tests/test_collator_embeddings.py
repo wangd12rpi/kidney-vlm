@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import torch
 
-from kidney_vlm.training.collator import ProjectorQACollator, QACollator
+from kidney_vlm.training.collator import PathologyProjectorQACollator, QACollator, _apply_patch_token_dropout
 
 
 class _DummyTokenizer:
@@ -48,7 +49,7 @@ def test_projector_collator_uses_hardcoded_prompt_texts_not_parquet_instruction(
         "kidney_vlm.training.collator.random.choice",
         lambda options: selected_prompt,
     )
-    collator = ProjectorQACollator(
+    collator = PathologyProjectorQACollator(
         tokenizer=_ProjectorTokenizer(),
         root_dir=".",
     )
@@ -68,9 +69,54 @@ def test_projector_collator_uses_hardcoded_prompt_texts_not_parquet_instruction(
 
 
 def test_projector_collator_has_ten_default_prompt_texts() -> None:
-    collator = ProjectorQACollator(
+    collator = PathologyProjectorQACollator(
         tokenizer=_ProjectorTokenizer(),
         root_dir=".",
     )
 
     assert len(collator.prompt_texts) == 10
+
+
+def test_apply_patch_token_dropout_keeps_selected_tokens_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "kidney_vlm.training.collator.torch.rand",
+        lambda size, device=None: torch.tensor([0.9, 0.1, 0.8, 0.2], device=device),
+    )
+    patch_tensor = torch.tensor(
+        [
+            [1.0, 10.0],
+            [2.0, 20.0],
+            [3.0, 30.0],
+            [4.0, 40.0],
+        ]
+    )
+
+    dropped = _apply_patch_token_dropout(patch_tensor, dropout_prob=0.5)
+
+    assert torch.equal(
+        dropped,
+        torch.tensor(
+            [
+                [1.0, 10.0],
+                [3.0, 30.0],
+            ]
+        ),
+    )
+
+
+def test_apply_patch_token_dropout_keeps_one_token_when_all_would_drop(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "kidney_vlm.training.collator.torch.rand",
+        lambda size, device=None: torch.tensor([0.1, 0.4, 0.3], device=device),
+    )
+    patch_tensor = torch.tensor(
+        [
+            [1.0, 10.0],
+            [2.0, 20.0],
+            [3.0, 30.0],
+        ]
+    )
+
+    dropped = _apply_patch_token_dropout(patch_tensor, dropout_prob=0.9)
+
+    assert torch.equal(dropped, torch.tensor([[2.0, 20.0]]))

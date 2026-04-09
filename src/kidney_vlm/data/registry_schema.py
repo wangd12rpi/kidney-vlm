@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
+import re
 from typing import Iterable
 
 import pandas as pd
@@ -54,14 +56,58 @@ def empty_registry_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=CORE_COLUMNS)
 
 
+def _parse_serialized_list(text: str) -> list[str] | None:
+    stripped = text.strip()
+    if not (stripped.startswith("[") and stripped.endswith("]")):
+        return None
+
+    quoted_matches = re.findall(r"'([^']*)'|\"([^\"]*)\"", stripped)
+    recovered = [left or right for left, right in quoted_matches if (left or right).strip()]
+
+    try:
+        parsed = ast.literal_eval(stripped)
+    except (SyntaxError, ValueError):
+        if recovered or not stripped[1:-1].strip():
+            return recovered
+        return None
+
+    if isinstance(parsed, (list, tuple)):
+        normalized: list[str] = []
+        for item in parsed:
+            normalized.extend(_normalize_list_value(item))
+        if len(recovered) > len(normalized):
+            return recovered
+        return normalized
+    return None
+
+
 def _normalize_list_value(value: object) -> list[str]:
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return []
     if isinstance(value, list):
-        return [str(item) for item in value]
+        normalized: list[str] = []
+        for item in value:
+            normalized.extend(_normalize_list_value(item))
+        return normalized
     if isinstance(value, tuple):
-        return [str(item) for item in value]
-    return [str(value)]
+        normalized: list[str] = []
+        for item in value:
+            normalized.extend(_normalize_list_value(item))
+        return normalized
+    if hasattr(value, "tolist") and not isinstance(value, str):
+        converted = value.tolist()
+        if isinstance(converted, list):
+            normalized: list[str] = []
+            for item in converted:
+                normalized.extend(_normalize_list_value(item))
+            return normalized
+    text = str(value).strip()
+    if not text:
+        return []
+    parsed = _parse_serialized_list(text)
+    if parsed is not None:
+        return parsed
+    return [text]
 
 
 def _default_for_column(column: str) -> object:

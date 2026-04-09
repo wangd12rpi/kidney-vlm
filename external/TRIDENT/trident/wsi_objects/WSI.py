@@ -1,6 +1,7 @@
 from __future__ import annotations
 import numpy as np
 import os 
+import time
 import warnings
 import torch 
 from typing import List, Tuple, Optional, Literal, Union
@@ -754,7 +755,9 @@ class WSI:
         device: str = 'cuda:0',
         saveas: str = 'h5',
         batch_limit: int = 512,
-        verbose: bool = False
+        verbose: bool = False,
+        num_workers: Optional[int] = None,
+        timing_verbose: bool = False,
     ) -> str:
         """
         Extract feature embeddings from the WSI using a specified patch encoder.
@@ -788,14 +791,26 @@ class WSI:
         output_features/sample_name.h5
         """
 
+        overall_start = time.perf_counter()
         self._lazy_initialize()
         patch_encoder.to(device)
         patch_encoder.eval()
         precision = getattr(patch_encoder, 'precision', torch.float32)
         patch_transforms = patch_encoder.eval_transforms
+        coords_read_s = 0.0
+        patcher_init_s = 0.0
+        dataset_init_s = 0.0
+        data_wait_total_s = 0.0
+        forward_total_s = 0.0
+        first_batch_wait_s = None
+        first_forward_s = None
+        batch_count = 0
+        patch_count = 0
 
         try:
+            coords_read_start = time.perf_counter()
             coords_attrs, coords = read_coords(coords_path)
+            coords_read_s = time.perf_counter() - coords_read_start
             patch_size = coords_attrs.get('patch_size', None)
             level0_magnification = coords_attrs.get('level0_magnification', None)
             target_magnification = coords_attrs.get('target_magnification', None)            
@@ -804,9 +819,12 @@ class WSI:
 
         except (KeyError, FileNotFoundError, ValueError) as e:
             warnings.warn(f"Cannot read using Trident coords format ({str(e)}). Trying with CLAM/Fishing-Rod.")
+            patcher_start = time.perf_counter()
             patcher = WSIPatcher.from_legacy_coords_file(self, coords_path, coords_only=True, pil=True)
+            patcher_init_s = time.perf_counter() - patcher_start
 
         else:
+            patcher_start = time.perf_counter()
             patcher = self.create_patcher(
                 patch_size=patch_size,
                 src_mag=level0_magnification,
@@ -815,21 +833,51 @@ class WSI:
                 coords_only=False,
                 pil=True,
             )  
+            patcher_init_s = time.perf_counter() - patcher_start
 
 
+        dataset_start = time.perf_counter()
         dataset = WSIPatcherDataset(patcher, patch_transforms)
-        dataloader = DataLoader(dataset, batch_size=batch_limit, num_workers=get_num_workers(batch_limit, max_workers=self.max_workers), pin_memory=False)
+        dataset_init_s = time.perf_counter() - dataset_start
+        effective_num_workers = get_num_workers(batch_limit, max_workers=self.max_workers) if num_workers is None else int(num_workers)
+        if effective_num_workers < 0:
+            raise ValueError(f"num_workers must be >= 0, got {effective_num_workers}")
+        dataloader = DataLoader(dataset, batch_size=batch_limit, num_workers=effective_num_workers, pin_memory=False)
 
         dataloader = tqdm(dataloader) if verbose else dataloader
 
         features = []
-        for imgs, _ in dataloader:
+        iterator = iter(dataloader)
+        while True:
+            fetch_start = time.perf_counter()
+            try:
+                imgs, _ = next(iterator)
+            except StopIteration:
+                break
+            fetch_elapsed = time.perf_counter() - fetch_start
+            data_wait_total_s += fetch_elapsed
+            if first_batch_wait_s is None:
+                first_batch_wait_s = fetch_elapsed
+
+            batch_count += 1
+            patch_count += int(getattr(imgs, "shape", [0])[0])
+
+            if str(device).startswith('cuda') and torch.cuda.is_available():
+                torch.cuda.synchronize()
+            forward_start = time.perf_counter()
             imgs = imgs.to(device)
             with torch.autocast(device_type='cuda', dtype=precision, enabled=(precision != torch.float32)):
                 batch_features = patch_encoder(imgs)  
+            if str(device).startswith('cuda') and torch.cuda.is_available():
+                torch.cuda.synchronize()
+            forward_elapsed = time.perf_counter() - forward_start
+            forward_total_s += forward_elapsed
+            if first_forward_s is None:
+                first_forward_s = forward_elapsed
             features.append(batch_features.cpu().numpy())
 
         # Concatenate features
+        save_start = time.perf_counter()
         features = np.concatenate(features, axis=0)
 
         # Save the features to disk
@@ -850,6 +898,31 @@ class WSI:
             torch.save(features, os.path.join(save_features, f'{self.name}.{saveas}'))
         else:
             raise ValueError(f'Invalid save_features_as: {saveas}. Only "h5" and "pt" are supported.')
+
+        save_s = time.perf_counter() - save_start
+        if timing_verbose:
+            total_s = time.perf_counter() - overall_start
+            print(
+                "\t".join(
+                    [
+                        "[timing][patch_extract]",
+                        f"slide={self.name}",
+                        f"workers={effective_num_workers}",
+                        f"batch_limit={batch_limit}",
+                        f"patches={patch_count}",
+                        f"batches={batch_count}",
+                        f"coords_read_s={coords_read_s:.2f}",
+                        f"patcher_init_s={patcher_init_s:.2f}",
+                        f"dataset_init_s={dataset_init_s:.2f}",
+                        f"first_batch_wait_s={(first_batch_wait_s or 0.0):.2f}",
+                        f"first_forward_s={(first_forward_s or 0.0):.2f}",
+                        f"data_wait_total_s={data_wait_total_s:.2f}",
+                        f"forward_total_s={forward_total_s:.2f}",
+                        f"save_s={save_s:.2f}",
+                        f"total_s={total_s:.2f}",
+                    ]
+                )
+            )
 
         return os.path.join(save_features, f'{self.name}.{saveas}')
 

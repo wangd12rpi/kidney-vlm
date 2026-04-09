@@ -66,25 +66,27 @@ uv run python scripts/data/01_build_<source>_source.py
 ```
 
 Built-in TCGA source:
-- Script: `scripts/data/01_build_tcga_source.py`
+- Script: `scripts/data/01_upsert_tcga_registry_rows.py`
 - Config: `conf/data/sources/tcga.yaml`
 
 ## Model Pipeline Scripts (Ordered)
 ```bash
-uv run python scripts/model/01_extract_pathology_features.py
-uv run python scripts/model/02_run_segmentation.py
-uv run python scripts/model/03_train_projectors.py
-uv run python scripts/model/04_train_vlm.py
+uv run python scripts/embeding_extraction/01_extract_pathology_features.py
+uv run python scripts/embeding_extraction/02_extract_pathology_features_space_saver.py
+uv run python scripts/path_proj_train/02_gen_path_case_captions.py
+uv run python scripts/path_proj_train/03_build_path_proj_train_qa.py
+uv run python scripts/path_proj_train/04_train_path_projectors.py
+uv run python scripts/segmentation/01_run_segmentation.py
+uv run python scripts/vlm_train/01_train_vlm.py
 ```
 
 Stage-scoped configs now live under:
 - `conf/qa_genereation/`
 - `conf/embeding_extraction/`
-- `conf/projector_train/`
+- `conf/path_proj_train/`
 - `conf/vlm_train/`
 
 Multi-image support:
 - Each registry row already supports list-valued path columns.
 - Collation keeps `pathology_*` and `radiology_*` paths as lists per sample.
 - Projectors support tensor inputs shaped `[batch, n_images, dim]` for each modality.
-

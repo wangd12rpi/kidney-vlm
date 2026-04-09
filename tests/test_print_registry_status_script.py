@@ -33,7 +33,7 @@ def test_print_registry_status_uses_field_per_line_sample_output(tmp_path: Path)
     frame.to_parquet(registry_path, index=False)
 
     repo_root = Path(__file__).resolve().parents[1]
-    script_path = repo_root / "scripts" / "data" / "02_print_registry_status.py"
+    script_path = repo_root / "scripts" / "data" / "print_registry_status.py"
     result = subprocess.run(
         [sys.executable, str(script_path), "--registry", str(registry_path)],
         capture_output=True,

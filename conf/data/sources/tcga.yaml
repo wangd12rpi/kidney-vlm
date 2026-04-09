@@ -2,28 +2,25 @@ data:
   source:
     name: tcga
     download:
-      enabled: true
+      enabled: false
       skip_existing: true
       include:
-        pathology: true
-        radiology: true
+        pathology: false
+        radiology: false
         reports: true
       max_pathology_downloads:
       max_report_downloads:
       max_radiology_series_downloads:
       max_series_per_study:
     tcga:
-      project_ids:
-        - TCGA-KIRC
-        - TCGA-KIRP
-        - TCGA-KICH
+      exclude_project_ids: []
       split_ratios:
         train: 0.9
         test: 0.1
       gdc:
         base_url: https://api.gdc.cancer.gov
         timeout_seconds: 120
-        page_size: 200
+        page_size: 1000
         max_retries: 3
         retry_backoff_seconds: 2.0
         max_cases:
