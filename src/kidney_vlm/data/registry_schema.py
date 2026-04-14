@@ -46,6 +46,10 @@ TEXT_COLUMNS = [
     "answer",
 ]
 
+OPTIONAL_TEXT_COLUMNS = [
+    "genomics_text",
+]
+
 
 @dataclass(frozen=True)
 class RegistrySchema:
@@ -135,6 +139,9 @@ def normalize_registry_df(df: pd.DataFrame) -> pd.DataFrame:
         out[column] = out[column].map(_normalize_list_value)
     for column in TEXT_COLUMNS:
         out[column] = out[column].fillna("").map(str)
+    for column in OPTIONAL_TEXT_COLUMNS:
+        if column in out.columns:
+            out[column] = out[column].fillna("").map(str)
     return out
 
 

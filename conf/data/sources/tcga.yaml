@@ -14,6 +14,11 @@ data:
       max_series_per_study:
     tcga:
       exclude_project_ids: []
+      upsert_mode: replace
+      patient_subset_ids: []
+      patient_chunk:
+        index: 0
+        size:
       split_ratios:
         train: 0.9
         test: 0.1
@@ -55,8 +60,34 @@ data:
           - Clinical Supplement
         report_data_categories:
           - Clinical
+      genomics:
+        enabled: true
+        download_raw: true
+        build_text_from_pancan: true
+        skip_existing: true
+        cleanup_temp_cache: false
+        write_download_manifest: true
+        download_manifest_jsonl_path: ${data.staging_root}/tcga_genomics_downloads.jsonl
+        raw_payloads:
+          masked_somatic_mutation: true
+          gene_expression_quantification: true
+          copy_number_segments: true
+          masked_copy_number_segments: true
+          gene_level_copy_number: true
+          mirna_expression_quantification: true
+          clinical_supplement: true
+          biospecimen_supplement: true
+          msisensor_scores: true
+          methylation_beta_value: true
+        timeout_seconds: 300
+        pancan_cache_dir: ${data.raw_root}/tcga/genomics/pancan
+        write_jsonl_sidecar: true
+        sidecar_jsonl_path: ${data.staging_root}/tcga_genomics.jsonl
+        write_text_files: true
+        text_output_dir: ${data.staging_root}/tcga_genomics_text
       tcia:
         enabled: true
+        restrict_to_radiology_cases: true
         base_url: https://services.cancerimagingarchive.net/nbia-api/services
         api_version: v1
         timeout_seconds: 120
@@ -64,5 +95,16 @@ data:
         retry_backoff_seconds: 2.0
         fetch_series_metadata: true
         collections: []
+        qualifying_modalities:
+          - CT
+          - MR
+          - MG
+          - CR
+          - DX
+          - XA
+          - RF
+          - US
+          - PT
+          - NM
         max_studies_per_collection:
         max_series_per_study_metadata:

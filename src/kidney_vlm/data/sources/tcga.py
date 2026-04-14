@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import time
 from typing import Any
+import zipfile
 
 import pandas as pd
 import requests
@@ -75,6 +76,37 @@ DEFAULT_REPORT_FILE_FIELDS = [
     "cases.project.project_id",
 ]
 
+DEFAULT_GENOMICS_FILE_FIELDS = [
+    "file_id",
+    "file_name",
+    "data_category",
+    "data_type",
+    "data_format",
+    "experimental_strategy",
+    "analysis.workflow_type",
+    "file_size",
+    "md5sum",
+    "cases.case_id",
+    "cases.submitter_id",
+    "cases.project.project_id",
+    "cases.samples.sample_type",
+    "cases.samples.submitter_id",
+]
+
+DEFAULT_MSI_METADATA_FIELDS = [
+    "file_id",
+    "file_name",
+    "data_type",
+    "data_format",
+    "experimental_strategy",
+    "access",
+    "msi_score",
+    "msi_status",
+    "cases.case_id",
+    "cases.submitter_id",
+    "cases.project.project_id",
+]
+
 DEFAULT_KIDNEY_MUTATION_GENE_PANEL = [
     "VHL",
     "PBRM1",
@@ -91,6 +123,25 @@ DEFAULT_KIDNEY_MUTATION_GENE_PANEL = [
     "FLCN",
     "PIK3CA",
     "ARID1A",
+]
+
+TCIA_MODALITY_ALIASES = {
+    "MRI": "MR",
+    "MAMMOGRAPHY": "MG",
+    "PET": "PT",
+}
+
+DEFAULT_TCIA_RADIOLOGY_MODALITIES = [
+    "CT",
+    "MR",
+    "MG",
+    "CR",
+    "DX",
+    "XA",
+    "RF",
+    "US",
+    "PT",
+    "NM",
 ]
 
 
@@ -158,16 +209,34 @@ class GDCClient:
     def fetch_cases(
         self,
         project_ids: list[str],
+        *,
+        submitter_ids: list[str] | None = None,
         fields: list[str] | None = None,
         max_cases: int | None = None,
     ) -> list[dict[str, Any]]:
-        payload = {
-            "filters": {
+        filters: list[dict[str, Any]] = [
+            {
                 "op": "in",
                 "content": {
                     "field": "project.project_id",
                     "value": project_ids,
                 },
+            }
+        ]
+        if submitter_ids:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "submitter_id",
+                        "value": submitter_ids,
+                    },
+                }
+            )
+        payload = {
+            "filters": {
+                "op": "and",
+                "content": filters,
             },
             "fields": ",".join(fields or DEFAULT_CASE_FIELDS),
             "sort": "submitter_id:asc",
@@ -198,6 +267,9 @@ class GDCClient:
     def fetch_pathology_files(
         self,
         project_ids: list[str],
+        *,
+        case_ids: list[str] | None = None,
+        submitter_ids: list[str] | None = None,
         data_formats: list[str] | None = None,
         data_types: list[str] | None = None,
         fields: list[str] | None = None,
@@ -212,6 +284,28 @@ class GDCClient:
                 },
             }
         ]
+
+        if case_ids:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "cases.case_id",
+                        "value": case_ids,
+                    },
+                }
+            )
+
+        if submitter_ids:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "cases.submitter_id",
+                        "value": submitter_ids,
+                    },
+                }
+            )
 
         if data_formats:
             filters.append(
@@ -342,6 +436,128 @@ class GDCClient:
         }
         return self._post_hits("files", payload, max_records=max_files)
 
+    def fetch_genomics_files(
+        self,
+        *,
+        project_ids: list[str],
+        case_ids: list[str] | None = None,
+        submitter_ids: list[str] | None = None,
+        data_categories: list[str] | None = None,
+        data_types: list[str] | None = None,
+        data_formats: list[str] | None = None,
+        workflow_types: list[str] | None = None,
+        experimental_strategies: list[str] | None = None,
+        access: list[str] | None = None,
+        fields: list[str] | None = None,
+        max_files: int | None = None,
+    ) -> list[dict[str, Any]]:
+        filters: list[dict[str, Any]] = [
+            {
+                "op": "in",
+                "content": {
+                    "field": "cases.project.project_id",
+                    "value": project_ids,
+                },
+            }
+        ]
+
+        if case_ids:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "cases.case_id",
+                        "value": case_ids,
+                    },
+                }
+            )
+
+        if submitter_ids:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "cases.submitter_id",
+                        "value": submitter_ids,
+                    },
+                }
+            )
+
+        if data_categories:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "data_category",
+                        "value": data_categories,
+                    },
+                }
+            )
+
+        if data_types:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "data_type",
+                        "value": data_types,
+                    },
+                }
+            )
+
+        if data_formats:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "data_format",
+                        "value": data_formats,
+                    },
+                }
+            )
+
+        if workflow_types:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "analysis.workflow_type",
+                        "value": workflow_types,
+                    },
+                }
+            )
+
+        if experimental_strategies:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "experimental_strategy",
+                        "value": experimental_strategies,
+                    },
+                }
+            )
+
+        filters.append(
+            {
+                "op": "in",
+                "content": {
+                    "field": "access",
+                    "value": access or ["open"],
+                },
+            }
+        )
+
+        payload = {
+            "filters": {
+                "op": "and",
+                "content": filters,
+            },
+            "fields": ",".join(fields or DEFAULT_GENOMICS_FILE_FIELDS),
+            "sort": "file_name:asc",
+        }
+        return self._post_hits("files", payload, max_records=max_files)
+
     def fetch_ssm_hits(
         self,
         *,
@@ -425,6 +641,76 @@ class GDCClient:
             raise APIQueryError(f"GDC SSM query failed across candidate filters: {last_error}") from last_error
         return []
 
+    def fetch_msi_metadata(
+        self,
+        *,
+        project_ids: list[str],
+        case_ids: list[str] | None = None,
+        submitter_ids: list[str] | None = None,
+        experimental_strategies: list[str] | None = None,
+        fields: list[str] | None = None,
+        max_files: int | None = None,
+    ) -> list[dict[str, Any]]:
+        filters: list[dict[str, Any]] = [
+            {
+                "op": "in",
+                "content": {
+                    "field": "cases.project.project_id",
+                    "value": project_ids,
+                },
+            },
+            {
+                "op": "in",
+                "content": {
+                    "field": "data_type",
+                    "value": ["Aligned Reads"],
+                },
+            },
+        ]
+
+        if case_ids:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "cases.case_id",
+                        "value": case_ids,
+                    },
+                }
+            )
+
+        if submitter_ids:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "cases.submitter_id",
+                        "value": submitter_ids,
+                    },
+                }
+            )
+
+        if experimental_strategies:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "experimental_strategy",
+                        "value": experimental_strategies,
+                    },
+                }
+            )
+
+        payload = {
+            "filters": {
+                "op": "and",
+                "content": filters,
+            },
+            "fields": ",".join(fields or DEFAULT_MSI_METADATA_FIELDS),
+            "sort": "file_name:asc",
+        }
+        return self._post_hits("files", payload, max_records=max_files)
+
     def download_data_file(
         self,
         *,
@@ -432,11 +718,20 @@ class GDCClient:
         output_path: Path,
         skip_existing: bool = True,
         chunk_size: int = 1024 * 1024,
+        expected_size: int | None = None,
     ) -> Path:
-        if skip_existing and output_path.exists() and output_path.stat().st_size > 0:
+        if (
+            skip_existing
+            and output_path.exists()
+            and output_path.stat().st_size > 0
+            and (expected_size is None or output_path.stat().st_size == expected_size)
+        ):
             return output_path
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = output_path.with_name(f"{output_path.name}.part")
+        if temp_path.exists():
+            temp_path.unlink()
         url = f"{self.base_url.rstrip('/')}/data/{str(file_id).strip()}"
         response = None
         last_exc: Exception | None = None
@@ -454,10 +749,23 @@ class GDCClient:
         if response is None or last_exc is not None:
             raise APIQueryError(f"GDC download failed for file_id '{file_id}': {last_exc}") from last_exc
 
-        with output_path.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    handle.write(chunk)
+        try:
+            with temp_path.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        handle.write(chunk)
+            if expected_size is not None and temp_path.stat().st_size != expected_size:
+                raise APIQueryError(
+                    f"GDC download size mismatch for file_id '{file_id}': "
+                    f"expected {expected_size} bytes, got {temp_path.stat().st_size}"
+                )
+            temp_path.replace(output_path)
+        except Exception:
+            if temp_path.exists():
+                temp_path.unlink()
+            raise
+        finally:
+            response.close()
         return output_path
 
 
@@ -518,6 +826,29 @@ class TCIAClient:
             return records[:max_studies]
         return records
 
+    def fetch_collection_values(self) -> list[str]:
+        payload = self._get_json(
+            "getCollectionValues",
+            params={"format": "json"},
+        )
+
+        records: list[dict[str, Any]]
+        if isinstance(payload, list):
+            records = [rec for rec in payload if isinstance(rec, dict)]
+        elif isinstance(payload, dict):
+            nested = payload.get("result", payload.get("results", payload.get("data", [])))
+            records = [rec for rec in nested if isinstance(rec, dict)] if isinstance(nested, list) else []
+        else:
+            records = []
+
+        collections = _unique_sorted_non_empty(
+            [
+                _first_non_empty(record, ["Collection", "collection"])
+                for record in records
+            ]
+        )
+        return collections
+
     def fetch_series_for_study(self, study_instance_uid: str, max_series: int | None = None) -> list[dict[str, Any]]:
         payload = self._get_json(
             "getSeries",
@@ -545,10 +876,18 @@ class TCIAClient:
         skip_existing: bool = True,
         chunk_size: int = 1024 * 1024,
     ) -> Path:
-        if skip_existing and output_path.exists() and output_path.stat().st_size > 0:
+        if (
+            skip_existing
+            and output_path.exists()
+            and output_path.stat().st_size > 0
+            and zipfile.is_zipfile(output_path)
+        ):
             return output_path
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = output_path.with_name(f"{output_path.name}.part")
+        if temp_path.exists():
+            temp_path.unlink()
         url = f"{self.base_url.rstrip('/')}/{self.api_version}/getImage"
         response = None
         last_exc: Exception | None = None
@@ -573,10 +912,22 @@ class TCIAClient:
                 f"TCIA series download failed for SeriesInstanceUID '{series_instance_uid}': {last_exc}"
             ) from last_exc
 
-        with output_path.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    handle.write(chunk)
+        try:
+            with temp_path.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        handle.write(chunk)
+            if not zipfile.is_zipfile(temp_path):
+                raise APIQueryError(
+                    f"TCIA series download for SeriesInstanceUID '{series_instance_uid}' did not produce a valid zip."
+                )
+            temp_path.replace(output_path)
+        except Exception:
+            if temp_path.exists():
+                temp_path.unlink()
+            raise
+        finally:
+            response.close()
         return output_path
 
     def fetch_studies_by_patient(
@@ -720,6 +1071,90 @@ def _to_text_list(value: Any) -> list[str]:
     if "," in text:
         return _unique_sorted_non_empty([chunk.strip() for chunk in text.split(",")])
     return [text]
+
+
+def normalize_tcia_modality(value: Any) -> str:
+    text = str(value).strip().upper()
+    if not text:
+        return ""
+    compact = text.replace(" ", "").replace("-", "")
+    return TCIA_MODALITY_ALIASES.get(compact, compact)
+
+
+def normalize_tcia_modality_list(values: Any) -> list[str]:
+    normalized: list[str] = []
+    raw_values = _to_text_list(values)
+    for raw_value in raw_values:
+        chunks = str(raw_value).replace("\\", ",").replace("/", ",").split(",")
+        for chunk in chunks:
+            modality = normalize_tcia_modality(chunk)
+            if modality:
+                normalized.append(modality)
+    return _unique_sorted_non_empty(normalized)
+
+
+def _normalized_tcia_modality_set(
+    values: list[str] | None,
+    *,
+    fallback: list[str] | None = None,
+) -> set[str]:
+    source_values = values if values else (fallback or [])
+    return set(normalize_tcia_modality_list(source_values))
+
+
+def select_tcia_radiology_cohort(
+    studies_by_patient: dict[str, list[dict[str, Any]]],
+    *,
+    series_by_patient: dict[str, list[dict[str, str]]] | None = None,
+    qualifying_modalities: list[str] | None = None,
+    default_modalities: list[str] | None = None,
+) -> tuple[set[str], dict[str, list[dict[str, Any]]], dict[str, list[dict[str, str]]]]:
+    allowed_modalities = _normalized_tcia_modality_set(
+        qualifying_modalities,
+        fallback=default_modalities or list(DEFAULT_TCIA_RADIOLOGY_MODALITIES),
+    )
+    if not allowed_modalities:
+        return set(), {}, {}
+
+    raw_series_by_patient = series_by_patient or {}
+    eligible_patients: set[str] = set()
+    eligible_study_uids_by_patient: dict[str, set[str]] = {}
+    filtered_series_by_patient: dict[str, list[dict[str, str]]] = {}
+
+    for patient_id, series_entries in raw_series_by_patient.items():
+        kept_entries: list[dict[str, str]] = []
+        study_uids: set[str] = set()
+        for entry in series_entries:
+            normalized_modality = normalize_tcia_modality(entry.get("modality", ""))
+            if normalized_modality not in allowed_modalities:
+                continue
+            normalized_entry = dict(entry)
+            normalized_entry["modality"] = normalized_modality
+            kept_entries.append(normalized_entry)
+            study_uid = str(entry.get("study_instance_uid", "")).strip()
+            if study_uid:
+                study_uids.add(study_uid)
+        if kept_entries:
+            eligible_patients.add(patient_id)
+            filtered_series_by_patient[patient_id] = kept_entries
+            eligible_study_uids_by_patient[patient_id] = study_uids
+
+    filtered_studies_by_patient: dict[str, list[dict[str, Any]]] = {}
+    for patient_id, studies in studies_by_patient.items():
+        qualifying_studies: list[dict[str, Any]] = []
+        study_uids_from_series = eligible_study_uids_by_patient.get(patient_id, set())
+        for study in studies:
+            study_uid = str(study.get("study_instance_uid", "")).strip()
+            normalized_modalities = normalize_tcia_modality_list(study.get("modalities_in_study", []))
+            if (set(normalized_modalities) & allowed_modalities) or (study_uid and study_uid in study_uids_from_series):
+                normalized_study = dict(study)
+                normalized_study["modalities_in_study"] = normalized_modalities
+                qualifying_studies.append(normalized_study)
+        if qualifying_studies:
+            eligible_patients.add(patient_id)
+            filtered_studies_by_patient[patient_id] = qualifying_studies
+
+    return eligible_patients, filtered_studies_by_patient, filtered_series_by_patient
 
 
 def _walk_nested(value: Any):
@@ -974,6 +1409,10 @@ def build_tcga_registry_rows(
     mutation_gene_panel: list[str] | None = None,
     tcia_series_by_patient: dict[str, list[dict[str, str]]] | None = None,
     downloaded_tcia_series_by_patient: dict[str, list[dict[str, str]]] | None = None,
+    genomics_by_patient_id: dict[str, dict[str, str]] | None = None,
+    downloaded_genomics_by_case_id: dict[str, list[dict[str, str]]] | None = None,
+    downloaded_genomics_by_patient_id: dict[str, list[dict[str, str]]] | None = None,
+    genomics_download_manifest_path: str = "",
     project_root: Path | None = None,
     mutation_query_succeeded: bool = True,
     show_progress: bool = True,
@@ -990,6 +1429,9 @@ def build_tcga_registry_rows(
     mutation_gene_panel = mutation_gene_panel or list(DEFAULT_KIDNEY_MUTATION_GENE_PANEL)
     tcia_series_by_patient = tcia_series_by_patient or {}
     downloaded_tcia_series_by_patient = downloaded_tcia_series_by_patient or {}
+    genomics_by_patient_id = genomics_by_patient_id or {}
+    downloaded_genomics_by_case_id = downloaded_genomics_by_case_id or {}
+    downloaded_genomics_by_patient_id = downloaded_genomics_by_patient_id or {}
     mutation_gene_panel_upper = [str(gene).strip().upper() for gene in mutation_gene_panel if str(gene).strip()]
     resolved_project_root = (
         Path(project_root).expanduser().resolve()
@@ -1225,6 +1667,50 @@ def build_tcga_registry_rows(
                 )
 
         downloaded_series_entries = downloaded_tcia_series_by_patient.get(patient_id, [])
+        downloaded_genomics_entries = downloaded_genomics_by_case_id.get(
+            case_id,
+            downloaded_genomics_by_patient_id.get(patient_id, []),
+        )
+        genomics_entry = genomics_by_patient_id.get(patient_id, {})
+        genomics_text = str(genomics_entry.get("genomics_text", "")).strip()
+        genomics_file_paths = sorted(
+            {
+                _to_project_relative_path(
+                    str(entry.get("relative_path") or entry.get("local_path", "")),
+                    resolved_project_root,
+                )
+                for entry in downloaded_genomics_entries
+                if str(entry.get("relative_path") or entry.get("local_path", "")).strip()
+            }
+        )
+        genomics_file_ids = sorted(
+            {
+                str(entry.get("file_id", "")).strip()
+                for entry in downloaded_genomics_entries
+                if str(entry.get("file_id", "")).strip()
+            }
+        )
+        genomics_file_names = sorted(
+            {
+                str(entry.get("file_name", "")).strip()
+                for entry in downloaded_genomics_entries
+                if str(entry.get("file_name", "")).strip()
+            }
+        )
+        genomics_data_types = sorted(
+            {
+                str(entry.get("data_type", "")).strip()
+                for entry in downloaded_genomics_entries
+                if str(entry.get("data_type", "")).strip()
+            }
+        )
+        genomics_payload_keys = sorted(
+            {
+                str(entry.get("payload_key", "")).strip()
+                for entry in downloaded_genomics_entries
+                if str(entry.get("payload_key", "")).strip()
+            }
+        )
         tcia_series_uids = sorted(
             set(tcia_series_uids).union(
                 {
@@ -1274,6 +1760,13 @@ def build_tcga_registry_rows(
             "pathology_slide_embedding_paths": list(pathology_slide_embedding_paths),
             "radiology_embedding_paths": list(radiology_embedding_paths),
             "biomarkers_text": build_biomarkers_text(case),
+            "genomics_text": genomics_text,
+            "genomics_file_paths": genomics_file_paths,
+            "genomics_file_ids": genomics_file_ids,
+            "genomics_file_names": genomics_file_names,
+            "genomics_data_types": genomics_data_types,
+            "genomics_payload_keys": genomics_payload_keys,
+            "genomics_download_manifest_path": str(genomics_download_manifest_path or ""),
             "question": "",
             "answer": "",
             "project_id": project_id,

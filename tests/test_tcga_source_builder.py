@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from kidney_vlm.data.sources.tcga import APIQueryError, TCIAClient, assign_split, build_tcga_registry_rows
+from kidney_vlm.data.sources.tcga import (
+    APIQueryError,
+    TCIAClient,
+    assign_split,
+    build_tcga_registry_rows,
+    normalize_tcia_modality,
+    select_tcia_radiology_cohort,
+)
 
 
 def test_build_tcga_registry_rows_multimodal_lists() -> None:
@@ -238,6 +245,75 @@ def test_build_tcga_registry_rows_keeps_all_tcga_slide_kinds() -> None:
     }
 
 
+def test_build_tcga_registry_rows_includes_genomics_text() -> None:
+    frame = build_tcga_registry_rows(
+        cases=[
+            {
+                "case_id": "case-genomics",
+                "submitter_id": "TCGA-ZZ-9999",
+                "project": {"project_id": "TCGA-KIRC"},
+                "diagnoses": [{}],
+                "demographic": {},
+            }
+        ],
+        pathology_files=[],
+        tcia_studies_by_patient={},
+        genomics_by_patient_id={
+            "TCGA-ZZ-9999": {
+                "patient_id": "TCGA-ZZ-9999",
+                "cancer_code": "KIRC",
+                "genomics_text": "[GENOMICS]\ncancer_type: KIRC\n[/GENOMICS]",
+            }
+        },
+        raw_root=Path("/tmp/raw"),
+        source_name="tcga",
+        split_ratios={"train": 1.0},
+    )
+
+    row = frame.iloc[0]
+    assert row["genomics_text"] == "[GENOMICS]\ncancer_type: KIRC\n[/GENOMICS]"
+
+
+def test_build_tcga_registry_rows_includes_genomics_download_paths() -> None:
+    frame = build_tcga_registry_rows(
+        cases=[
+            {
+                "case_id": "case-genomics-files",
+                "submitter_id": "TCGA-YY-1111",
+                "project": {"project_id": "TCGA-KIRC"},
+                "diagnoses": [{}],
+                "demographic": {},
+            }
+        ],
+        pathology_files=[],
+        tcia_studies_by_patient={},
+        downloaded_genomics_by_patient_id={
+            "TCGA-YY-1111": [
+                {
+                    "payload_key": "genomics_text",
+                    "file_id": "",
+                    "file_name": "TCGA-YY-1111.txt",
+                    "data_type": "Patient Genomics Text",
+                    "local_path": "/tmp/staging/tcga_genomics_text/TCGA-YY-1111.txt",
+                },
+            ]
+        },
+        genomics_download_manifest_path="data/staging/tcga_genomics_downloads.jsonl",
+        raw_root=Path("/tmp/raw"),
+        source_name="tcga",
+        split_ratios={"train": 1.0},
+    )
+
+    row = frame.iloc[0]
+    assert row["genomics_download_manifest_path"] == "data/staging/tcga_genomics_downloads.jsonl"
+    assert row["genomics_file_ids"] == []
+    assert row["genomics_payload_keys"] == ["genomics_text"]
+    assert row["genomics_data_types"] == ["Patient Genomics Text"]
+    assert row["genomics_file_paths"] == [
+        "staging/tcga_genomics_text/TCGA-YY-1111.txt",
+    ]
+
+
 def test_assign_split_is_deterministic() -> None:
     split_1 = assign_split("TCGA-AA-0001", {"train": 0.9, "test": 0.1})
     split_2 = assign_split("TCGA-AA-0001", {"train": 0.9, "test": 0.1})
@@ -312,3 +388,101 @@ def test_tcia_fetch_studies_by_patient_skips_bad_collection(monkeypatch) -> None
 
     assert set(studies_by_patient) == {"TCGA-AA-0001"}
     assert studies_by_patient["TCGA-AA-0001"][0]["collection"] == "TCGA-KIRC"
+
+
+def test_tcia_fetch_collection_values_parses_records(monkeypatch) -> None:
+    client = TCIAClient()
+
+    def fake_get_json(endpoint: str, params: dict[str, str]):
+        assert endpoint == "getCollectionValues"
+        assert params["format"] == "json"
+        return [
+            {"Collection": "TCGA-KIRC"},
+            {"Collection": "TCGA-BRCA"},
+            {"Collection": "TCGA-KIRC"},
+            {},
+        ]
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+
+    assert client.fetch_collection_values() == ["TCGA-BRCA", "TCGA-KIRC"]
+
+
+def test_select_tcia_radiology_cohort_filters_to_qualifying_modalities() -> None:
+    studies_by_patient = {
+        "TCGA-AA-0001": [
+            {
+                "collection": "TCGA-KIRC",
+                "patient_id": "TCGA-AA-0001",
+                "study_instance_uid": "1.2.3",
+                "modalities_in_study": ["CT", "SEG"],
+            }
+        ],
+        "TCGA-BB-0002": [
+            {
+                "collection": "TCGA-BRCA",
+                "patient_id": "TCGA-BB-0002",
+                "study_instance_uid": "2.3.4",
+                "modalities_in_study": ["MG"],
+            }
+        ],
+        "TCGA-CC-0003": [
+            {
+                "collection": "TCGA-LUAD",
+                "patient_id": "TCGA-CC-0003",
+                "study_instance_uid": "3.4.5",
+                "modalities_in_study": ["SR"],
+            }
+        ],
+    }
+    series_by_patient = {
+        "TCGA-AA-0001": [
+            {
+                "collection": "TCGA-KIRC",
+                "patient_id": "TCGA-AA-0001",
+                "study_instance_uid": "1.2.3",
+                "series_instance_uid": "1.2.3.1",
+                "modality": "CT",
+                "body_part_examined": "ABDOMEN",
+                "series_description": "abdomen",
+            },
+            {
+                "collection": "TCGA-KIRC",
+                "patient_id": "TCGA-AA-0001",
+                "study_instance_uid": "1.2.3",
+                "series_instance_uid": "1.2.3.2",
+                "modality": "SEG",
+                "body_part_examined": "ABDOMEN",
+                "series_description": "segmentation",
+            },
+        ],
+        "TCGA-CC-0003": [
+            {
+                "collection": "TCGA-LUAD",
+                "patient_id": "TCGA-CC-0003",
+                "study_instance_uid": "3.4.5",
+                "series_instance_uid": "3.4.5.1",
+                "modality": "SR",
+                "body_part_examined": "CHEST",
+                "series_description": "structured report",
+            }
+        ],
+    }
+
+    eligible_patients, filtered_studies, filtered_series = select_tcia_radiology_cohort(
+        studies_by_patient,
+        series_by_patient=series_by_patient,
+        qualifying_modalities=["CT", "mammography"],
+    )
+
+    assert eligible_patients == {"TCGA-AA-0001", "TCGA-BB-0002"}
+    assert set(filtered_studies) == {"TCGA-AA-0001", "TCGA-BB-0002"}
+    assert set(filtered_series) == {"TCGA-AA-0001"}
+    assert filtered_series["TCGA-AA-0001"][0]["modality"] == "CT"
+    assert filtered_studies["TCGA-BB-0002"][0]["modalities_in_study"] == ["MG"]
+
+
+def test_normalize_tcia_modality_supports_common_aliases() -> None:
+    assert normalize_tcia_modality("MRI") == "MR"
+    assert normalize_tcia_modality("mammography") == "MG"
+    assert normalize_tcia_modality("PET") == "PT"

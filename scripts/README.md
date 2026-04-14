@@ -6,6 +6,9 @@
   - Resolves all `TCGA-*` projects by default and lets you remove projects with `data.source.tcga.exclude_project_ids`.
   - Pulls TCIA study + series metadata by default even when payload downloads are disabled.
   - Pulls targeted GDC mutation metadata for a kidney-focused gene panel by default.
+  - Builds TCGA genomics as text-first derived artifacts by default.
+  - Downloads PanCancer source files into a temporary cache, writes per-patient `genomics_text` plus JSONL/text sidecars, then deletes the temporary cache when `data.source.tcga.genomics.cleanup_temp_cache=true`.
+  - Does not persist RNA-seq matrices, methylation arrays, raw CN segments, or other high-dimensional genomics payloads on registry rows.
   - Downloads pathology SVS, TCIA radiology series zips, and GDC PDF reports when enabled.
   - Example metadata-only run:
     - `uv run python scripts/data/01_upsert_tcga_registry_rows.py data.source.download.enabled=false`
