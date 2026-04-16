@@ -13,9 +13,18 @@ def _row(sample_id: str, source: str) -> dict:
         "patient_id": "p",
         "study_id": "s",
         "split": "train",
+        "genomics_rna_bulk_paths": [],
+        "genomics_rna_bulk_feature_path": "",
+        "genomics_dna_methylation_paths": [],
+        "genomics_dna_methylation_feature_path": "",
+        "genomics_cnv_paths": [],
+        "genomics_cnv_feature_path": "",
         "pathology_wsi_paths": [],
         "radiology_image_paths": [],
         "pathology_mask_paths": [],
+        "pathology_segmentation_slide_image_paths": [],
+        "pathology_segmentation_overlay_paths": [],
+        "pathology_segmentation_metadata_paths": [],
         "radiology_mask_paths": [],
         "pathology_tile_embedding_paths": [],
         "pathology_slide_embedding_paths": [],
@@ -44,3 +53,18 @@ def test_replace_source_slice_without_duplicates() -> None:
     assert set(tcga_rows["sample_id"].tolist()) == {"tcga-new-1", "tcga-new-2"}
     assert "other-1" in merged["sample_id"].tolist()
     assert all(column in merged.columns for column in CORE_COLUMNS)
+
+
+def test_replace_source_slice_drops_stale_source_specific_columns() -> None:
+    unified = pd.DataFrame([
+        {**_row("tcga-old", "tcga"), "has_mutation_vhl": True},
+        _row("other-1", "other"),
+    ])
+    source = pd.DataFrame([
+        {**_row("tcga-new-1", "tcga"), "mutation_vhl": True},
+    ])
+
+    merged = replace_source_slice(unified, source, source_name="tcga")
+
+    assert "mutation_vhl" in merged.columns
+    assert "has_mutation_vhl" not in merged.columns

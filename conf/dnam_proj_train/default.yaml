@@ -1,0 +1,53 @@
+instantiate_model: true
+modality_tag: dnam
+model_name_or_path: Qwen/Qwen3.5-9B
+trust_remote_code: true
+qa_parquet_path: ${project.root_dir}/data/dnam_proj_train/dnam_proj_train_qa.parquet
+dnam_embedding_dim: 512
+
+# Simple DNAm projector baseline
+projector_type: mlp
+projector_num_latents: 64
+projector_depth: 2
+projector_num_heads: 8
+projector_mlp_ratio: 4.0
+projector_dropout: 0.05
+
+batch_size: 8
+num_epochs: 10
+learning_rate: 5e-5
+weight_decay: 0.01
+gradient_accumulation_steps: 8
+grad_clip_norm: 1.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.05
+warmup_steps:
+max_dnam_tokens: 8
+max_text_length: 512
+dataloader_num_workers: 0
+device: cuda:0
+torch_dtype: bfloat16
+autocast_dtype: bfloat16
+attn_implementation:
+gradient_checkpointing: true
+seed: 42
+max_train_samples:
+always_frozen_prefixes:
+  - pathology
+  - radiology
+  - segmentation
+  - dnam
+projector_prefixes:
+  - projector
+  - projectors
+output_dir: ${project.root_dir}/outputs/train/dnam_projectors
+wandb:
+  enabled: false
+  project: kidney-vlm
+  entity:
+  run_name: dnam_projector_stage1_qwen3_9b
+  mode: online
+  tags:
+    - dnam_projector
+    - dnam
+    - qwen

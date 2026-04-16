@@ -23,6 +23,18 @@
     - `uv run python scripts/data/print_registry_debug.py --source tcga --rows 20 --head`
 - `scripts/data/02_register_existing_pathology_features.py`
   - Registers already-extracted pathology patch feature files back into the unified registry.
+- `scripts/data/03_download_uni_tcga_archives.py`
+  - Downloads gated UNI2 TCGA tar archives from Hugging Face into a local staging folder.
+  - Uses fixed variables at the top of the script instead of CLI args.
+- `scripts/data/04_prepare_uni_tcga_features.py`
+  - Extracts UNI2 TCGA tar archives one at a time, converts them into the flatter CONCH-like H5 layout, writes them into `data/features/features_uni`, updates the unified registry, and deletes processed archives.
+  - Uses fixed variables at the top of the script instead of CLI args.
+- `scripts/data/06_import_cpgpt_tcga_dnam_features.py`
+  - Maps hashed CpGPT DNAm cache files from the external `hescapedna` repo back to TCGA methylation files using the original JSONL indexes, renames them into readable TCGA-linked feature filenames, copies them into `data/features/features_cpgpt_dnam`, and writes a manifest parquet/csv.
+  - Uses fixed variables at the top of the script instead of CLI args.
+- `scripts/data/07_register_cpgpt_dnam_features_into_registry.py`
+  - Aggregates the imported CpGPT DNAm manifest to the TCGA case level, writes all raw methylation beta paths into `genomics_dna_methylation_paths`, and fills one canonical `genomics_dna_methylation_feature_path` per case in the unified registry.
+  - Uses fixed variables at the top of the script instead of CLI args.
 - `scripts/embeding_extraction/01_extract_pathology_features.py`
   - Regular TRIDENT pathology feature extraction entrypoint for already-downloaded WSIs.
 - `scripts/embeding_extraction/02_extract_pathology_features_space_saver.py`
@@ -33,8 +45,25 @@
   - Builds slide-caption pathology projector training rows by matching available slide embeddings with case captions.
 - `scripts/path_proj_train/04_train_path_projectors.py`
   - Stage 1: pathology projector training entrypoint.
+- `scripts/dnam_proj_train/02_gen_dnam_case_captions.py`
+  - Procedurally generates case-level DNAm captions from unified registry metadata, raw methylation beta-value summary statistics, and tracked cancer-prioritized driver mutations.
+- `scripts/dnam_proj_train/03_build_dnam_proj_train_qa.py`
+  - Builds case-caption DNAm projector training rows by matching available DNAm feature paths with the generated DNAm captions.
+- `scripts/dnam_proj_train/04_train_dnam_projectors.py`
+  - Stage 1: DNAm projector training entrypoint that follows the unified registry train/val/test split.
+- `scripts/hf_integration/01_upload_projector_train_to_hf.py`
+  - Uploads projector-train parquet datasets to HF Hub using split-aware `DatasetDict` payloads.
+  - Uses its own config file at `conf/hf_integration/projector_train_upload.yaml`.
+- `scripts/hf_integration/02_upload_unified_parquet_to_hf.py`
+  - Uploads the unified registry parquet to HF Hub as a split-aware dataset so the viewer exposes split selection.
+  - Uses its own config file at `conf/hf_integration/unified_registry_upload.yaml`.
+- `scripts/segmentation/01_run_pathology_segmentation.py`
+  - Pathology SAMPath segmentation runner for local or remote TCGA slides.
+  - Overlaps remote download with segmentation by prefetching the next pathology WSI while processing the current one.
+  - Saves three artifacts per slide at the configured magnification/resolution: the SAMPath label mask, the rendered raw slide image, and a colored overlay.
+  - Updates `pathology_mask_paths` in the unified registry incrementally after each completed slide.
 - `scripts/segmentation/01_run_segmentation.py`
-  - Segmentation scaffold entrypoint.
+  - Compatibility alias that forwards to the pathology segmentation runner above.
 - `scripts/vlm_train/01_train_vlm.py`
   - Stage 2: VLM training scaffold entrypoint.
 

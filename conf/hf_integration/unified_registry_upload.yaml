@@ -1,0 +1,21 @@
+repo_id: wangd12/oncogpt_unified
+private: false
+create_repo_if_missing: true
+
+dry_run: false
+
+local_parquet_path: data/registry/unified.parquet
+hf_config_name: registry
+split_column: split
+set_default: true
+
+default_split_name: train
+allowed_split_names:
+  - train
+  - val
+  - validation
+  - test
+
+max_shard_size: 500MB
+commit_message: Upload unified registry dataset
+commit_description: Upload unified registry parquet as a split-aware HF DatasetDict so the viewer exposes split selection.

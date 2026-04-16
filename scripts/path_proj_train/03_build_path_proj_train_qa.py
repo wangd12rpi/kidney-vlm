@@ -26,7 +26,10 @@ _PATCH_COUNT_CACHE: dict[str, int] = {}
 
 def load_cfg():
     with initialize_config_dir(version_base=None, config_dir=str(ROOT / "conf")):
-        cfg = compose(config_name="config", overrides=["qa_genereation=path_proj_train_qa"])
+        cfg = compose(
+            config_name="config",
+            overrides=["qa_genereation=path_proj_train_qa", *sys.argv[1:]],
+        )
     OmegaConf.set_struct(cfg, False)
     return cfg
 
@@ -67,6 +70,17 @@ def _existing_local_relative_paths(value: Any) -> list[str]:
             relative_path = local_path.as_posix()
         existing_paths.append(relative_path)
     return existing_paths
+
+
+def _slide_kind(slide_stem: str) -> str:
+    upper_stem = str(slide_stem).upper()
+    if "-DX" in upper_stem:
+        return "DX"
+    if "-TS" in upper_stem:
+        return "TS"
+    if "-BS" in upper_stem:
+        return "BS"
+    return ""
 
 
 def _first_path_per_stem(paths: list[str]) -> dict[str, str]:
@@ -214,12 +228,37 @@ def _expand_case_row_to_slide_rows(
     row: dict[str, Any],
     *,
     require_existing_patch_embedding_files: bool,
+    allowed_slide_kinds: set[str] | None = None,
+    required_embedding_path_substrings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     tile_paths = (
         _existing_local_relative_paths(row.get("pathology_tile_embedding_paths"))
         if require_existing_patch_embedding_files
         else _as_list(row.get("pathology_tile_embedding_paths"))
     )
+    if not tile_paths:
+        return []
+
+    normalized_allowed_slide_kinds = {
+        str(kind).strip().upper() for kind in (allowed_slide_kinds or set()) if str(kind).strip()
+    }
+    normalized_required_substrings = [
+        str(value).strip() for value in (required_embedding_path_substrings or []) if str(value).strip()
+    ]
+
+    filtered_tile_paths: list[str] = []
+    for tile_path in tile_paths:
+        tile_path_text = str(tile_path)
+        slide_stem = Path(tile_path_text).stem
+        if normalized_allowed_slide_kinds and _slide_kind(slide_stem) not in normalized_allowed_slide_kinds:
+            continue
+        if normalized_required_substrings and not any(
+            substring in tile_path_text for substring in normalized_required_substrings
+        ):
+            continue
+        filtered_tile_paths.append(tile_path_text)
+    tile_paths = filtered_tile_paths
+
     if not tile_paths:
         return []
 
@@ -415,12 +454,22 @@ def main() -> None:
         }
 
     require_existing_patch_embedding_files = bool(qa_cfg.get("require_existing_patch_embedding_files", False))
+    allowed_slide_kinds = {
+        str(value).strip().upper() for value in list(qa_cfg.get("allowed_slide_kinds", []) or []) if str(value).strip()
+    }
+    required_embedding_path_substrings = [
+        str(value).strip()
+        for value in list(qa_cfg.get("required_pathology_embedding_path_substrings", []) or [])
+        if str(value).strip()
+    ]
     slide_rows: list[dict[str, Any]] = []
     for _, row in registry_df.iterrows():
         slide_rows.extend(
             _expand_case_row_to_slide_rows(
                 row.to_dict(),
                 require_existing_patch_embedding_files=require_existing_patch_embedding_files,
+                allowed_slide_kinds=allowed_slide_kinds,
+                required_embedding_path_substrings=required_embedding_path_substrings,
             )
         )
 

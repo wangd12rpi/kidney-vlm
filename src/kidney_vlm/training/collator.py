@@ -22,6 +22,14 @@ DEFAULT_PATHOLOGY_PROJECTOR_PROMPT_TEXTS = (
     "State the main morphologic features seen in this pathology image.\nCaption:",
 )
 
+DEFAULT_DNAM_PROJECTOR_PROMPT_TEXTS = (
+    "Describe the DNA methylation profile.\nCaption:",
+    "Summarize the DNAm case.\nCaption:",
+    "Write a DNA methylation caption for this case.\nCaption:",
+    "Provide a methylation-profile description for this case.\nCaption:",
+    "Explain the key DNAm findings in this profile.\nCaption:",
+)
+
 
 def _normalize_list(value: Any) -> list[str]:
     if value is None:
@@ -58,6 +66,15 @@ def _sample_patch_features(features: np.ndarray, max_patch_tokens: int) -> np.nd
     return features[indices]
 
 
+def _sample_sequence_features(features: torch.Tensor, max_tokens: int) -> torch.Tensor:
+    if features.ndim != 2:
+        raise ValueError(f"Expected 2D feature tensor, got shape {tuple(features.shape)}")
+    if max_tokens <= 0 or features.shape[0] <= max_tokens:
+        return features
+    indices = torch.linspace(0, features.shape[0] - 1, steps=max_tokens, device=features.device)
+    return features[indices.round().to(dtype=torch.long)]
+
+
 def _load_h5_patch_features(path: Path, max_patch_tokens: int) -> torch.Tensor:
     import h5py
 
@@ -68,6 +85,39 @@ def _load_h5_patch_features(path: Path, max_patch_tokens: int) -> torch.Tensor:
 
     features = _sample_patch_features(features, max_patch_tokens=max_patch_tokens)
     return torch.from_numpy(features).to(dtype=torch.float32)
+
+
+def _coerce_loaded_tensor(obj: Any, path: Path) -> torch.Tensor:
+    if torch.is_tensor(obj):
+        tensor = obj
+    elif isinstance(obj, dict):
+        if "embedding" in obj and torch.is_tensor(obj["embedding"]):
+            tensor = obj["embedding"]
+        elif "features" in obj and torch.is_tensor(obj["features"]):
+            tensor = obj["features"]
+        else:
+            tensor_candidates = [value for value in obj.values() if torch.is_tensor(value)]
+            if len(tensor_candidates) != 1:
+                raise ValueError(f"Unable to resolve DNAm tensor from {path}; found {len(tensor_candidates)} tensor candidates.")
+            tensor = tensor_candidates[0]
+    else:
+        raise TypeError(f"Unsupported DNAm feature payload type from {path}: {type(obj).__name__}")
+
+    tensor = tensor.detach().cpu().to(dtype=torch.float32)
+    if tensor.ndim == 1:
+        tensor = tensor.unsqueeze(0)
+    elif tensor.ndim == 2:
+        pass
+    elif tensor.ndim == 3 and tensor.shape[0] == 1:
+        tensor = tensor.squeeze(0)
+    else:
+        raise ValueError(f"Unsupported DNAm tensor shape from {path}: {tuple(tensor.shape)}")
+    return tensor
+
+
+def _load_pt_feature_tensor(path: Path, max_tokens: int) -> torch.Tensor:
+    tensor = _coerce_loaded_tensor(torch.load(path, map_location="cpu", weights_only=True), path)
+    return _sample_sequence_features(tensor, max_tokens=max_tokens)
 
 
 def _apply_patch_token_dropout(patch_tensor: torch.Tensor, dropout_prob: float) -> torch.Tensor:
@@ -238,6 +288,97 @@ class PathologyProjectorQACollator:
             "labels": labels,
             "pathology_features": pathology_features,
             "pathology_feature_mask": pathology_feature_mask,
+        }
+        batch.update(metadata)
+        return batch
+
+
+@dataclass
+class DNAMProjectorQACollator:
+    tokenizer: Any
+    root_dir: str | Path
+    max_text_length: int = 512
+    max_dnam_tokens: int = 8
+    instruction_field: str = "instruction"
+    answer_field: str = "answer"
+    dnam_embedding_field: str = "genomics_dna_methylation_feature_path"
+    prompt_texts: tuple[str, ...] = DEFAULT_DNAM_PROJECTOR_PROMPT_TEXTS
+
+    def __post_init__(self) -> None:
+        self.root_dir = Path(self.root_dir).expanduser().resolve()
+        self.prompt_texts = tuple(str(prompt).strip() for prompt in self.prompt_texts if str(prompt).strip())
+        if not self.prompt_texts:
+            raise ValueError("DNAMProjectorQACollator requires at least one prompt text.")
+
+    def _select_prompt_text(self) -> str:
+        return random.choice(self.prompt_texts)
+
+    def _build_text_pair(self, feature: dict[str, Any]) -> tuple[list[int], list[int]]:
+        answer = str(feature.get(self.answer_field, "")).strip()
+        if not answer:
+            raise ValueError("Empty answer/caption encountered in DNAm projector batch.")
+
+        prompt_text = self._select_prompt_text()
+        eos_text = self.tokenizer.eos_token or ""
+        prompt_ids = self.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+        answer_ids = self.tokenizer(f" {answer}{eos_text}", add_special_tokens=False)["input_ids"]
+        input_ids = (prompt_ids + answer_ids)[: self.max_text_length]
+        labels = ([-100] * len(prompt_ids) + answer_ids)[: self.max_text_length]
+        return input_ids, labels
+
+    def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
+        if not features:
+            raise ValueError("DNAMProjectorQACollator received an empty batch.")
+
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            raise ValueError("Tokenizer must define pad_token_id before batching projector data.")
+
+        text_input_ids: list[list[int]] = []
+        text_labels: list[list[int]] = []
+        dnam_tensors: list[torch.Tensor] = []
+        metadata_keys = ("sample_id", "project_id", "source", "patient_id")
+        metadata: dict[str, list[Any]] = {key: [] for key in metadata_keys}
+
+        for feature in features:
+            input_ids, labels = self._build_text_pair(feature)
+            text_input_ids.append(input_ids)
+            text_labels.append(labels)
+            feature_path = _resolve_existing_path(self.root_dir, feature.get(self.dnam_embedding_field, []))
+            dnam_tensor = _load_pt_feature_tensor(feature_path, max_tokens=self.max_dnam_tokens)
+            dnam_tensors.append(dnam_tensor)
+            for key in metadata_keys:
+                metadata[key].append(feature.get(key))
+
+        batch_size = len(features)
+        max_text_tokens = max(len(item) for item in text_input_ids)
+        max_dnam_tokens = max(tensor.shape[0] for tensor in dnam_tensors)
+        dnam_dim = dnam_tensors[0].shape[1]
+
+        input_ids = torch.full((batch_size, max_text_tokens), pad_token_id, dtype=torch.long)
+        attention_mask = torch.zeros((batch_size, max_text_tokens), dtype=torch.long)
+        labels = torch.full((batch_size, max_text_tokens), -100, dtype=torch.long)
+        dnam_features = torch.zeros((batch_size, max_dnam_tokens, dnam_dim), dtype=torch.float32)
+        dnam_feature_mask = torch.zeros((batch_size, max_dnam_tokens), dtype=torch.long)
+
+        for row_idx, (token_ids, token_labels, dnam_tensor) in enumerate(
+            zip(text_input_ids, text_labels, dnam_tensors, strict=True)
+        ):
+            text_len = len(token_ids)
+            token_count = dnam_tensor.shape[0]
+
+            input_ids[row_idx, :text_len] = torch.tensor(token_ids, dtype=torch.long)
+            attention_mask[row_idx, :text_len] = 1
+            labels[row_idx, :text_len] = torch.tensor(token_labels, dtype=torch.long)
+            dnam_features[row_idx, :token_count] = dnam_tensor
+            dnam_feature_mask[row_idx, :token_count] = 1
+
+        batch = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+            "dnam_features": dnam_features,
+            "dnam_feature_mask": dnam_feature_mask,
         }
         batch.update(metadata)
         return batch

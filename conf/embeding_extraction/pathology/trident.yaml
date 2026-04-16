@@ -10,7 +10,7 @@ patch_overlap: 0
 min_tissue_proportion: 0.0
 allowed_slide_kinds:
   - DX
-batch_limit: 512
+batch_limit: 768
 patch_loader_num_workers: 8
 save_format: h5
 features_root: ${project.root_dir}/data/features

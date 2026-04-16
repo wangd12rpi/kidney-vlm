@@ -69,6 +69,15 @@ Built-in TCGA source:
 - Script: `scripts/data/01_upsert_tcga_registry_rows.py`
 - Config: `conf/data/sources/tcga.yaml`
 
+Mutation panel provenance for TCGA:
+- The current shared pan-cancer mutation panel in `conf/data/sources/tcga.yaml` is derived from the official GDC PanCanAtlas driver publication: https://gdc.cancer.gov/about-data/publications/pancan-driver
+- Source supplement tables used:
+  `2020plus.tar.gz` https://api.gdc.cancer.gov/data/5fa7121d-2f4b-40e5-822d-7b5c037a7641
+  `CompositeDriver.tar.gz` https://api.gdc.cancer.gov/data/bee64811-952a-4fac-b011-9cd28c0bd8d1
+- Selection rule:
+  for each TCGA cancer type, keep genes with `q <= 0.05` in both official per-cancer tables; when that overlap is empty or the second table is unavailable, fall back to `2020plus` genes with `q <= 0.01`; the final registry panel is the union across cancer types.
+- The reusable per-cancer driver-gene mapping is saved at `src/kidney_vlm/data/sources/tcga_project_driver_genes.json`.
+
 ## Model Pipeline Scripts (Ordered)
 ```bash
 uv run python scripts/embeding_extraction/01_extract_pathology_features.py

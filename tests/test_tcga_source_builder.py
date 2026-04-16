@@ -152,6 +152,11 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
         ssm_mutations_by_case_id=ssm_mutations_by_case_id,
         ssm_mutations_by_patient_id=ssm_mutations_by_patient_id,
         mutation_gene_panel=["VHL", "PBRM1", "TP53"],
+        mutation_panel_version="test_panel_v1",
+        project_driver_gene_panel_by_project={
+            "TCGA-KIRC": ["VHL", "PBRM1"],
+            "TCGA-KIRP": ["TP53"],
+        },
         raw_root=Path("/tmp/raw"),
         source_name="tcga",
         split_ratios={"train": 0.8, "val": 0.1, "test": 0.1},
@@ -174,10 +179,15 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
     assert set(row1["tcia_body_parts"]) == {"ABDOMEN"}
     assert set(row1["tcia_study_dates"]) == {"2017-04-20", "2017-04-24"}
     assert set(row1["mutated_gene_symbols"]) == {"PBRM1", "VHL"}
-    assert set(row1["kidney_driver_gene_mutations"]) == {"PBRM1", "VHL"}
+    assert set(row1["project_driver_gene_mutations"]) == {"PBRM1", "VHL"}
+    assert row1["split_group_id"] == "tcga:TCGA-KIRC:TCGA-AA-0001"
+    assert row1["split_scheme_version"] == "tcga_project_patient_hash_v1"
+    assert bool(row1["mutation_query_succeeded"]) is True
+    assert row1["mutation_panel_version"] == "test_panel_v1"
+    assert bool(row1["mutation_panel_observed"]) is True
     assert row1["mutation_event_count"] == 2
-    assert bool(row1["has_mutation_vhl"]) is True
-    assert bool(row1["has_mutation_tp53"]) is False
+    assert bool(row1["mutation_vhl"]) is True
+    assert bool(row1["mutation_tp53"]) is False
     assert isinstance(row1["pathology_tile_embedding_paths"], list)
     assert isinstance(row1["pathology_slide_embedding_paths"], list)
     assert isinstance(row1["radiology_embedding_paths"], list)
@@ -191,7 +201,7 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
     assert row2["vital_status"] == "Dead"
     assert row2["days_to_death"] == "55"
     assert set(row2["mutated_gene_symbols"]) == {"TP53"}
-    assert bool(row2["has_mutation_tp53"]) is True
+    assert bool(row2["mutation_tp53"]) is True
     assert bool(row2["task_survival_event"]) is True
 
 
@@ -239,10 +249,10 @@ def test_build_tcga_registry_rows_keeps_all_tcga_slide_kinds() -> None:
 
 
 def test_assign_split_is_deterministic() -> None:
-    split_1 = assign_split("TCGA-AA-0001", {"train": 0.9, "test": 0.1})
-    split_2 = assign_split("TCGA-AA-0001", {"train": 0.9, "test": 0.1})
+    split_1 = assign_split("tcga:TCGA-KIRC:TCGA-AA-0001", {"train": 0.85, "val": 0.05, "test": 0.1})
+    split_2 = assign_split("tcga:TCGA-KIRC:TCGA-AA-0001", {"train": 0.85, "val": 0.05, "test": 0.1})
     assert split_1 == split_2
-    assert split_1 in {"train", "test"}
+    assert split_1 in {"train", "val", "test"}
 
 
 def test_task_survival_days_is_numeric_or_null() -> None:
@@ -286,7 +296,9 @@ def test_mutation_flags_are_null_when_mutation_query_unavailable() -> None:
         mutation_gene_panel=["VHL"],
     )
     row = frame.iloc[0]
-    assert pd.isna(row["has_mutation_vhl"])
+    assert pd.isna(row["mutation_vhl"])
+    assert pd.isna(row["mutation_panel_observed"])
+    assert bool(row["mutation_query_succeeded"]) is False
 
 
 def test_tcia_fetch_studies_by_patient_skips_bad_collection(monkeypatch) -> None:
@@ -312,3 +324,23 @@ def test_tcia_fetch_studies_by_patient_skips_bad_collection(monkeypatch) -> None
 
     assert set(studies_by_patient) == {"TCGA-AA-0001"}
     assert studies_by_patient["TCGA-AA-0001"][0]["collection"] == "TCGA-KIRC"
+
+
+def test_tcia_empty_body_is_treated_as_empty_result(monkeypatch) -> None:
+    client = TCIAClient()
+
+    class _FakeResponse:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            raise ValueError("empty body")
+
+    monkeypatch.setattr("kidney_vlm.data.sources.tcga.requests.get", lambda *args, **kwargs: _FakeResponse())
+
+    payload = client._get_json("getPatientStudy", {"Collection": "TCGA-ACC", "format": "json"})
+
+    assert payload == []

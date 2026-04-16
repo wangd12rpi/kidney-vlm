@@ -1,0 +1,32 @@
+repo_id: wangd12/oncogpt_projector_train
+private: false
+create_repo_if_missing: true
+
+dry_run: false
+
+default_split_name: train
+allowed_split_names:
+  - train
+  - val
+  - validation
+  - test
+
+skip_missing_local_files: true
+max_shard_size: 500MB
+commit_message_prefix: Upload projector-train dataset
+commit_description: Upload projector-train parquet artifacts with split-aware HF DatasetDict payloads.
+
+artifacts:
+  - name: pathology_projector_qa
+    enabled: true
+    local_parquet_path: data/path_proj_train/path_proj_train_qa.parquet
+    hf_config_name: pathology_qa
+    split_column: split
+    set_default: true
+
+  - name: pathology_case_captions
+    enabled: true
+    local_parquet_path: data/path_proj_train/path_case_captions.parquet
+    hf_config_name: pathology_caption
+    split_column: split
+    set_default: false

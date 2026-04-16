@@ -4,7 +4,12 @@ import numpy as np
 import pytest
 import torch
 
-from kidney_vlm.training.collator import PathologyProjectorQACollator, QACollator, _apply_patch_token_dropout
+from kidney_vlm.training.collator import (
+    DNAMProjectorQACollator,
+    PathologyProjectorQACollator,
+    QACollator,
+    _apply_patch_token_dropout,
+)
 
 
 class _DummyTokenizer:
@@ -75,6 +80,39 @@ def test_projector_collator_has_ten_default_prompt_texts() -> None:
     )
 
     assert len(collator.prompt_texts) == 10
+
+
+def test_dnam_projector_collator_loads_pt_features(tmp_path) -> None:
+    feature_path = tmp_path / "sample.pt"
+    torch.save(torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float32), feature_path)
+
+    collator = DNAMProjectorQACollator(
+        tokenizer=_ProjectorTokenizer(),
+        root_dir=tmp_path,
+    )
+    batch = collator(
+        [
+            {
+                "sample_id": "tcga-1",
+                "project_id": "TCGA-GBM",
+                "source": "tcga",
+                "answer": "Example DNAm caption.",
+                "genomics_dna_methylation_feature_path": feature_path.name,
+            }
+        ]
+    )
+
+    assert batch["dnam_features"].shape == (1, 1, 3)
+    assert batch["dnam_feature_mask"].tolist() == [[1]]
+
+
+def test_dnam_projector_collator_has_default_prompt_texts() -> None:
+    collator = DNAMProjectorQACollator(
+        tokenizer=_ProjectorTokenizer(),
+        root_dir=".",
+    )
+
+    assert len(collator.prompt_texts) == 5
 
 
 def test_apply_patch_token_dropout_keeps_selected_tokens_in_order(monkeypatch: pytest.MonkeyPatch) -> None:

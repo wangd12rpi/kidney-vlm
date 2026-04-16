@@ -15,7 +15,8 @@ data:
     tcga:
       exclude_project_ids: []
       split_ratios:
-        train: 0.9
+        train: 0.85
+        val: 0.05
         test: 0.1
       gdc:
         base_url: https://api.gdc.cancer.gov
@@ -28,22 +29,98 @@ data:
         max_report_files:
         fetch_ssm_mutations: true
         max_ssm_hits:
+        mutation_panel_version: pancanatlas_driver_union_v1
         mutation_gene_panel:
-          - VHL
-          - PBRM1
-          - BAP1
-          - SETD2
-          - KDM5C
-          - MTOR
-          - TP53
-          - PTEN
-          - TSC1
-          - TSC2
-          - FH
-          - MET
-          - FLCN
-          - PIK3CA
+          - AJUBA
+          - AKT1
+          - APC
           - ARID1A
+          - ARID2
+          - ATM
+          - ATRX
+          - BAP1
+          - BCOR
+          - BRAF
+          - CASP8
+          - CD79B
+          - CDH1
+          - CDKN2A
+          - CFTR
+          - CIC
+          - CNBD1
+          - COL5A1
+          - CTCF
+          - CTNNB1
+          - CTNND1
+          - CUL3
+          - DYRK1A
+          - EGFR
+          - EIF1AX
+          - EP300
+          - EPAS1
+          - ERBB2
+          - FBXW7
+          - FGFR3
+          - FLNA
+          - FOXA1
+          - FUBP1
+          - GNA11
+          - GNAQ
+          - GNAS
+          - GTF2I
+          - HLA-B
+          - HRAS
+          - IDH1
+          - IDH2
+          - KANSL1
+          - KCNQ5
+          - KDM5C
+          - KDM6A
+          - KIF1A
+          - KIT
+          - KMT2B
+          - KMT2C
+          - KMT2D
+          - KRAS
+          - LATS1
+          - MAP2K1
+          - MAP2K4
+          - MAP3K1
+          - MAX
+          - MTOR
+          - MYD88
+          - NCOR1
+          - NDUFS1
+          - NF1
+          - NF2
+          - NOTCH1
+          - NRAS
+          - NSD1
+          - NUP93
+          - PBRM1
+          - PDS5B
+          - PIK3CA
+          - PIK3R1
+          - PIM1
+          - PTEN
+          - RB1
+          - RBM10
+          - RET
+          - RPS6KA3
+          - RRAS2
+          - RUNX1
+          - RXRA
+          - SCAF4
+          - SETD2
+          - SF3B1
+          - SMAD4
+          - SMC1A
+          - SPOP
+          - STAG2
+          - STK11
+          - TP53
+          - TSC1
+          - VHL
         pathology_data_formats:
           - SVS
         pathology_data_types:

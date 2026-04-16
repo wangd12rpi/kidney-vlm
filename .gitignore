@@ -27,5 +27,10 @@ data/registry/*
 
 *.log
 scripts/model/wandb
+scripts/path_proj_train/wandb/
 
+data/pathology_segmentation
 wandb*.json
+external/SAMPath/model.ckpt
+external/SAMPath/weights/*.pth
+external/SAMPath/weights/*.ckpt

@@ -397,6 +397,7 @@ def main() -> None:
     )
     ssm_mutations_by_case_id, ssm_mutations_by_patient_id = index_ssm_hits_by_case_and_patient(ssm_hits)
     mutation_gene_panel = [str(gene) for gene in list(tcga_cfg.gdc.mutation_gene_panel)]
+    mutation_panel_version = str(tcga_cfg.gdc.get("mutation_panel_version", "")).strip()
 
     download_cfg = cfg.data.source.download
     download_enabled = bool(download_cfg.enabled)
@@ -486,6 +487,7 @@ def main() -> None:
         raw_root=Path(str(cfg.data.raw_root)),
         project_root=ROOT,
         mutation_query_succeeded=mutation_query_succeeded,
+        mutation_panel_version=mutation_panel_version,
         source_name=source_name,
         split_ratios=_split_ratios(tcga_cfg),
         show_progress=True,
@@ -512,6 +514,7 @@ def main() -> None:
             "projects": project_ids,
             "excluded_projects": exclude_project_ids,
             "download_enabled": download_enabled,
+            "mutation_panel_version": mutation_panel_version,
             "api_counts": {
                 "cases": len(cases),
                 "pathology_files": len(pathology_files),

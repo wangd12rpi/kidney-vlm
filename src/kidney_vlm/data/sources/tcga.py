@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 from pathlib import Path
 import sys
 import time
@@ -75,23 +76,49 @@ DEFAULT_REPORT_FILE_FIELDS = [
     "cases.project.project_id",
 ]
 
-DEFAULT_KIDNEY_MUTATION_GENE_PANEL = [
-    "VHL",
-    "PBRM1",
-    "BAP1",
-    "SETD2",
-    "KDM5C",
-    "MTOR",
-    "TP53",
-    "PTEN",
-    "TSC1",
-    "TSC2",
-    "FH",
-    "MET",
-    "FLCN",
-    "PIK3CA",
-    "ARID1A",
-]
+DEFAULT_MUTATION_PANEL_VERSION = "pancanatlas_driver_union_v1"
+DEFAULT_SPLIT_SCHEME_VERSION = "tcga_project_patient_hash_v1"
+PROJECT_DRIVER_GENE_JSON_PATH = Path(__file__).with_name("tcga_project_driver_genes.json")
+
+
+def _load_project_driver_gene_panel_by_project(
+    json_path: Path = PROJECT_DRIVER_GENE_JSON_PATH,
+) -> dict[str, list[str]]:
+    if not json_path.exists():
+        return {}
+
+    payload = json.loads(json_path.read_text())
+    if not isinstance(payload, dict):
+        return {}
+
+    normalized: dict[str, list[str]] = {}
+    for project_id, genes in payload.items():
+        if not isinstance(genes, list):
+            continue
+        normalized_project_id = str(project_id).strip()
+        normalized_genes = sorted(
+            {
+                str(gene).strip().upper()
+                for gene in genes
+                if str(gene).strip()
+            }
+        )
+        if normalized_project_id:
+            normalized[normalized_project_id] = normalized_genes
+    return normalized
+
+
+DEFAULT_PROJECT_DRIVER_GENE_PANEL_BY_PROJECT = _load_project_driver_gene_panel_by_project()
+DEFAULT_PANCANCER_MUTATION_GENE_PANEL = sorted(
+    {
+        gene
+        for genes in DEFAULT_PROJECT_DRIVER_GENE_PANEL_BY_PROJECT.values()
+        for gene in genes
+        if str(gene).strip()
+    }
+)
+
+DEFAULT_KIDNEY_MUTATION_GENE_PANEL = list(DEFAULT_PANCANCER_MUTATION_GENE_PANEL)
 
 
 class APIQueryError(RuntimeError):
@@ -486,6 +513,11 @@ class TCIAClient:
 
         if response is None or last_exc is not None:
             raise APIQueryError(f"TCIA request failed for endpoint '{endpoint}': {last_exc}") from last_exc
+
+        # TCIA sometimes returns HTTP 200 with an empty body instead of `[]`
+        # for collections/studies that have no matching public records.
+        if not (response.text or "").strip():
+            return []
 
         try:
             return response.json()
@@ -938,7 +970,17 @@ def build_biomarkers_text(case: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
-def assign_split(submitter_id: str, split_ratios: dict[str, float]) -> str:
+def make_split_group_id(*, source_name: str, project_id: str, patient_id: str) -> str:
+    return ":".join(
+        [
+            str(source_name).strip() or "unknown_source",
+            str(project_id).strip() or "unknown_project",
+            str(patient_id).strip() or "unknown_patient",
+        ]
+    )
+
+
+def assign_split(split_group_id: str, split_ratios: dict[str, float]) -> str:
     train_ratio = float(split_ratios.get("train", 0.9))
     val_ratio = float(split_ratios.get("val", 0.0))
     test_ratio = float(split_ratios.get("test", 0.1))
@@ -949,7 +991,7 @@ def assign_split(submitter_id: str, split_ratios: dict[str, float]) -> str:
     train_ratio = train_ratio / total
     val_ratio = val_ratio / total
 
-    digest = hashlib.sha256(str(submitter_id).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(str(split_group_id).encode("utf-8")).hexdigest()
     stable_bucket = (int(digest[:8], 16) % 10_000) / 10_000.0
     if stable_bucket < train_ratio:
         return "train"
@@ -976,6 +1018,9 @@ def build_tcga_registry_rows(
     downloaded_tcia_series_by_patient: dict[str, list[dict[str, str]]] | None = None,
     project_root: Path | None = None,
     mutation_query_succeeded: bool = True,
+    mutation_panel_version: str | None = None,
+    split_scheme_version: str = DEFAULT_SPLIT_SCHEME_VERSION,
+    project_driver_gene_panel_by_project: dict[str, list[str]] | None = None,
     show_progress: bool = True,
     progress_desc: str = "Building TCGA rows",
 ) -> pd.DataFrame:
@@ -987,7 +1032,11 @@ def build_tcga_registry_rows(
     downloaded_reports_by_file_id = downloaded_reports_by_file_id or {}
     ssm_mutations_by_case_id = ssm_mutations_by_case_id or {}
     ssm_mutations_by_patient_id = ssm_mutations_by_patient_id or {}
-    mutation_gene_panel = mutation_gene_panel or list(DEFAULT_KIDNEY_MUTATION_GENE_PANEL)
+    mutation_gene_panel = mutation_gene_panel or list(DEFAULT_PANCANCER_MUTATION_GENE_PANEL)
+    mutation_panel_version = str(mutation_panel_version or DEFAULT_MUTATION_PANEL_VERSION).strip()
+    project_driver_gene_panel_by_project = project_driver_gene_panel_by_project or dict(
+        DEFAULT_PROJECT_DRIVER_GENE_PANEL_BY_PROJECT
+    )
     tcia_series_by_patient = tcia_series_by_patient or {}
     downloaded_tcia_series_by_patient = downloaded_tcia_series_by_patient or {}
     mutation_gene_panel_upper = [str(gene).strip().upper() for gene in mutation_gene_panel if str(gene).strip()]
@@ -1100,7 +1149,7 @@ def build_tcga_registry_rows(
 
         mutation_entries = ssm_mutations_by_case_id.get(case_id, ssm_mutations_by_patient_id.get(patient_id, []))
         mutation_observed = mutation_query_succeeded and len(mutation_entries) > 0
-        if mutation_observed:
+        if mutation_query_succeeded:
             mutated_gene_symbols = sorted(
                 {
                     str(gene).strip().upper()
@@ -1137,7 +1186,8 @@ def build_tcga_registry_rows(
             mutation_types = []
             mutation_consequence_terms = []
         mutation_gene_set = set(mutated_gene_symbols)
-        kidney_driver_gene_mutations = [gene for gene in mutation_gene_panel_upper if gene in mutation_gene_set]
+        project_driver_gene_panel = list(project_driver_gene_panel_by_project.get(project_id, []))
+        project_driver_gene_mutations = [gene for gene in project_driver_gene_panel if gene in mutation_gene_set]
         days_to_last_follow_up = str(diagnosis.get("days_to_last_follow_up", "")).strip()
         overall_survival_days = _coalesce_text(days_to_death, days_to_last_follow_up)
         overall_survival_days_numeric = _to_float_or_none(overall_survival_days)
@@ -1254,7 +1304,12 @@ def build_tcga_registry_rows(
         if not radiology_paths:
             radiology_paths = sorted(set(radiology_study_fallback_paths))
 
-        split = assign_split(patient_id, split_ratios)
+        split_group_id = make_split_group_id(
+            source_name=source_name,
+            project_id=project_id,
+            patient_id=patient_id,
+        )
+        split = assign_split(split_group_id, split_ratios)
         sample_id = make_sample_id(source_name, patient_id, case_id or patient_id, modality_scope="patient_study")
         pathology_tile_embedding_paths: list[str] = []
         pathology_slide_embedding_paths: list[str] = []
@@ -1266,9 +1321,20 @@ def build_tcga_registry_rows(
             "patient_id": patient_id,
             "study_id": case_id or patient_id,
             "split": split,
+            "split_group_id": split_group_id,
+            "split_scheme_version": split_scheme_version,
+            "genomics_rna_bulk_paths": [],
+            "genomics_rna_bulk_feature_path": "",
+            "genomics_dna_methylation_paths": [],
+            "genomics_dna_methylation_feature_path": "",
+            "genomics_cnv_paths": [],
+            "genomics_cnv_feature_path": "",
             "pathology_wsi_paths": pathology_paths,
             "radiology_image_paths": sorted(set(radiology_paths)),
             "pathology_mask_paths": [],
+            "pathology_segmentation_slide_image_paths": [],
+            "pathology_segmentation_overlay_paths": [],
+            "pathology_segmentation_metadata_paths": [],
             "radiology_mask_paths": [],
             "pathology_tile_embedding_paths": list(pathology_tile_embedding_paths),
             "pathology_slide_embedding_paths": list(pathology_slide_embedding_paths),
@@ -1307,9 +1373,12 @@ def build_tcga_registry_rows(
             "mutation_types": mutation_types,
             "mutation_consequence_terms": mutation_consequence_terms,
             "mutated_gene_symbols": mutated_gene_symbols,
-            "mutation_event_count": len(mutation_entries) if mutation_observed else None,
-            "mutation_unique_gene_count": len(mutated_gene_symbols) if mutation_observed else None,
-            "kidney_driver_gene_mutations": kidney_driver_gene_mutations,
+            "mutation_query_succeeded": bool(mutation_query_succeeded),
+            "mutation_panel_version": mutation_panel_version,
+            "mutation_panel_observed": mutation_observed if mutation_query_succeeded else None,
+            "mutation_event_count": len(mutation_entries) if mutation_query_succeeded else None,
+            "mutation_unique_gene_count": len(mutated_gene_symbols) if mutation_query_succeeded else None,
+            "project_driver_gene_mutations": project_driver_gene_mutations,
             "pathology_file_ids": pathology_file_ids,
             "tcia_collections": sorted(set(tcia_collections)),
             "tcia_study_uids": sorted(set(tcia_study_uids)),
@@ -1328,7 +1397,7 @@ def build_tcga_registry_rows(
             "has_radiology": bool(radiology_paths),
         }
         for gene in mutation_gene_panel_upper:
-            row[f"has_mutation_{gene.lower()}"] = (gene in mutation_gene_set) if mutation_observed else None
+            row[f"mutation_{gene.lower()}"] = (gene in mutation_gene_set) if mutation_query_succeeded else None
         rows.append(row)
 
     if show_progress:
