@@ -15,6 +15,7 @@ CORE_COLUMNS = [
     "split",
     "pathology_wsi_paths",
     "radiology_image_paths",
+    "radiology_image_modalities",
     "pathology_mask_paths",
     "radiology_mask_paths",
     "pathology_tile_embedding_paths",
@@ -28,11 +29,22 @@ CORE_COLUMNS = [
 LIST_COLUMNS = [
     "pathology_wsi_paths",
     "radiology_image_paths",
+    "radiology_image_modalities",
     "pathology_mask_paths",
     "radiology_mask_paths",
     "pathology_tile_embedding_paths",
     "pathology_slide_embedding_paths",
     "radiology_embedding_paths",
+]
+
+OPTIONAL_LIST_COLUMNS = [
+    "radiology_mask_manifest_paths",
+    "radiology_png_dirs",
+    "radiology_download_paths",
+]
+
+OPTIONAL_INT_LIST_COLUMNS = [
+    "radiology_series_slice_counts",
 ]
 
 TEXT_COLUMNS = [
@@ -120,6 +132,46 @@ def _default_for_column(column: str) -> object:
     return ""
 
 
+def _normalize_int_list_value(value: object) -> list[int]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return []
+    if isinstance(value, list):
+        normalized: list[int] = []
+        for item in value:
+            normalized.extend(_normalize_int_list_value(item))
+        return normalized
+    if isinstance(value, tuple):
+        normalized: list[int] = []
+        for item in value:
+            normalized.extend(_normalize_int_list_value(item))
+        return normalized
+    if hasattr(value, "tolist") and not isinstance(value, str):
+        converted = value.tolist()
+        if isinstance(converted, list):
+            normalized: list[int] = []
+            for item in converted:
+                normalized.extend(_normalize_int_list_value(item))
+            return normalized
+    text = str(value).strip()
+    if not text:
+        return []
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = ast.literal_eval(text)
+        except (SyntaxError, ValueError):
+            return []
+        if isinstance(parsed, (list, tuple)):
+            normalized: list[int] = []
+            for item in parsed:
+                normalized.extend(_normalize_int_list_value(item))
+            return normalized
+        return []
+    try:
+        return [int(float(text))]
+    except ValueError:
+        return []
+
+
 def ensure_core_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     for column in CORE_COLUMNS:
@@ -137,6 +189,12 @@ def normalize_registry_df(df: pd.DataFrame) -> pd.DataFrame:
     out = ensure_core_columns(df)
     for column in LIST_COLUMNS:
         out[column] = out[column].map(_normalize_list_value)
+    for column in OPTIONAL_LIST_COLUMNS:
+        if column in out.columns:
+            out[column] = out[column].map(_normalize_list_value)
+    for column in OPTIONAL_INT_LIST_COLUMNS:
+        if column in out.columns:
+            out[column] = out[column].map(_normalize_int_list_value)
     for column in TEXT_COLUMNS:
         out[column] = out[column].fillna("").map(str)
     for column in OPTIONAL_TEXT_COLUMNS:
@@ -151,6 +209,18 @@ def validate_registry_df(df: pd.DataFrame, required_columns: Iterable[str] = COR
         raise ValueError(f"Registry is missing required columns: {missing}")
 
     for column in LIST_COLUMNS:
+        if column not in df.columns:
+            continue
+        invalid = [idx for idx, value in enumerate(df[column].tolist()) if not isinstance(value, list)]
+        if invalid:
+            raise ValueError(f"Column '{column}' must contain lists. Invalid row indices: {invalid[:10]}")
+    for column in OPTIONAL_LIST_COLUMNS:
+        if column not in df.columns:
+            continue
+        invalid = [idx for idx, value in enumerate(df[column].tolist()) if not isinstance(value, list)]
+        if invalid:
+            raise ValueError(f"Column '{column}' must contain lists. Invalid row indices: {invalid[:10]}")
+    for column in OPTIONAL_INT_LIST_COLUMNS:
         if column not in df.columns:
             continue
         invalid = [idx for idx, value in enumerate(df[column].tolist()) if not isinstance(value, list)]

@@ -19,6 +19,7 @@ def test_print_registry_status_uses_field_per_line_sample_output(tmp_path: Path)
                 "split": "train",
                 "pathology_wsi_paths": ["/tmp/slide.svs"],
                 "radiology_image_paths": ["tcia://TCGA-KIRC/TCGA-AA-0001/1.2.3"],
+                "radiology_image_modalities": ["CT"],
                 "pathology_mask_paths": [],
                 "radiology_mask_paths": [],
                 "pathology_tile_embedding_paths": ["/tmp/tile.npy"],

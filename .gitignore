@@ -29,3 +29,5 @@ data/registry/*
 scripts/model/wandb
 
 wandb*.json
+
+external/

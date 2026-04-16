@@ -1,18 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from functools import lru_cache
 import gzip
-import importlib.util
 import json
 from pathlib import Path
 import re
 import shutil
-import sys
-from typing import Any, Callable
+from typing import Any
 
 import pandas as pd
 import requests
+
+from .tcga_genomics_config import (
+    CANCER_CONFIGS,
+    MSI_THRESHOLD_HIGH,
+    MSI_THRESHOLD_LOW,
+    NONSYNONYMOUS_CLASSES,
+    PANCAN_URLS,
+    TEN_PATHWAYS,
+)
+from .tcga_genomics_special_fields import SPECIAL_FN_REGISTRY
 
 
 DEFAULT_PANCAN_FILE_NAMES = {
@@ -32,9 +38,9 @@ DEFAULT_PANCAN_FILE_NAMES = {
     "pathway_alterations": "TCGA_cancer_pathway_alterations.tsv",
 }
 
-# genomics/config.py registers the clinical follow-up URL under the legacy key
-# "clinical" rather than "clinical_followup".  This alias map is consulted when
-# the primary key resolves to an empty string.
+# The original prototype registered the clinical follow-up URL under the legacy
+# key "clinical" rather than "clinical_followup". This alias map preserves
+# compatibility with that config shape.
 _PANCAN_URL_KEY_ALIASES: dict[str, list[str]] = {
     "clinical_followup": ["clinical"],
 }
@@ -63,64 +69,6 @@ DEFAULT_PANCAN_KEYS = REQUIRED_PANCAN_KEYS + OPTIONAL_PANCAN_KEYS
 
 GDC_FILES_ENDPOINT = "https://api.gdc.cancer.gov/files"
 GDC_DATA_ENDPOINT = "https://api.gdc.cancer.gov/data"
-
-
-@dataclass(frozen=True)
-class TcgaGenomicsPrototypeResources:
-    cancer_configs: dict[str, Any]
-    pancan_urls: dict[str, str]
-    nonsynonymous_classes: set[str]
-    special_fn_registry: dict[str, Callable[[dict[str, Any], Any], dict[str, str]]]
-    msi_threshold_high: float
-    msi_threshold_low: float
-    ten_pathways: tuple[str, ...]
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]
-
-
-def _load_module_from_path(module_name: str, path: Path) -> Any:
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Unable to create import spec for {path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-@lru_cache(maxsize=1)
-def load_tcga_genomics_prototype_resources() -> TcgaGenomicsPrototypeResources:
-    genomics_dir = _repo_root() / "genomics"
-    config_path = genomics_dir / "config.py"
-    extract_path = genomics_dir / "extract.py"
-    if not config_path.exists():
-        raise FileNotFoundError(f"Missing genomics prototype config: {config_path}")
-    if not extract_path.exists():
-        raise FileNotFoundError(f"Missing genomics prototype extract module: {extract_path}")
-
-    config_module = _load_module_from_path("_kidney_vlm_tcga_genomics_config", config_path)
-
-    previous_config_module = sys.modules.get("config")
-    sys.modules["config"] = config_module
-    try:
-        extract_module = _load_module_from_path("_kidney_vlm_tcga_genomics_extract", extract_path)
-    finally:
-        if previous_config_module is None:
-            sys.modules.pop("config", None)
-        else:
-            sys.modules["config"] = previous_config_module
-
-    return TcgaGenomicsPrototypeResources(
-        cancer_configs=dict(getattr(config_module, "CANCER_CONFIGS", {})),
-        pancan_urls=dict(getattr(config_module, "PANCAN_URLS", {})),
-        nonsynonymous_classes=set(getattr(config_module, "NONSYNONYMOUS_CLASSES", set())),
-        special_fn_registry=dict(getattr(extract_module, "SPECIAL_FN_REGISTRY", {})),
-        msi_threshold_high=float(getattr(config_module, "MSI_THRESHOLD_HIGH", 3.5)),
-        msi_threshold_low=float(getattr(config_module, "MSI_THRESHOLD_LOW", 1.0)),
-        ten_pathways=tuple(str(p) for p in getattr(config_module, "TEN_PATHWAYS", [])),
-    )
 
 
 def patient_from_barcode(barcode: str) -> str:
@@ -183,14 +131,13 @@ def _resolve_gdc_data_url_by_filename(file_name: str, *, timeout_seconds: int) -
 
 def _resolve_pancan_download_url(
     *,
-    resources: TcgaGenomicsPrototypeResources,
     key: str,
     timeout_seconds: int,
 ) -> str:
-    configured = str(resources.pancan_urls.get(key, "")).strip()
+    configured = str(PANCAN_URLS.get(key, "")).strip()
     if not configured:
         for alias in _PANCAN_URL_KEY_ALIASES.get(key, []):
-            configured = str(resources.pancan_urls.get(alias, "")).strip()
+            configured = str(PANCAN_URLS.get(alias, "")).strip()
             if configured:
                 break
     if configured:
@@ -254,7 +201,6 @@ def download_tcga_pancan_atlas(
     timeout_seconds: int = 300,
     keys: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Path]:
-    resources = load_tcga_genomics_prototype_resources()
     cache_dir = Path(data_dir)
     selected_keys = list(keys or DEFAULT_PANCAN_KEYS)
     downloaded: dict[str, Path] = {}
@@ -265,7 +211,7 @@ def download_tcga_pancan_atlas(
 
         dest = _resolved_pancan_output_path(cache_dir, key)
         try:
-            url = _resolve_pancan_download_url(resources=resources, key=key, timeout_seconds=timeout_seconds)
+            url = _resolve_pancan_download_url(key=key, timeout_seconds=timeout_seconds)
             downloaded[key] = _download_open_access_file(
                 url=url,
                 dest=dest,
@@ -691,7 +637,7 @@ def _index_arm_level_events(
         if aneuploidy_col:
             value = row.get(aneuploidy_col)
             if pd.notna(value):
-                record["aneuploidy_score"] = str(int(float(value)))
+                record["arm_aneuploidy_score"] = str(int(float(value)))
 
         if record:
             results[patient_id] = record
@@ -1013,7 +959,6 @@ def _resolve_msi_status(
     patient_record: dict[str, Any],
     *,
     config: Any | None,
-    resources: TcgaGenomicsPrototypeResources,
 ) -> str:
     subtype_text = str(patient_record.get("molecular_subtype", "")).strip()
     clinical_annotations = dict(patient_record.get("clinical_annotations", {}))
@@ -1028,9 +973,9 @@ def _resolve_msi_status(
             return "MSS"
         numeric = _safe_float(annotation_value)
         if numeric is not None:
-            if numeric >= resources.msi_threshold_high:
+            if numeric >= MSI_THRESHOLD_HIGH:
                 return "MSI-H"
-            if numeric >= resources.msi_threshold_low:
+            if numeric >= MSI_THRESHOLD_LOW:
                 return "MSI-L"
             return "MSS"
     if subtype_text and "msi" in subtype_text.lower():
@@ -1171,6 +1116,10 @@ def serialize_patient_genomics(patient: dict[str, Any]) -> str:
     if aneuploidy_score != "not_available":
         lines.append(f"aneuploidy_score: {aneuploidy_score}")
 
+    arm_aneuploidy_score = patient.get("arm_aneuploidy_score", "not_available")
+    if arm_aneuploidy_score != "not_available":
+        lines.append(f"arm_aneuploidy_score: {arm_aneuploidy_score}")
+
     whole_genome_doubling = patient.get("whole_genome_doubling", "not_available")
     if whole_genome_doubling != "not_available":
         lines.append(f"whole_genome_doubling: {whole_genome_doubling}")
@@ -1250,6 +1199,7 @@ def _genomics_fields_for_output(patient_record: dict[str, Any]) -> dict[str, Any
         "tmb_class",
         "msi_status",
         "aneuploidy_score",
+        "arm_aneuploidy_score",
         "whole_genome_doubling",
         "tumor_purity",
         "key_somatic_mutations",
@@ -1276,7 +1226,6 @@ def build_tcga_genomics_by_patient_id(
     cases: list[dict[str, Any]],
     data_dir: str | Path,
 ) -> dict[str, dict[str, Any]]:
-    resources = load_tcga_genomics_prototype_resources()
     cache_dir = Path(data_dir)
     _ensure_required_pancan_inputs(cache_dir)
 
@@ -1299,7 +1248,7 @@ def build_tcga_genomics_by_patient_id(
     config_by_patient: dict[str, Any] = {}
     selected_driver_genes: set[str] = set()
     for patient_id, cancer_code in patient_to_cancer_code.items():
-        config = resources.cancer_configs.get(cancer_code)
+        config = CANCER_CONFIGS.get(cancer_code)
         config_by_patient[patient_id] = config
         if config is None:
             continue
@@ -1312,7 +1261,7 @@ def build_tcga_genomics_by_patient_id(
         cache_dir,
         patient_ids=patient_ids,
         allowed_genes=selected_driver_genes,
-        nonsynonymous_classes=resources.nonsynonymous_classes,
+        nonsynonymous_classes=NONSYNONYMOUS_CLASSES,
     )
     gistic_df, gistic_col_by_patient = _load_gistic_table(cache_dir)
     tmb_by_patient = _index_tmb(cache_dir, patient_ids)
@@ -1324,7 +1273,7 @@ def build_tcga_genomics_by_patient_id(
     viral_by_patient = _index_viral_annotations(cache_dir, patient_ids)
     clinical_by_patient = _index_clinical_followup_annotations(cache_dir, patient_ids)
     pathway_by_patient = _index_pathway_alterations(
-        cache_dir, patient_ids, ten_pathways=resources.ten_pathways
+        cache_dir, patient_ids, ten_pathways=tuple(TEN_PATHWAYS)
     )
 
     genomics_by_patient_id: dict[str, dict[str, Any]] = {}
@@ -1371,13 +1320,13 @@ def build_tcga_genomics_by_patient_id(
         if pathway_data:
             patient_record["pathway_alterations"] = pathway_data
 
-        msi_status = _resolve_msi_status(patient_record, config=config, resources=resources)
+        msi_status = _resolve_msi_status(patient_record, config=config)
         if msi_status:
             patient_record["msi_status"] = msi_status
 
         special_fields: dict[str, str] = {}
         special_fn_name = str(getattr(config, "special_fields_fn", "")).strip() if config is not None else ""
-        special_fn = resources.special_fn_registry.get(special_fn_name)
+        special_fn = SPECIAL_FN_REGISTRY.get(special_fn_name)
         if special_fn is not None:
             special_fields = dict(special_fn(patient_record, config))
         patient_record["cancer_specific_fields"] = _enrich_special_fields(

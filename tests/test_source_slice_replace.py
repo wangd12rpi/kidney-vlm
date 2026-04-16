@@ -15,6 +15,7 @@ def _row(sample_id: str, source: str) -> dict:
         "split": "train",
         "pathology_wsi_paths": [],
         "radiology_image_paths": [],
+        "radiology_image_modalities": [],
         "pathology_mask_paths": [],
         "radiology_mask_paths": [],
         "pathology_tile_embedding_paths": [],

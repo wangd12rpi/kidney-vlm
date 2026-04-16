@@ -180,6 +180,7 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
     assert set(row1["tcia_modalities"]) == {"CT", "MR"}
     assert set(row1["tcia_body_parts"]) == {"ABDOMEN"}
     assert set(row1["tcia_study_dates"]) == {"2017-04-20", "2017-04-24"}
+    assert row1["radiology_image_modalities"] == ["CT", "MR"]
     assert set(row1["mutated_gene_symbols"]) == {"PBRM1", "VHL"}
     assert set(row1["kidney_driver_gene_mutations"]) == {"PBRM1", "VHL"}
     assert row1["mutation_event_count"] == 2
@@ -192,6 +193,7 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
     row2 = frame[frame["patient_id"] == "TCGA-BB-0002"].iloc[0]
     assert len(row2["pathology_wsi_paths"]) == 0
     assert len(row2["radiology_image_paths"]) == 1
+    assert row2["radiology_image_modalities"] == ["MR"]
     assert all(not str(path).startswith("/") for path in row2["radiology_image_paths"])
     assert bool(row2["has_pathology"]) is False
     assert bool(row2["has_radiology"]) is True
@@ -243,6 +245,195 @@ def test_build_tcga_registry_rows_keeps_all_tcga_slide_kinds() -> None:
         "TCGA-EE-0005-01Z-00-TS1.svs",
         "TCGA-EE-0005-01Z-00-BS1.svs",
     }
+
+
+def test_build_tcga_registry_rows_tracks_multimodality_study_fallback_paths() -> None:
+    frame = build_tcga_registry_rows(
+        cases=[
+            {
+                "case_id": "case-rad-fallback",
+                "submitter_id": "TCGA-FF-0006",
+                "project": {"project_id": "TCGA-KIRC"},
+                "diagnoses": [{}],
+                "demographic": {},
+            }
+        ],
+        pathology_files=[],
+        tcia_studies_by_patient={
+            "TCGA-FF-0006": [
+                {
+                    "collection": "TCGA-KIRC",
+                    "patient_id": "TCGA-FF-0006",
+                    "study_instance_uid": "7.8.9",
+                    "modalities_in_study": ["CT", "MRI"],
+                }
+            ]
+        },
+        raw_root=Path("/tmp/raw"),
+        source_name="tcga",
+        split_ratios={"train": 1.0},
+    )
+
+    row = frame.iloc[0]
+    assert row["radiology_image_paths"] == ["raw/tcga/radiology/TCGA-KIRC/TCGA-FF-0006/7.8.9"]
+    assert row["radiology_image_modalities"] == ["CT|MR"]
+    assert row["tcia_modalities"] == ["CT", "MR"]
+
+
+def test_build_tcga_registry_rows_prefers_qc_passed_downloaded_series_dirs() -> None:
+    frame = build_tcga_registry_rows(
+        cases=[
+            {
+                "case_id": "case-rad-download",
+                "submitter_id": "TCGA-GG-0007",
+                "project": {"project_id": "TCGA-KIRC"},
+                "diagnoses": [{}],
+                "demographic": {},
+            }
+        ],
+        pathology_files=[],
+        tcia_studies_by_patient={
+            "TCGA-GG-0007": [
+                {
+                    "collection": "TCGA-KIRC",
+                    "patient_id": "TCGA-GG-0007",
+                    "study_instance_uid": "9.8.7",
+                    "modalities_in_study": ["CT", "MR"],
+                }
+            ]
+        },
+        tcia_series_by_patient={
+            "TCGA-GG-0007": [
+                {
+                    "collection": "TCGA-KIRC",
+                    "patient_id": "TCGA-GG-0007",
+                    "study_instance_uid": "9.8.7",
+                    "series_instance_uid": "9.8.7.1",
+                    "modality": "CT",
+                },
+                {
+                    "collection": "TCGA-KIRC",
+                    "patient_id": "TCGA-GG-0007",
+                    "study_instance_uid": "9.8.7",
+                    "series_instance_uid": "9.8.7.2",
+                    "modality": "MR",
+                },
+            ]
+        },
+        downloaded_tcia_series_by_patient={
+            "TCGA-GG-0007": [
+                {
+                    "collection": "TCGA-KIRC",
+                    "patient_id": "TCGA-GG-0007",
+                    "study_instance_uid": "9.8.7",
+                    "series_instance_uid": "9.8.7.1",
+                    "modality": "CT",
+                    "local_path": "/tmp/raw/tcga/radiology/TCGA-KIRC/TCGA-GG-0007/9.8.7/9.8.7.1.zip",
+                    "accepted": True,
+                    "extracted_path": "/tmp/raw/tcga/radiology/TCGA-KIRC/TCGA-GG-0007/9.8.7/9.8.7.1",
+                    "png_dir": "/tmp/data/processes/radiology/chunk1/pngs/TCGA-KIRC/TCGA-GG-0007/9.8.7/9.8.7.1",
+                    "embedding_ref": "data/processes/radiology/chunk1/features_medsiglip448/chunk1.h5::series=data/processes/radiology/chunk1/pngs/TCGA-KIRC/TCGA-GG-0007/9.8.7/9.8.7.1",
+                    "slice_count": 12,
+                },
+                {
+                    "collection": "TCGA-KIRC",
+                    "patient_id": "TCGA-GG-0007",
+                    "study_instance_uid": "9.8.7",
+                    "series_instance_uid": "9.8.7.2",
+                    "modality": "MR",
+                    "local_path": "/tmp/raw/tcga/radiology/TCGA-KIRC/TCGA-GG-0007/9.8.7/9.8.7.2.zip",
+                    "accepted": False,
+                    "extracted_path": "",
+                    "reject_reason": "series_is_localizer_or_scout",
+                },
+            ]
+        },
+        raw_root=Path("/tmp/raw"),
+        source_name="tcga",
+        split_ratios={"train": 1.0},
+        downloaded_radiology_only=True,
+    )
+
+    row = frame.iloc[0]
+    assert row["radiology_image_paths"] == [
+        "data/processes/radiology/chunk1/pngs/TCGA-KIRC/TCGA-GG-0007/9.8.7/9.8.7.1"
+    ]
+    assert row["radiology_image_modalities"] == ["CT"]
+    assert row["radiology_embedding_paths"] == [
+        "data/processes/radiology/chunk1/features_medsiglip448/chunk1.h5::series=data/processes/radiology/chunk1/pngs/TCGA-KIRC/TCGA-GG-0007/9.8.7/9.8.7.1"
+    ]
+    assert row["radiology_download_paths"] == [
+        "raw/tcga/radiology/TCGA-KIRC/TCGA-GG-0007/9.8.7/9.8.7.1.zip",
+        "raw/tcga/radiology/TCGA-KIRC/TCGA-GG-0007/9.8.7/9.8.7.2.zip",
+    ]
+    assert row["radiology_png_dirs"] == [
+        "data/processes/radiology/chunk1/pngs/TCGA-KIRC/TCGA-GG-0007/9.8.7/9.8.7.1"
+    ]
+    assert row["radiology_series_slice_counts"] == [12]
+    assert bool(row["has_radiology"]) is True
+
+
+def test_build_tcga_registry_rows_downloaded_radiology_only_does_not_fall_back_after_qc_rejection() -> None:
+    frame = build_tcga_registry_rows(
+        cases=[
+            {
+                "case_id": "case-rad-rejected",
+                "submitter_id": "TCGA-HH-0008",
+                "project": {"project_id": "TCGA-KIRC"},
+                "diagnoses": [{}],
+                "demographic": {},
+            }
+        ],
+        pathology_files=[],
+        tcia_studies_by_patient={
+            "TCGA-HH-0008": [
+                {
+                    "collection": "TCGA-KIRC",
+                    "patient_id": "TCGA-HH-0008",
+                    "study_instance_uid": "4.5.6",
+                    "modalities_in_study": ["CT"],
+                }
+            ]
+        },
+        tcia_series_by_patient={
+            "TCGA-HH-0008": [
+                {
+                    "collection": "TCGA-KIRC",
+                    "patient_id": "TCGA-HH-0008",
+                    "study_instance_uid": "4.5.6",
+                    "series_instance_uid": "4.5.6.1",
+                    "modality": "CT",
+                }
+            ]
+        },
+        downloaded_tcia_series_by_patient={
+            "TCGA-HH-0008": [
+                {
+                    "collection": "TCGA-KIRC",
+                    "patient_id": "TCGA-HH-0008",
+                    "study_instance_uid": "4.5.6",
+                    "series_instance_uid": "4.5.6.1",
+                    "modality": "CT",
+                    "local_path": "/tmp/raw/tcga/radiology/TCGA-KIRC/TCGA-HH-0008/4.5.6/4.5.6.1.zip",
+                    "accepted": False,
+                    "extracted_path": "",
+                    "reject_reason": "too_few_usable_images",
+                }
+            ]
+        },
+        raw_root=Path("/tmp/raw"),
+        source_name="tcga",
+        split_ratios={"train": 1.0},
+        downloaded_radiology_only=True,
+    )
+
+    row = frame.iloc[0]
+    assert row["radiology_image_paths"] == []
+    assert row["radiology_image_modalities"] == []
+    assert row["radiology_download_paths"] == [
+        "raw/tcga/radiology/TCGA-KIRC/TCGA-HH-0008/4.5.6/4.5.6.1.zip"
+    ]
+    assert bool(row["has_radiology"]) is False
 
 
 def test_build_tcga_registry_rows_includes_genomics_text() -> None:

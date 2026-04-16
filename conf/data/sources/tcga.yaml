@@ -15,6 +15,7 @@ data:
     tcga:
       exclude_project_ids: []
       upsert_mode: replace
+      radiology_process_root: ${project.root_dir}/data/processes/radiology
       patient_subset_ids: []
       patient_chunk:
         index: 0
@@ -98,13 +99,56 @@ data:
         qualifying_modalities:
           - CT
           - MR
-          - MG
-          - CR
-          - DX
-          - XA
-          - RF
-          - US
-          - PT
-          - NM
         max_studies_per_collection:
         max_series_per_study_metadata:
+        qc:
+          enabled: true
+          min_rows: 64
+          min_cols: 64
+          min_usable_images: 5
+          max_rejected_fraction_for_series: 0.5
+          reject_multiframe_series: true
+          reject_derived_series: false
+          decode_pixels: false
+          force_read: true
+          keep_rejected_extracted_series: false
+          detail_root: ${data.staging_root}/tcga_radiology_qc
+          report_jsonl_path: ${data.staging_root}/tcga_radiology_qc.jsonl
+        feature_extraction:
+          enabled: true
+          model_name: google/medsiglip-448
+          input_size: 448
+          batch_size: 16
+          device: cuda
+          png_render_mode: ct_rgb_multiwindow
+          prefer_dicom_voi: false
+          apply_padding_mask: true
+          png_resize:
+          png_root:
+          feature_store_path:
+          overwrite_pngs: false
+          skip_existing_features: true
+        segmentation:
+          enabled: false
+          keyword_map_path: ${project.root_dir}/conf/data/tcga_medsam3_keywords.yaml
+          medical_sam3_root: ${project.root_dir}/external/Medical-SAM3
+          sam3_root: ${project.root_dir}/external/sam3
+          checkpoint_path: ${project.root_dir}/external/Medical-SAM3/checkpoints/checkpoint.pt
+          input_size: ${data.source.tcga.tcia.feature_extraction.input_size}
+          device: cuda
+          confidence_threshold: 0.1
+          min_mask_pixels: 16
+          png_render_mode: ${data.source.tcga.tcia.feature_extraction.png_render_mode}
+          prefer_dicom_voi: ${data.source.tcga.tcia.feature_extraction.prefer_dicom_voi}
+          apply_padding_mask: ${data.source.tcga.tcia.feature_extraction.apply_padding_mask}
+          png_resize: ${data.source.tcga.tcia.feature_extraction.png_resize}
+          png_root:
+          mask_root:
+          overwrite_pngs: false
+          overwrite_masks: false
+          skip_existing_masks: true
+        cleanup:
+          enabled: true
+          delete_series_zip_files: true
+          delete_source_dicom_files: true
+          prune_empty_directories: true

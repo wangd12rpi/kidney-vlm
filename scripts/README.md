@@ -10,10 +10,19 @@
   - Downloads PanCancer source files into a temporary cache, writes per-patient `genomics_text` plus JSONL/text sidecars, then deletes the temporary cache when `data.source.tcga.genomics.cleanup_temp_cache=true`.
   - Does not persist RNA-seq matrices, methylation arrays, raw CN segments, or other high-dimensional genomics payloads on registry rows.
   - Downloads pathology SVS, TCIA radiology series zips, and GDC PDF reports when enabled.
+  - When `data.source.tcga.patient_chunk.size` is set, the script now writes a portable chunk package under `data/processes/radiology/chunkN/` so each chunk can be zipped and moved independently.
+  - Chunked radiology outputs are stored inside the chunk package:
+    - `features_medsiglip448/chunkN.h5`
+    - `pngs/<collection>/<patient>/<study>/<series>/...`
+    - `mask_medicalsam3/<collection>/<patient>/<study>/<series>/...`
+    - `registry/tcga.parquet`
+    - `chunk_manifest.json`
   - Example metadata-only run:
     - `uv run python scripts/data/01_upsert_tcga_registry_rows.py data.source.download.enabled=false`
   - Example full download run:
     - `uv run python scripts/data/01_upsert_tcga_registry_rows.py data.source.download.enabled=true`
+  - Example chunk-safe radiology run on one GPU:
+    - `CUDA_VISIBLE_DEVICES=0 uv run python scripts/data/01_upsert_tcga_registry_rows.py data.source.download.enabled=true data.source.download.include.radiology=true data.source.download.include.reports=false data.source.tcga.patient_chunk.index=0 data.source.tcga.patient_chunk.size=64`
 - `scripts/data/print_registry_status.py`
   - Prints per-source database status and checks local existence of referenced binaries in path columns (`*_path`, `*_paths`).
   - Reports missing reference counts and prints one sampled row per source by default.

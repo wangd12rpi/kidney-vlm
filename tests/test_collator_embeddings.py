@@ -24,6 +24,7 @@ def test_collator_exposes_new_embedding_fields_and_legacy_aliases() -> None:
                 "radiology_embedding_paths": np.array(["/tmp/rad.npy"], dtype=object),
                 "pathology_wsi_paths": [],
                 "radiology_image_paths": [],
+                "radiology_image_modalities": np.array(["CT"], dtype=object),
                 "pathology_mask_paths": [],
                 "radiology_mask_paths": [],
             }
@@ -33,6 +34,7 @@ def test_collator_exposes_new_embedding_fields_and_legacy_aliases() -> None:
     assert batch["pathology_tile_embedding_paths"] == [["/tmp/tile.npy"]]
     assert batch["pathology_slide_embedding_paths"] == [["/tmp/slide.npy"]]
     assert batch["radiology_embedding_paths"] == [["/tmp/rad.npy"]]
+    assert batch["radiology_image_modalities"] == [["CT"]]
 
 
 class _ProjectorTokenizer:

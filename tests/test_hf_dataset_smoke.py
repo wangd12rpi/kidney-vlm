@@ -19,6 +19,7 @@ def test_hf_dataset_smoke(tmp_path) -> None:
                 "split": "train",
                 "pathology_wsi_paths": ["/tmp/a.svs"],
                 "radiology_image_paths": [],
+                "radiology_image_modalities": [],
                 "pathology_mask_paths": [],
                 "radiology_mask_paths": [],
                 "pathology_tile_embedding_paths": [],

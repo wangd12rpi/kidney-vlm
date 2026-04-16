@@ -135,6 +135,9 @@ class QACollator:
         encoded_inputs["radiology_image_paths"] = [
             _normalize_list(feature.get("radiology_image_paths", [])) for feature in features
         ]
+        encoded_inputs["radiology_image_modalities"] = [
+            _normalize_list(feature.get("radiology_image_modalities", [])) for feature in features
+        ]
         encoded_inputs["pathology_mask_paths"] = [
             _normalize_list(feature.get("pathology_mask_paths", [])) for feature in features
         ]

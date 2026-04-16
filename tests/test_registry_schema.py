@@ -28,12 +28,14 @@ def test_normalize_recovers_numpy_backed_and_stringified_list_columns() -> None:
                 "source": "tcga",
                 "pathology_wsi_paths": np.array(["slide-1.svs", "slide-2.svs"], dtype=object),
                 "radiology_image_paths": np.array([], dtype=object),
+                "radiology_image_modalities": np.array(["CT", "MR"], dtype=object),
             },
             {
                 "sample_id": "b",
                 "source": "tcga",
                 "pathology_wsi_paths": np.array(["['slide-3.svs'\n 'slide-4.svs']"], dtype=object),
                 "radiology_image_paths": np.array(["[]"], dtype=object),
+                "radiology_image_modalities": np.array(["['CT'\n 'MR']"], dtype=object),
             },
         ]
     )
@@ -42,5 +44,7 @@ def test_normalize_recovers_numpy_backed_and_stringified_list_columns() -> None:
 
     assert normalized.at[0, "pathology_wsi_paths"] == ["slide-1.svs", "slide-2.svs"]
     assert normalized.at[0, "radiology_image_paths"] == []
+    assert normalized.at[0, "radiology_image_modalities"] == ["CT", "MR"]
     assert normalized.at[1, "pathology_wsi_paths"] == ["slide-3.svs", "slide-4.svs"]
     assert normalized.at[1, "radiology_image_paths"] == []
+    assert normalized.at[1, "radiology_image_modalities"] == ["CT", "MR"]

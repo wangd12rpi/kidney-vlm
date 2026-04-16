@@ -17,4 +17,5 @@ class FusionBatch:
     radiology_mask_paths: list[list[str]] | None = None
     pathology_image_paths: list[list[str]] | None = None
     radiology_image_paths: list[list[str]] | None = None
+    radiology_image_modalities: list[list[str]] | None = None
     biomarkers_text: list[str] | None = None
