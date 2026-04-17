@@ -2,12 +2,13 @@ task: path_case_caption
 
 # I/O
 source_registry_path: ${data.unified_registry_path}
-output_parquet_path: ${project.root_dir}/data/path_proj_train/path_case_captions.parquet
+output_parquet_path: ${project.root_dir}/data/proj_train/pathology/path_case_captions.parquet
 overwrite_output: false
 save_every_n_rows: 100
 
 # Selection/debug
 require_pathology: true
+exclude_missing_pathology_report_forms: true
 # Empty means include all projects.
 allowed_project_ids: []
 # Limits the number of case rows before caption expansion for quick debugging.

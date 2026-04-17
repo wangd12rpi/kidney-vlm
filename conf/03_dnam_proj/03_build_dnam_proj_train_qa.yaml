@@ -2,8 +2,8 @@ task: dnam_proj_train_qa
 
 # I/O
 source_registry_path: ${data.unified_registry_path}
-caption_parquet_path: ${project.root_dir}/data/dnam_proj_train/dnam_case_captions.parquet
-output_parquet_path: ${project.root_dir}/data/dnam_proj_train/dnam_proj_train_qa.parquet
+caption_parquet_path: ${project.root_dir}/data/proj_train/dnam/dnam_case_captions.parquet
+output_parquet_path: ${project.root_dir}/data/proj_train/dnam/dnam_proj_train_qa.parquet
 overwrite_output: true
 
 # Selection/debug

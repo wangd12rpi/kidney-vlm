@@ -27,6 +27,10 @@ from kidney_vlm.data.sources.tcga import (
     index_ssm_hits_by_case_and_patient,
     normalize_tcia_modality,
 )
+from kidney_vlm.data.sources.tcga_rna_metadata import (
+    build_tcga_rna_metadata_by_patient_id,
+    download_tcga_rna_metadata,
+)
 from kidney_vlm.data.unified_registry import replace_source_slice
 
 ROOT = find_repo_root(Path(__file__))
@@ -108,6 +112,8 @@ def _describe_enabled_download_payloads(download_cfg: DictConfig, tcia_client: T
         payloads.append("pathology slide files")
     if bool(download_cfg.include.reports):
         payloads.append("pathology/clinical report PDFs")
+    if bool(download_cfg.include.get("rna_bulk", False)):
+        payloads.append("RNA bulk files")
     if bool(download_cfg.include.get("radiology_reports", False)) and tcia_client is not None:
         payloads.append("radiology report-like SR series zip files")
     if bool(download_cfg.include.radiology) and tcia_client is not None:
@@ -125,69 +131,137 @@ def _fetch_tcga_payloads(
     list[dict[str, Any]],
     list[dict[str, Any]],
     list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, dict[str, Any]],
     dict[str, list[dict[str, Any]]],
     dict[str, list[dict[str, str]]],
     list[dict[str, Any]],
     bool,
 ]:
-    cases = gdc_client.fetch_cases(
-        project_ids=project_ids,
-        max_cases=_optional_int(tcga_cfg.gdc.max_cases),
-    )
-
-    pathology_files = gdc_client.fetch_pathology_files(
-        project_ids=project_ids,
-        data_formats=[str(x) for x in list(tcga_cfg.gdc.pathology_data_formats)],
-        data_types=[str(x) for x in list(tcga_cfg.gdc.pathology_data_types)],
-        max_files=_optional_int(tcga_cfg.gdc.max_pathology_files),
-    )
-
     max_cases = _optional_int(tcga_cfg.gdc.max_cases)
-    case_ids = None
-    if max_cases is not None:
-        case_ids = [str(case.get("case_id", "")).strip() for case in cases if str(case.get("case_id", "")).strip()]
-    report_files = gdc_client.fetch_report_files(
-        project_ids=project_ids,
-        case_ids=case_ids,
-        data_formats=[str(x) for x in list(tcga_cfg.gdc.report_data_formats)],
-        data_types=[str(x) for x in list(tcga_cfg.gdc.report_data_types)],
-        data_categories=[str(x) for x in list(tcga_cfg.gdc.report_data_categories)],
-        max_files=_optional_int(tcga_cfg.gdc.max_report_files),
-    )
-
-    tcia_studies_by_patient: dict[str, list[dict[str, Any]]] = {}
-    tcia_series_by_patient: dict[str, list[dict[str, str]]] = {}
-    if tcia_client is not None and bool(tcga_cfg.tcia.enabled):
-        configured_collections = [str(x) for x in list(tcga_cfg.tcia.collections)]
-        collections = configured_collections or project_ids
-        tcia_studies_by_patient = tcia_client.fetch_studies_by_patient(
-            collections=collections,
-            max_studies_per_collection=_optional_int(tcga_cfg.tcia.max_studies_per_collection),
+    stage_labels = [
+        "cases",
+        "pathology files",
+        "report PDFs",
+        "RNA bulk files",
+        "RNA annotation metadata" if bool(tcga_cfg.get("rna_bulk_annotations", {}).get("enabled", False)) else "RNA annotation metadata (skipped)",
+        "TCIA studies",
+        "TCIA series metadata" if bool(tcga_cfg.tcia.fetch_series_metadata) else "TCIA series metadata (skipped)",
+        "SSM mutations" if bool(tcga_cfg.gdc.fetch_ssm_mutations) else "SSM mutations (skipped)",
+    ]
+    progress = tqdm(total=len(stage_labels), desc="Pulling TCGA metadata", unit="stage", leave=True)
+    try:
+        progress.set_description_str("Pulling TCGA metadata: cases")
+        cases = gdc_client.fetch_cases(
+            project_ids=project_ids,
+            max_cases=max_cases,
         )
-        if bool(tcga_cfg.tcia.fetch_series_metadata):
+        progress.update(1)
+
+        progress.set_description_str("Pulling TCGA metadata: pathology files")
+        pathology_files = gdc_client.fetch_pathology_files(
+            project_ids=project_ids,
+            data_formats=[str(x) for x in list(tcga_cfg.gdc.pathology_data_formats)],
+            data_types=[str(x) for x in list(tcga_cfg.gdc.pathology_data_types)],
+            max_files=_optional_int(tcga_cfg.gdc.max_pathology_files),
+        )
+        progress.update(1)
+
+        case_ids = None
+        if max_cases is not None:
+            case_ids = [str(case.get("case_id", "")).strip() for case in cases if str(case.get("case_id", "")).strip()]
+        progress.set_description_str("Pulling TCGA metadata: report PDFs")
+        report_files = gdc_client.fetch_report_files(
+            project_ids=project_ids,
+            case_ids=case_ids,
+            data_formats=[str(x) for x in list(tcga_cfg.gdc.report_data_formats)],
+            data_types=[str(x) for x in list(tcga_cfg.gdc.report_data_types)],
+            data_categories=[str(x) for x in list(tcga_cfg.gdc.report_data_categories)],
+            max_files=_optional_int(tcga_cfg.gdc.max_report_files),
+        )
+        progress.update(1)
+
+        progress.set_description_str("Pulling TCGA metadata: RNA bulk files")
+        rna_bulk_files = gdc_client.fetch_rna_bulk_files(
+            project_ids=project_ids,
+            case_ids=case_ids,
+            data_categories=[str(x) for x in list(tcga_cfg.gdc.rna_bulk_data_categories)],
+            data_types=[str(x) for x in list(tcga_cfg.gdc.rna_bulk_data_types)],
+            data_formats=[str(x) for x in list(tcga_cfg.gdc.rna_bulk_data_formats)],
+            experimental_strategies=[str(x) for x in list(tcga_cfg.gdc.rna_bulk_experimental_strategies)],
+            workflow_types=[str(x) for x in list(tcga_cfg.gdc.rna_bulk_workflow_types)],
+            max_files=_optional_int(tcga_cfg.gdc.max_rna_bulk_files),
+        )
+        progress.update(1)
+
+        progress.set_description_str("Pulling TCGA metadata: RNA annotation metadata")
+        rna_bulk_metadata_by_patient_id: dict[str, dict[str, Any]] = {}
+        rna_metadata_cfg = tcga_cfg.get("rna_bulk_annotations", {})
+        if bool(rna_metadata_cfg.get("enabled", False)):
+            data_dir = Path(str(rna_metadata_cfg.data_dir)).expanduser()
+            if bool(rna_metadata_cfg.get("download", True)):
+                try:
+                    download_tcga_rna_metadata(
+                        data_dir,
+                        skip_existing=bool(rna_metadata_cfg.get("skip_existing", True)),
+                        timeout_seconds=int(rna_metadata_cfg.get("timeout_seconds", 300)),
+                        keys=[str(x) for x in list(rna_metadata_cfg.get("keys", []))] or None,
+                    )
+                except Exception as exc:
+                    print(f"[warning] Unable to download optional RNA annotation metadata: {exc}")
+            try:
+                rna_bulk_metadata_by_patient_id = build_tcga_rna_metadata_by_patient_id(
+                    cases=cases,
+                    data_dir=data_dir,
+                )
+            except Exception as exc:
+                print(f"[warning] Unable to build RNA annotation metadata: {exc}")
+        progress.update(1)
+
+        tcia_studies_by_patient: dict[str, list[dict[str, Any]]] = {}
+        tcia_series_by_patient: dict[str, list[dict[str, str]]] = {}
+        progress.set_description_str("Pulling TCGA metadata: TCIA studies")
+        if tcia_client is not None and bool(tcga_cfg.tcia.enabled):
+            configured_collections = [str(x) for x in list(tcga_cfg.tcia.collections)]
+            collections = configured_collections or project_ids
+            tcia_studies_by_patient = tcia_client.fetch_studies_by_patient(
+                collections=collections,
+                max_studies_per_collection=_optional_int(tcga_cfg.tcia.max_studies_per_collection),
+            )
+        progress.update(1)
+
+        progress.set_description_str("Pulling TCGA metadata: TCIA series metadata")
+        if tcia_client is not None and bool(tcga_cfg.tcia.enabled) and bool(tcga_cfg.tcia.fetch_series_metadata):
             tcia_series_by_patient = tcia_client.fetch_series_by_patient(
                 studies_by_patient=tcia_studies_by_patient,
                 max_series_per_study=_optional_int(tcga_cfg.tcia.max_series_per_study_metadata),
             )
+        progress.update(1)
 
-    ssm_hits: list[dict[str, Any]] = []
-    mutation_query_succeeded = False
-    if bool(tcga_cfg.gdc.fetch_ssm_mutations):
-        mutation_gene_panel = [str(gene) for gene in list(tcga_cfg.gdc.mutation_gene_panel)]
-        try:
-            ssm_hits = gdc_client.fetch_ssm_hits(
-                project_ids=project_ids,
-                gene_symbols=mutation_gene_panel,
-                max_hits=_optional_int(tcga_cfg.gdc.max_ssm_hits),
-            )
-            mutation_query_succeeded = True
-        except APIQueryError as exc:
-            print(f"[warning] GDC SSM query failed; mutation fields will be null. {exc}")
+        ssm_hits: list[dict[str, Any]] = []
+        mutation_query_succeeded = False
+        progress.set_description_str("Pulling TCGA metadata: SSM mutations")
+        if bool(tcga_cfg.gdc.fetch_ssm_mutations):
+            mutation_gene_panel = [str(gene) for gene in list(tcga_cfg.gdc.mutation_gene_panel)]
+            try:
+                ssm_hits = gdc_client.fetch_ssm_hits(
+                    project_ids=project_ids,
+                    gene_symbols=mutation_gene_panel,
+                    max_hits=_optional_int(tcga_cfg.gdc.max_ssm_hits),
+                )
+                mutation_query_succeeded = True
+            except APIQueryError as exc:
+                print(f"[warning] GDC SSM query failed; mutation fields will be null. {exc}")
+        progress.update(1)
+    finally:
+        progress.close()
 
     return (
         cases,
         pathology_files,
         report_files,
+        rna_bulk_files,
+        rna_bulk_metadata_by_patient_id,
         tcia_studies_by_patient,
         tcia_series_by_patient,
         ssm_hits,
@@ -395,6 +469,8 @@ def main() -> None:
         cases,
         pathology_files,
         report_files,
+        rna_bulk_files,
+        rna_bulk_metadata_by_patient_id,
         tcia_studies_by_patient,
         tcia_series_by_patient,
         ssm_hits,
@@ -417,9 +493,11 @@ def main() -> None:
 
     downloaded_pathology_by_file_id: dict[str, str] = {}
     downloaded_reports_by_file_id: dict[str, str] = {}
+    downloaded_rna_bulk_by_file_id: dict[str, str] = {}
     downloaded_tcia_series_by_patient: dict[str, list[dict[str, str]]] = {}
     pathology_download_count = 0
     report_download_count = 0
+    rna_bulk_download_count = 0
     radiology_download_count = 0
     radiology_report_download_count = 0
 
@@ -467,6 +545,22 @@ def main() -> None:
             )
             print(f"Pathology/clinical report PDF files downloaded/resolved: {report_download_count}")
 
+        if bool(download_cfg.include.get("rna_bulk", False)):
+            rna_bulk_plan = _build_gdc_download_plan(
+                rna_bulk_files,
+                raw_root=raw_root,
+                source_name=source_name,
+                subfolder="rna_bulk",
+            )
+            downloaded_rna_bulk_by_file_id, rna_bulk_download_count = _download_gdc_plan(
+                gdc_client,
+                rna_bulk_plan,
+                skip_existing=skip_existing,
+                max_downloads=_optional_int(download_cfg.max_rna_bulk_downloads),
+                progress_desc="Downloading RNA bulk files",
+            )
+            print(f"RNA bulk files downloaded/resolved: {rna_bulk_download_count}")
+
         patient_ids = {
             str(case.get("submitter_id", "")).strip()
             for case in cases
@@ -513,11 +607,14 @@ def main() -> None:
     source_df = build_tcga_registry_rows(
         cases=cases,
         pathology_files=pathology_files,
+        rna_bulk_files=rna_bulk_files,
         report_files=report_files,
+        rna_bulk_metadata_by_patient_id=rna_bulk_metadata_by_patient_id,
         tcia_studies_by_patient=tcia_studies_by_patient,
         tcia_series_by_patient=tcia_series_by_patient,
         downloaded_pathology_by_file_id=downloaded_pathology_by_file_id,
         downloaded_reports_by_file_id=downloaded_reports_by_file_id,
+        downloaded_rna_bulk_by_file_id=downloaded_rna_bulk_by_file_id,
         ssm_mutations_by_case_id=ssm_mutations_by_case_id,
         ssm_mutations_by_patient_id=ssm_mutations_by_patient_id,
         mutation_gene_panel=mutation_gene_panel,
@@ -557,6 +654,8 @@ def main() -> None:
                 "cases": len(cases),
                 "pathology_files": len(pathology_files),
                 "report_files": len(report_files),
+                "rna_bulk_files": len(rna_bulk_files),
+                "rna_annotation_cases": sum(1 for payload in rna_bulk_metadata_by_patient_id.values() if payload),
                 "radiology_patients": len(tcia_studies_by_patient),
                 "tcia_series_patients": len(tcia_series_by_patient),
                 "tcia_series_records": sum(len(entries) for entries in tcia_series_by_patient.values()),
@@ -567,6 +666,7 @@ def main() -> None:
             "download_counts": {
                 "pathology_files": pathology_download_count,
                 "report_files": report_download_count,
+                "rna_bulk_files": rna_bulk_download_count,
                 "radiology_series": radiology_download_count,
                 "radiology_report_series": radiology_report_download_count,
             },
@@ -579,6 +679,8 @@ def main() -> None:
     print(f"Cases pulled: {len(cases)}")
     print(f"Pathology files pulled: {len(pathology_files)}")
     print(f"Pathology/clinical report PDF files pulled: {len(report_files)}")
+    print(f"RNA bulk files pulled: {len(rna_bulk_files)}")
+    print(f"RNA annotation cases available: {sum(1 for payload in rna_bulk_metadata_by_patient_id.values() if payload)}")
     print(f"Radiology patients pulled: {len(tcia_studies_by_patient)}")
     print(f"TCIA series metadata records pulled: {sum(len(entries) for entries in tcia_series_by_patient.values())}")
     print(f"SSM mutation hits pulled: {len(ssm_hits)}")

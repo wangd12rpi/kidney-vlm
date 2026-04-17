@@ -13,7 +13,6 @@ import requests
 
 from kidney_vlm.data.id_factory import make_sample_id
 from kidney_vlm.data.registry_schema import CORE_COLUMNS, empty_registry_frame, normalize_registry_df
-
 from tqdm.auto import tqdm
 
 
@@ -74,6 +73,23 @@ DEFAULT_REPORT_FILE_FIELDS = [
     "cases.case_id",
     "cases.submitter_id",
     "cases.project.project_id",
+]
+
+DEFAULT_RNA_BULK_FILE_FIELDS = [
+    "file_id",
+    "file_name",
+    "data_category",
+    "data_type",
+    "data_format",
+    "experimental_strategy",
+    "analysis.workflow_type",
+    "file_size",
+    "md5sum",
+    "cases.case_id",
+    "cases.submitter_id",
+    "cases.project.project_id",
+    "cases.samples.submitter_id",
+    "cases.samples.sample_type",
 ]
 
 DEFAULT_MUTATION_PANEL_VERSION = "pancanatlas_driver_union_v1"
@@ -373,6 +389,105 @@ class GDCClient:
                 "content": filters,
             },
             "fields": ",".join(fields or DEFAULT_REPORT_FILE_FIELDS),
+            "sort": "file_name:asc",
+        }
+        return self._post_hits("files", payload, max_records=max_files)
+
+    def fetch_rna_bulk_files(
+        self,
+        *,
+        project_ids: list[str],
+        case_ids: list[str] | None = None,
+        data_categories: list[str] | None = None,
+        data_types: list[str] | None = None,
+        data_formats: list[str] | None = None,
+        experimental_strategies: list[str] | None = None,
+        workflow_types: list[str] | None = None,
+        fields: list[str] | None = None,
+        max_files: int | None = None,
+    ) -> list[dict[str, Any]]:
+        filters: list[dict[str, Any]] = [
+            {
+                "op": "in",
+                "content": {
+                    "field": "cases.project.project_id",
+                    "value": project_ids,
+                },
+            }
+        ]
+
+        if case_ids:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "cases.case_id",
+                        "value": case_ids,
+                    },
+                }
+            )
+
+        if data_categories:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "data_category",
+                        "value": data_categories,
+                    },
+                }
+            )
+
+        if data_types:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "data_type",
+                        "value": data_types,
+                    },
+                }
+            )
+
+        if data_formats:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "data_format",
+                        "value": data_formats,
+                    },
+                }
+            )
+
+        if experimental_strategies:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "experimental_strategy",
+                        "value": experimental_strategies,
+                    },
+                }
+            )
+
+        if workflow_types:
+            filters.append(
+                {
+                    "op": "in",
+                    "content": {
+                        "field": "analysis.workflow_type",
+                        "value": workflow_types,
+                    },
+                }
+            )
+
+        payload = {
+            "filters": {
+                "op": "and",
+                "content": filters,
+            },
+            "fields": ",".join(fields or DEFAULT_RNA_BULK_FILE_FIELDS),
             "sort": "file_name:asc",
         }
         return self._post_hits("files", payload, max_records=max_files)
@@ -915,6 +1030,24 @@ def _coalesce_text(*values: Any) -> str:
     return ""
 
 
+def _linked_case_sample_metadata(file_hit: dict[str, Any], *, linked_case: dict[str, Any]) -> tuple[list[str], list[str]]:
+    sample_ids: list[str] = []
+    sample_types: list[str] = []
+    raw_samples = linked_case.get("samples", [])
+    if not isinstance(raw_samples, list):
+        raw_samples = []
+    for sample in raw_samples:
+        if not isinstance(sample, dict):
+            continue
+        sample_id = str(sample.get("submitter_id", "")).strip()
+        sample_type = str(sample.get("sample_type", "")).strip()
+        if sample_id and sample_id not in sample_ids:
+            sample_ids.append(sample_id)
+        if sample_type and sample_type not in sample_types:
+            sample_types.append(sample_type)
+    return sample_ids, sample_types
+
+
 def _unique_sorted_non_empty(values: list[str]) -> list[str]:
     return sorted({str(value).strip() for value in values if str(value).strip()})
 
@@ -1049,13 +1182,16 @@ def build_tcga_registry_rows(
     *,
     cases: list[dict[str, Any]],
     pathology_files: list[dict[str, Any]],
+    rna_bulk_files: list[dict[str, Any]] | None = None,
     tcia_studies_by_patient: dict[str, list[dict[str, Any]]],
     raw_root: Path,
     source_name: str,
     split_ratios: dict[str, float],
     report_files: list[dict[str, Any]] | None = None,
+    rna_bulk_metadata_by_patient_id: dict[str, dict[str, Any]] | None = None,
     downloaded_pathology_by_file_id: dict[str, str] | None = None,
     downloaded_reports_by_file_id: dict[str, str] | None = None,
+    downloaded_rna_bulk_by_file_id: dict[str, str] | None = None,
     ssm_mutations_by_case_id: dict[str, list[dict[str, Any]]] | None = None,
     ssm_mutations_by_patient_id: dict[str, list[dict[str, Any]]] | None = None,
     mutation_gene_panel: list[str] | None = None,
@@ -1074,8 +1210,11 @@ def build_tcga_registry_rows(
         return empty_registry_frame()
 
     report_files = report_files or []
+    rna_bulk_files = rna_bulk_files or []
+    rna_bulk_metadata_by_patient_id = rna_bulk_metadata_by_patient_id or {}
     downloaded_pathology_by_file_id = downloaded_pathology_by_file_id or {}
     downloaded_reports_by_file_id = downloaded_reports_by_file_id or {}
+    downloaded_rna_bulk_by_file_id = downloaded_rna_bulk_by_file_id or {}
     ssm_mutations_by_case_id = ssm_mutations_by_case_id or {}
     ssm_mutations_by_patient_id = ssm_mutations_by_patient_id or {}
     mutation_gene_panel = mutation_gene_panel or list(DEFAULT_PANCANCER_MUTATION_GENE_PANEL)
@@ -1096,6 +1235,8 @@ def build_tcga_registry_rows(
     pathology_by_patient: dict[str, list[dict[str, str]]] = {}
     reports_by_case: dict[str, list[dict[str, str]]] = {}
     reports_by_patient: dict[str, list[dict[str, str]]] = {}
+    rna_bulk_by_case: dict[str, list[dict[str, Any]]] = {}
+    rna_bulk_by_patient: dict[str, list[dict[str, Any]]] = {}
 
     for file_hit in pathology_files:
         file_id = str(file_hit.get("file_id", ""))
@@ -1141,7 +1282,7 @@ def build_tcga_registry_rows(
             patient_id = str(linked_case.get("submitter_id", ""))
             project_id = str((linked_case.get("project") or {}).get("project_id", ""))
 
-            fallback_path = raw_root / source_name / "reports" / project_id / patient_id / file_name
+            fallback_path = raw_root / source_name / "report_pathology" / project_id / patient_id / file_name
             local_path = Path(
                 downloaded_reports_by_file_id.get(file_id, str(fallback_path))
             )
@@ -1154,6 +1295,39 @@ def build_tcga_registry_rows(
                 reports_by_case.setdefault(case_id, []).append(report_entry)
             if patient_id:
                 reports_by_patient.setdefault(patient_id, []).append(report_entry)
+
+    for file_hit in rna_bulk_files:
+        file_id = str(file_hit.get("file_id", ""))
+        file_name = str(file_hit.get("file_name", ""))
+        workflow_type = str(((file_hit.get("analysis") or {}) if isinstance(file_hit.get("analysis"), dict) else {}).get("workflow_type", "")).strip()
+        linked_cases = file_hit.get("cases", [])
+        if not isinstance(linked_cases, list):
+            continue
+
+        for linked_case in linked_cases:
+            if not isinstance(linked_case, dict):
+                continue
+            case_id = str(linked_case.get("case_id", ""))
+            patient_id = str(linked_case.get("submitter_id", ""))
+            project_id = str((linked_case.get("project") or {}).get("project_id", ""))
+            sample_ids, sample_types = _linked_case_sample_metadata(file_hit, linked_case=linked_case)
+
+            fallback_path = raw_root / source_name / "rna_bulk" / project_id / patient_id / file_name
+            local_path = Path(
+                downloaded_rna_bulk_by_file_id.get(file_id, str(fallback_path))
+            )
+            rna_entry = {
+                "file_id": file_id,
+                "file_name": file_name,
+                "local_path": _to_project_relative_path(local_path, resolved_project_root),
+                "workflow_type": workflow_type,
+                "sample_ids": list(sample_ids),
+                "sample_types": list(sample_types),
+            }
+            if case_id:
+                rna_bulk_by_case.setdefault(case_id, []).append(rna_entry)
+            if patient_id:
+                rna_bulk_by_patient.setdefault(patient_id, []).append(rna_entry)
 
     rows: list[dict[str, Any]] = []
 
@@ -1192,6 +1366,22 @@ def build_tcga_registry_rows(
         report_pdf_paths = sorted({entry["local_path"] for entry in report_entries if entry.get("local_path")})
         report_file_ids = sorted({entry["file_id"] for entry in report_entries if entry.get("file_id")})
         report_file_names = sorted({entry["file_name"] for entry in report_entries if entry.get("file_name")})
+        rna_bulk_entries = rna_bulk_by_case.get(case_id, rna_bulk_by_patient.get(patient_id, []))
+        genomics_rna_bulk_paths = sorted({entry["local_path"] for entry in rna_bulk_entries if entry.get("local_path")})
+        genomics_rna_bulk_file_ids = sorted({entry["file_id"] for entry in rna_bulk_entries if entry.get("file_id")})
+        genomics_rna_bulk_file_names = sorted({entry["file_name"] for entry in rna_bulk_entries if entry.get("file_name")})
+        genomics_rna_bulk_sample_types = sorted(
+            {
+                str(sample_type).strip()
+                for entry in rna_bulk_entries
+                for sample_type in list(entry.get("sample_types", []))
+                if str(sample_type).strip()
+            }
+        )
+        genomics_rna_bulk_workflow_types = sorted(
+            {entry["workflow_type"] for entry in rna_bulk_entries if str(entry.get("workflow_type", "")).strip()}
+        )
+        rna_bulk_metadata = dict(rna_bulk_metadata_by_patient_id.get(patient_id, {}))
 
         mutation_entries = ssm_mutations_by_case_id.get(case_id, ssm_mutations_by_patient_id.get(patient_id, []))
         mutation_observed = mutation_query_succeeded and len(mutation_entries) > 0
@@ -1473,8 +1663,18 @@ def build_tcga_registry_rows(
             "split": split,
             "split_group_id": split_group_id,
             "split_scheme_version": split_scheme_version,
-            "genomics_rna_bulk_paths": [],
+            "genomics_rna_bulk_paths": list(genomics_rna_bulk_paths),
             "genomics_rna_bulk_feature_path": "",
+            "genomics_rna_bulk_file_ids": list(genomics_rna_bulk_file_ids),
+            "genomics_rna_bulk_file_names": list(genomics_rna_bulk_file_names),
+            "genomics_rna_bulk_sample_types": list(genomics_rna_bulk_sample_types),
+            "genomics_rna_bulk_workflow_types": list(genomics_rna_bulk_workflow_types),
+            "genomics_rna_bulk_molecular_subtype": str(rna_bulk_metadata.get("genomics_rna_bulk_molecular_subtype", "")),
+            "genomics_rna_bulk_immune_subtype": str(rna_bulk_metadata.get("genomics_rna_bulk_immune_subtype", "")),
+            "genomics_rna_bulk_leukocyte_fraction": str(rna_bulk_metadata.get("genomics_rna_bulk_leukocyte_fraction", "")),
+            "genomics_rna_bulk_tumor_purity": str(rna_bulk_metadata.get("genomics_rna_bulk_tumor_purity", "")),
+            "genomics_rna_bulk_top_immune_cell_types": list(rna_bulk_metadata.get("genomics_rna_bulk_top_immune_cell_types", [])),
+            "genomics_rna_bulk_top_immune_cell_fractions": list(rna_bulk_metadata.get("genomics_rna_bulk_top_immune_cell_fractions", [])),
             "genomics_dna_methylation_paths": [],
             "genomics_dna_methylation_feature_path": "",
             "genomics_cnv_paths": [],

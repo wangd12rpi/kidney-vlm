@@ -233,3 +233,28 @@ def test_prepare_training_frame_keeps_middle_patch_count_quantiles(tmp_path: Pat
 
     assert filtered["pathology_patch_count"].tolist() == [20, 30, 40]
     assert stats["rows_removed_patch_count_outliers"] == 2
+
+
+def test_filter_missing_pathology_report_form_rows_excludes_sample_ids(monkeypatch) -> None:
+    module = _load_script_module()
+
+    def fake_sample_ids_with_missing_pathology_report_forms(rows, *, repo_root, sample_id_key="sample_id", report_paths_key="report_pdf_paths"):
+        return {"tcga-bad"}
+
+    monkeypatch.setattr(
+        module,
+        "sample_ids_with_missing_pathology_report_forms",
+        fake_sample_ids_with_missing_pathology_report_forms,
+    )
+
+    frame = module.pd.DataFrame(
+        [
+            {"sample_id": "tcga-good", "report_pdf_paths": ["good.pdf"]},
+            {"sample_id": "tcga-bad", "report_pdf_paths": ["bad.pdf"]},
+        ]
+    )
+
+    filtered, bad_sample_ids = module._filter_missing_pathology_report_form_rows(frame)
+
+    assert bad_sample_ids == {"tcga-bad"}
+    assert filtered["sample_id"].tolist() == ["tcga-good"]

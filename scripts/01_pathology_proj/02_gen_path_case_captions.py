@@ -18,6 +18,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kidney_vlm.data.registry_io import read_parquet_or_empty
+from kidney_vlm.pathology.report_filters import sample_ids_with_missing_pathology_report_forms
 from kidney_vlm.repo_root import find_repo_root
 from kidney_vlm.script_config import load_script_cfg
 
@@ -32,7 +33,7 @@ DEFAULT_CAPTION_PROMPT_VARIANTS = (
 )
 
 LEGACY_CASE_CAPTION_SOURCE_CANDIDATES = (
-    Path("data/path_proj_train/path_proj_train_qa.parquet"),
+    Path("data/proj_train/pathology/path_proj_train_qa.parquet"),
     Path("data/qa/path_proj_train_qa.parquet"),
 )
 
@@ -366,6 +367,21 @@ def _flush_output_parquet(
     return final_df
 
 
+def _filter_missing_pathology_report_form_rows(frame: pd.DataFrame) -> tuple[pd.DataFrame, set[str]]:
+    if frame.empty or "sample_id" not in frame.columns or "report_pdf_paths" not in frame.columns:
+        return frame.copy(), set()
+
+    bad_sample_ids = sample_ids_with_missing_pathology_report_forms(
+        [row.to_dict() for _, row in frame.iterrows()],
+        repo_root=ROOT,
+    )
+    if not bad_sample_ids:
+        return frame.copy(), set()
+
+    filtered = frame[~frame["sample_id"].astype(str).isin(bad_sample_ids)].reset_index(drop=True)
+    return filtered, bad_sample_ids
+
+
 def _build_client(azure_cfg: Any):
     try:
         from openai import AzureOpenAI
@@ -523,6 +539,15 @@ def main() -> None:
     if allowed_project_ids and "project_id" in registry_df.columns:
         registry_df = registry_df[registry_df["project_id"].isin(allowed_project_ids)]
 
+    excluded_missing_report_sample_ids: set[str] = set()
+    if bool(qa_cfg.get("exclude_missing_pathology_report_forms", True)):
+        registry_df, excluded_missing_report_sample_ids = _filter_missing_pathology_report_form_rows(registry_df)
+        if excluded_missing_report_sample_ids:
+            print(
+                "Excluded pathology cases with TCGA missing pathology report forms: "
+                f"{len(excluded_missing_report_sample_ids)} samples"
+            )
+
     if registry_df.empty:
         print("No rows selected for case-caption generation.")
         return
@@ -533,6 +558,15 @@ def main() -> None:
         overwrite_output=overwrite_output,
         default_instruction=instruction_text,
     )
+    existing_output_changed = False
+    if excluded_missing_report_sample_ids and not existing_output.empty and "sample_id" in existing_output.columns:
+        filtered_existing_output = existing_output[
+            ~existing_output["sample_id"].astype(str).isin(excluded_missing_report_sample_ids)
+        ].reset_index(drop=True)
+        if len(filtered_existing_output) != len(existing_output):
+            existing_output = filtered_existing_output
+            existing_output_changed = True
+
     done_row_ids: set[str] = set()
     system_prompt = str(qa_cfg.system_prompt)
     captions_per_case = int(qa_cfg.get("captions_per_case", 1))
@@ -585,6 +619,10 @@ def main() -> None:
     print(f"Case caption rows requested: {len(all_caption_tasks)}")
 
     if not rows_to_process:
+        if existing_output_changed:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            existing_output.to_parquet(output_path, index=False)
+            print(f"Rewrote filtered pathology case-caption parquet: {output_path}")
         print("All selected case-caption rows already generated in output parquet.")
         return
 

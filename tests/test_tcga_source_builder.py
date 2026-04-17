@@ -64,6 +64,44 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
             "cases": [{"case_id": "case-1", "submitter_id": "TCGA-AA-0001", "project": {"project_id": "TCGA-KIRC"}}],
         },
     ]
+    rna_bulk_files = [
+        {
+            "file_id": "rna1",
+            "file_name": "TCGA-AA-0001_rna_counts.tsv",
+            "analysis": {"workflow_type": "STAR - Counts"},
+            "cases": [
+                {
+                    "case_id": "case-1",
+                    "submitter_id": "TCGA-AA-0001",
+                    "project": {"project_id": "TCGA-KIRC"},
+                    "samples": [
+                        {
+                            "submitter_id": "TCGA-AA-0001-01A",
+                            "sample_type": "Primary Tumor",
+                        }
+                    ],
+                }
+            ],
+        },
+        {
+            "file_id": "rna2",
+            "file_name": "TCGA-BB-0002_rna_counts.tsv",
+            "analysis": {"workflow_type": "HTSeq - Counts"},
+            "cases": [
+                {
+                    "case_id": "case-2",
+                    "submitter_id": "TCGA-BB-0002",
+                    "project": {"project_id": "TCGA-KIRP"},
+                    "samples": [
+                        {
+                            "submitter_id": "TCGA-BB-0002-11A",
+                            "sample_type": "Solid Tissue Normal",
+                        }
+                    ],
+                }
+            ],
+        },
+    ]
 
     tcia_studies_by_patient = {
         "TCGA-AA-0001": [
@@ -143,10 +181,22 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
             }
         ]
     }
+    rna_bulk_metadata_by_patient_id = {
+        "TCGA-AA-0001": {
+            "genomics_rna_bulk_molecular_subtype": "ccA",
+            "genomics_rna_bulk_immune_subtype": "C3",
+            "genomics_rna_bulk_leukocyte_fraction": "0.143",
+            "genomics_rna_bulk_tumor_purity": "0.82",
+            "genomics_rna_bulk_top_immune_cell_types": ["T cells CD8", "Macrophages M2"],
+            "genomics_rna_bulk_top_immune_cell_fractions": ["0.331", "0.214"],
+        }
+    }
 
     frame = build_tcga_registry_rows(
         cases=cases,
         pathology_files=pathology_files,
+        rna_bulk_files=rna_bulk_files,
+        rna_bulk_metadata_by_patient_id=rna_bulk_metadata_by_patient_id,
         tcia_studies_by_patient=tcia_studies_by_patient,
         tcia_series_by_patient=tcia_series_by_patient,
         ssm_mutations_by_case_id=ssm_mutations_by_case_id,
@@ -194,6 +244,17 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
     assert isinstance(row1["pathology_tile_embedding_paths"], list)
     assert isinstance(row1["pathology_slide_embedding_paths"], list)
     assert isinstance(row1["radiology_embedding_paths"], list)
+    assert row1["genomics_rna_bulk_paths"] == ["raw/tcga/rna_bulk/TCGA-KIRC/TCGA-AA-0001/TCGA-AA-0001_rna_counts.tsv"]
+    assert row1["genomics_rna_bulk_file_ids"] == ["rna1"]
+    assert row1["genomics_rna_bulk_file_names"] == ["TCGA-AA-0001_rna_counts.tsv"]
+    assert row1["genomics_rna_bulk_sample_types"] == ["Primary Tumor"]
+    assert row1["genomics_rna_bulk_workflow_types"] == ["STAR - Counts"]
+    assert row1["genomics_rna_bulk_molecular_subtype"] == "ccA"
+    assert row1["genomics_rna_bulk_immune_subtype"] == "C3"
+    assert row1["genomics_rna_bulk_leukocyte_fraction"] == "0.143"
+    assert row1["genomics_rna_bulk_tumor_purity"] == "0.82"
+    assert row1["genomics_rna_bulk_top_immune_cell_types"] == ["T cells CD8", "Macrophages M2"]
+    assert row1["genomics_rna_bulk_top_immune_cell_fractions"] == ["0.331", "0.214"]
 
     row2 = frame[frame["patient_id"] == "TCGA-BB-0002"].iloc[0]
     assert len(row2["pathology_wsi_paths"]) == 0
@@ -208,6 +269,13 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
     assert set(row2["mutated_gene_symbols"]) == {"TP53"}
     assert bool(row2["mutation_tp53"]) is True
     assert bool(row2["task_survival_event"]) is True
+    assert row2["genomics_rna_bulk_paths"] == ["raw/tcga/rna_bulk/TCGA-KIRP/TCGA-BB-0002/TCGA-BB-0002_rna_counts.tsv"]
+    assert row2["genomics_rna_bulk_sample_types"] == ["Solid Tissue Normal"]
+    assert row2["genomics_rna_bulk_workflow_types"] == ["HTSeq - Counts"]
+    assert row2["genomics_rna_bulk_molecular_subtype"] == ""
+    assert row2["genomics_rna_bulk_immune_subtype"] == ""
+    assert row2["genomics_rna_bulk_top_immune_cell_types"] == []
+    assert row2["genomics_rna_bulk_top_immune_cell_fractions"] == []
 
 
 def test_build_tcga_registry_rows_keeps_all_tcga_slide_kinds() -> None:

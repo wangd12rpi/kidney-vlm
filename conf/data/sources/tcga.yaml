@@ -8,9 +8,11 @@ data:
         pathology: false
         radiology: false
         reports: true  # this is pathology report
+        rna_bulk: true
         radiology_reports: false  # loooks like only brca have radiology report, so i think we're gonna skip it
       max_pathology_downloads:
       max_report_downloads:
+      max_rna_bulk_downloads:
       max_radiology_series_downloads:
       max_radiology_report_downloads:
       max_series_per_study:
@@ -29,6 +31,7 @@ data:
         max_cases:
         max_pathology_files:
         max_report_files:
+        max_rna_bulk_files:
         fetch_ssm_mutations: true
         max_ssm_hits:
         mutation_panel_version: pancanatlas_driver_union_v1
@@ -134,6 +137,28 @@ data:
           - Clinical Supplement
         report_data_categories:
           - Clinical
+        rna_bulk_data_categories:
+          - Transcriptome Profiling
+        rna_bulk_data_types:
+          - Gene Expression Quantification
+        rna_bulk_data_formats:
+          - TSV
+        rna_bulk_experimental_strategies:
+          - RNA-Seq
+        rna_bulk_workflow_types:
+          - STAR - Counts
+          - HTSeq - Counts
+      rna_bulk_annotations:
+        enabled: true
+        download: true
+        skip_existing: true
+        timeout_seconds: 300
+        data_dir: ${project.root_dir}/data/external/tcga_rna_metadata
+        keys:
+          - subtypes
+          - leukocyte_fraction
+          - cibersort
+          - absolute_scores
       tcia:
         enabled: true
         base_url: https://services.cancerimagingarchive.net/nbia-api/services

@@ -1,7 +1,7 @@
 radiology:
   series_manifest_path: ${data.staging_root}/radiology/tcga_radiology_series_manifest.parquet
   raw_root: ${data.raw_root}/tcga/radiology
-  mask_root: ${project.root_dir}/data/processes/radiology/masks
+  mask_root: ${project.root_dir}/data/segmentation/radiology/masks
   keyword_map_path: ${project.root_dir}/conf/data/tcga_medsam3_keywords.yaml
   medical_sam3_root: ${project.root_dir}/external/Medical-SAM3
   sam3_root: ${project.root_dir}/external/sam3

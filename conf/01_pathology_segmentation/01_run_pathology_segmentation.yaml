@@ -1,7 +1,7 @@
 name: pathology_sampath_segmentation_bcss
 method_name: sampath
 registry_path: ${data.unified_registry_path}
-output_root: ${project.root_dir}/data/pathology_segmentation
+output_root: ${project.root_dir}/data/segmentation/pathology
 mask_dir: ${pathology_segmentation.output_root}/masks_${pathology_segmentation.target_magnification}x
 slide_image_dir: ${pathology_segmentation.output_root}/slides_${pathology_segmentation.target_magnification}x
 overlay_dir: ${pathology_segmentation.output_root}/overlays_${pathology_segmentation.target_magnification}x

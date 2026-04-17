@@ -2,7 +2,7 @@ task: dnam_case_caption
 
 # I/O
 source_registry_path: ${data.unified_registry_path}
-output_parquet_path: ${project.root_dir}/data/dnam_proj_train/dnam_case_captions.parquet
+output_parquet_path: ${project.root_dir}/data/proj_train/dnam/dnam_case_captions.parquet
 overwrite_output: true
 save_every_n_rows: 100
 

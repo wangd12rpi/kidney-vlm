@@ -88,3 +88,12 @@
 ## Naming Rules
 - Runnable scripts must start with a verb.
 - Ordered steps use `NN_` prefixes (`01_`, `02_`, ...).
+
+## Data Layout Notes
+- Projector-train parquet artifacts live under `data/proj_train/<modality>/`.
+- Active modalities currently reserved there are:
+  - `pathology`
+  - `radiology`
+  - `dnam`
+  - `rna`
+- Radiology segmentation artifacts live under `data/segmentation/radiology/`.

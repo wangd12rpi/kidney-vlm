@@ -12,6 +12,19 @@ This repository provides a clean starting point for kidney multimodal research w
 - `scripts/`: source-specific dataset build scripts and training/extraction entry scripts.
 - `src/`: reusable library modules.
 
+## Repo Conventions
+- `conf/` should mirror `scripts/` as closely as possible for runnable stage pipelines.
+- Modality folders are ordered as:
+  - `01_pathology_*`
+  - `02_radiology_*`
+  - `03_dnam_*`
+  - `04_rna_*`
+- Keep registry and source-index builders in `scripts/data/`.
+- Keep modality processing and projector-train code in modality-specific folders instead of generic task buckets.
+- Use the split already stored in `unified.parquet` as the source of truth; do not create a second train/val/test split inside projector scripts.
+- Projector checkpoints should be written under:
+  `outputs/projectors/<llm>/<modality>/<run>/`
+
 ## Script Naming Convention
 - Runnable scripts always use a leading verb (`build`, `extract`, `run`, `train`).
 - Ordered workflows use numeric prefixes (`01_`, `02_`, `03_`).
@@ -92,14 +105,25 @@ uv run python scripts/vlm_train/01_train_vlm.py
 ```
 
 Stage-scoped configs now live under:
+- `conf/01_pathology_features/`
 - `conf/01_pathology_proj/`
 - `conf/01_pathology_segmentation/`
 - `conf/02_radiology_features/`
+- `conf/02_radiology_proj/`
 - `conf/02_radiology_segmentation/`
+- `conf/03_dnam_features/`
 - `conf/03_dnam_proj/`
+- `conf/04_rna_features/`
+- `conf/04_rna_proj/`
 - `conf/vlm_train/`
 
 Multi-image support:
 - Each registry row already supports list-valued path columns.
 - Collation keeps `pathology_*` and `radiology_*` paths as lists per sample.
 - Projectors support tensor inputs shaped `[batch, n_images, dim]` for each modality.
+
+Projector-train parquet layout:
+- `data/proj_train/pathology/`
+- `data/proj_train/radiology/`
+- `data/proj_train/dnam/`
+- `data/proj_train/rna/`

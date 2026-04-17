@@ -3,7 +3,7 @@ modality_tag: path
 modality_dir_name: pathology
 model_name_or_path: Qwen/Qwen3.5-9B
 trust_remote_code: true
-qa_parquet_path: ${project.root_dir}/data/path_proj_train/path_proj_train_qa.parquet
+qa_parquet_path: ${project.root_dir}/data/proj_train/pathology/path_proj_train_qa.parquet
 # UNI2 patch embeddings are 1536-dim after conversion to the CONCH-like H5 layout.
 pathology_embedding_dim: 1536
 

@@ -16,6 +16,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kidney_vlm.data.registry_io import read_parquet_or_empty
+from kidney_vlm.pathology.report_filters import sample_ids_with_missing_pathology_report_forms
 from kidney_vlm.repo_root import find_repo_root
 from kidney_vlm.script_config import load_script_cfg
 
@@ -200,6 +201,21 @@ def _prepare_training_frame(
 
     stats["rows_after"] = int(len(prepared))
     return prepared, stats
+
+
+def _filter_missing_pathology_report_form_rows(frame: pd.DataFrame) -> tuple[pd.DataFrame, set[str]]:
+    if frame.empty or "sample_id" not in frame.columns or "report_pdf_paths" not in frame.columns:
+        return frame.copy(), set()
+
+    bad_sample_ids = sample_ids_with_missing_pathology_report_forms(
+        [row.to_dict() for _, row in frame.iterrows()],
+        repo_root=ROOT,
+    )
+    if not bad_sample_ids:
+        return frame.copy(), set()
+
+    filtered = frame[~frame["sample_id"].astype(str).isin(bad_sample_ids)].reset_index(drop=True)
+    return filtered, bad_sample_ids
 
 
 def _existing_output_row_id(row: dict[str, Any]) -> str:
@@ -409,6 +425,19 @@ def main() -> None:
         if "project_id" in case_caption_df.columns:
             case_caption_df = case_caption_df[case_caption_df["project_id"].astype(str).isin(allowed_project_ids)]
 
+    excluded_missing_report_sample_ids: set[str] = set()
+    if bool(qa_cfg.get("exclude_missing_pathology_report_forms", True)):
+        registry_df, excluded_missing_report_sample_ids = _filter_missing_pathology_report_form_rows(registry_df)
+        if excluded_missing_report_sample_ids and "sample_id" in case_caption_df.columns:
+            case_caption_df = case_caption_df[
+                ~case_caption_df["sample_id"].astype(str).isin(excluded_missing_report_sample_ids)
+            ].reset_index(drop=True)
+        if excluded_missing_report_sample_ids:
+            print(
+                "Excluded pathology cases with TCGA missing pathology report forms: "
+                f"{len(excluded_missing_report_sample_ids)} samples"
+            )
+
     if bool(qa_cfg.get("require_patch_embeddings", False)) and "pathology_tile_embedding_paths" in registry_df.columns:
         registry_df = registry_df[registry_df["pathology_tile_embedding_paths"].map(lambda v: len(_as_list(v)) > 0)]
 
@@ -427,6 +456,13 @@ def main() -> None:
     overwrite_output = bool(qa_cfg.overwrite_output)
     if output_path.exists() and not overwrite_output:
         existing_output = pd.read_parquet(output_path)
+        if excluded_missing_report_sample_ids and "sample_id" in existing_output.columns:
+            filtered_existing_output = existing_output[
+                ~existing_output["sample_id"].astype(str).isin(excluded_missing_report_sample_ids)
+            ].reset_index(drop=True)
+            if len(filtered_existing_output) != len(existing_output):
+                existing_output = filtered_existing_output
+                existing_output_changed = True
         existing_output, existing_filter_stats = _prepare_training_frame(
             existing_output,
             exclude_normal_tcga_slides=bool(qa_cfg.get("exclude_normal_tcga_slides", True)),

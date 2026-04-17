@@ -105,12 +105,11 @@ def test_register_radiology_series_artifacts_updates_registry_with_series_refs(t
     assert stats.cases_with_matches == 1
     assert stats.matched_series_refs == 1
 
-
 def test_register_radiology_series_artifacts_matches_zip_paths_and_masks(tmp_path: Path) -> None:
     root_dir = tmp_path / "repo"
     zip_path = root_dir / "data" / "raw" / "tcga" / "radiology" / "TCGA-KIRC" / "TCGA-AA-0001" / "1.2.3" / "4.5.6.zip"
     series_dir = root_dir / "data" / "processes" / "radiology" / "pngs" / "TCGA-KIRC" / "TCGA-AA-0001" / "1.2.3" / "4.5.6"
-    mask_path = root_dir / "data" / "processes" / "radiology" / "masks" / "TCGA-KIRC" / "TCGA-AA-0001" / "1.2.3" / "4.5.6" / "slice.mask.png"
+    mask_path = root_dir / "data" / "segmentation" / "radiology" / "masks" / "TCGA-KIRC" / "TCGA-AA-0001" / "1.2.3" / "4.5.6" / "slice.mask.png"
     manifest_path = mask_path.parent / "series_manifest.json"
     embedding_ref = "data/processes/radiology/features/features_tcga.h5::series=data/processes/radiology/pngs/TCGA-KIRC/TCGA-AA-0001/1.2.3/4.5.6"
 
@@ -159,8 +158,8 @@ def test_register_radiology_series_artifacts_matches_zip_paths_and_masks(tmp_pat
     row = updated_df.iloc[0]
     assert row["radiology_embedding_paths"] == [embedding_ref]
     assert row["radiology_mask_paths"] == [
-        "data/processes/radiology/masks/TCGA-KIRC/TCGA-AA-0001/1.2.3/4.5.6/slice.mask.png"
+        "data/segmentation/radiology/masks/TCGA-KIRC/TCGA-AA-0001/1.2.3/4.5.6/slice.mask.png"
     ]
     assert row["radiology_mask_manifest_paths"] == [
-        "data/processes/radiology/masks/TCGA-KIRC/TCGA-AA-0001/1.2.3/4.5.6/series_manifest.json"
+        "data/segmentation/radiology/masks/TCGA-KIRC/TCGA-AA-0001/1.2.3/4.5.6/series_manifest.json"
     ]

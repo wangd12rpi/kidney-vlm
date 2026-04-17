@@ -19,14 +19,14 @@ commit_description: Upload projector-train parquet artifacts with split-aware HF
 artifacts:
   - name: pathology_projector_qa
     enabled: true
-    local_parquet_path: data/path_proj_train/path_proj_train_qa.parquet
+    local_parquet_path: data/proj_train/pathology/path_proj_train_qa.parquet
     hf_config_name: pathology_qa
     split_column: split
     set_default: true
 
   - name: pathology_case_captions
     enabled: true
-    local_parquet_path: data/path_proj_train/path_case_captions.parquet
+    local_parquet_path: data/proj_train/pathology/path_case_captions.parquet
     hf_config_name: pathology_caption
     split_column: split
     set_default: false

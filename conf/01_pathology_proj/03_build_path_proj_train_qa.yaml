@@ -2,14 +2,15 @@ task: path_proj_train_qa
 
 # I/O
 source_registry_path: ${data.unified_registry_path}
-caption_parquet_path: ${project.root_dir}/data/path_proj_train/path_case_captions.parquet
-output_parquet_path: ${project.root_dir}/data/path_proj_train/path_proj_train_qa.parquet
+caption_parquet_path: ${project.root_dir}/data/proj_train/pathology/path_case_captions.parquet
+output_parquet_path: ${project.root_dir}/data/proj_train/pathology/path_proj_train_qa.parquet
 # Rebuild from scratch to avoid mixing rows from different embedding sources
 # (for example old CONCH TS/BS rows with new UNI DX rows).
 overwrite_output: true
 
 # Selection/debug
 require_pathology: false
+exclude_missing_pathology_report_forms: true
 # Empty means include all projects.
 allowed_project_ids: []
 require_patch_embeddings: true
