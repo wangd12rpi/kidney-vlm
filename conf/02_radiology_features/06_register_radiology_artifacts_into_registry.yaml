@@ -1,0 +1,3 @@
+radiology:
+  registry_path: ${data.unified_registry_path}
+  series_manifest_path: ${data.staging_root}/radiology/tcga_radiology_series_manifest.parquet

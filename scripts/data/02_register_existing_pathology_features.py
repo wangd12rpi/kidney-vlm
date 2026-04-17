@@ -30,7 +30,7 @@ def load_cfg():
 
 def main() -> None:
     cfg = load_cfg()
-    pathology_cfg = cfg.embeding_extraction.pathology
+    pathology_cfg = cfg.pathology_features
 
     registry_path = Path(str(cfg.data.unified_registry_path)).expanduser().resolve()
     if not registry_path.exists():

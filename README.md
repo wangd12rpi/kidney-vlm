@@ -15,7 +15,6 @@ This repository provides a clean starting point for kidney multimodal research w
 ## Script Naming Convention
 - Runnable scripts always use a leading verb (`build`, `extract`, `run`, `train`).
 - Ordered workflows use numeric prefixes (`01_`, `02_`, `03_`).
-- Non-runnable templates live under `scripts/templates/` and do not use runnable naming.
 
 ## Quickstart
 ```bash
@@ -32,10 +31,8 @@ This is the main way to extend the project.
 ```bash
 uv run python scripts/data/pull_registry_from_hf.py --repo-id wangd12/kidney_vlm
 ```
-2. Create a new source builder from the template:
-```bash
-cp scripts/templates/source_template.py scripts/data/01_build_<source>_source.py
-```
+2. Create a new source builder:
+- `scripts/data/01_build_<source>_source.py`
 3. Add source config:
 - `conf/data/sources/<source>.yaml`
 4. Implement source-specific pull/harmonization in `01_build_<source>_source.py`.
@@ -80,19 +77,26 @@ Mutation panel provenance for TCGA:
 
 ## Model Pipeline Scripts (Ordered)
 ```bash
-uv run python scripts/embeding_extraction/01_extract_pathology_features.py
-uv run python scripts/embeding_extraction/02_extract_pathology_features_space_saver.py
-uv run python scripts/path_proj_train/02_gen_path_case_captions.py
-uv run python scripts/path_proj_train/03_build_path_proj_train_qa.py
-uv run python scripts/path_proj_train/04_train_path_projectors.py
-uv run python scripts/segmentation/01_run_segmentation.py
+uv run python scripts/01_pathology_proj/02_gen_path_case_captions.py
+uv run python scripts/01_pathology_proj/03_build_path_proj_train_qa.py
+uv run python scripts/01_pathology_proj/04_train_path_projectors.py
+uv run python scripts/01_pathology_segmentation/01_run_pathology_segmentation.py
+uv run python scripts/02_radiology_features/02_prepare_radiology_series_manifest.py
+uv run python scripts/02_radiology_features/03_extract_radiology_pngs.py
+uv run python scripts/02_radiology_features/04_extract_radiology_features.py
+uv run python scripts/02_radiology_segmentation/05_extract_radiology_segmentation.py
+uv run python scripts/03_dnam_proj/02_gen_dnam_case_captions.py
+uv run python scripts/03_dnam_proj/03_build_dnam_proj_train_qa.py
+uv run python scripts/03_dnam_proj/04_train_dnam_projectors.py
 uv run python scripts/vlm_train/01_train_vlm.py
 ```
 
 Stage-scoped configs now live under:
-- `conf/qa_genereation/`
-- `conf/embeding_extraction/`
-- `conf/path_proj_train/`
+- `conf/01_pathology_proj/`
+- `conf/01_pathology_segmentation/`
+- `conf/02_radiology_features/`
+- `conf/02_radiology_segmentation/`
+- `conf/03_dnam_proj/`
 - `conf/vlm_train/`
 
 Multi-image support:

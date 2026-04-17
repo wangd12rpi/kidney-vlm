@@ -1,0 +1,9 @@
+radiology:
+  series_manifest_path: ${data.staging_root}/radiology/tcga_radiology_series_manifest.parquet
+  raw_root: ${data.raw_root}/tcga/radiology
+  png_root: ${project.root_dir}/data/processes/radiology/pngs
+  overwrite_pngs: false
+  png_render_mode: ct_rgb_multiwindow
+  prefer_dicom_voi: false
+  apply_padding_mask: true
+  png_resize:

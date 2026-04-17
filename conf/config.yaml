@@ -1,11 +1,9 @@
 defaults:
   - data: global
-  - qa_genereation: qa
-  - embeding_extraction/pathology: trident
-  - embeding_extraction/radiology: foundation_placeholder
-  - embeding_extraction/segmentation: pathology_tissue
-  - path_proj_train: default
-  - dnam_proj_train: default
+  - 01_pathology_features@pathology_features: default
+  - 01_pathology_segmentation@pathology_segmentation: 01_run_pathology_segmentation
+  - 01_pathology_proj@pathology_proj: 04_train_path_projectors
+  - 03_dnam_proj@dnam_proj: 04_train_dnam_projectors
   - demo: demo_path_projector
   - vlm_train: medgemma_hf
   - _self_

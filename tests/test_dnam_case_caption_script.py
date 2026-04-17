@@ -6,7 +6,7 @@ from pathlib import Path
 
 def _load_script_module():
     repo_root = Path(__file__).resolve().parents[1]
-    script_path = repo_root / "scripts" / "dnam_proj_train" / "02_gen_dnam_case_captions.py"
+    script_path = repo_root / "scripts" / "03_dnam_proj" / "02_gen_dnam_case_captions.py"
     spec = importlib.util.spec_from_file_location("dnam_case_caption_script", script_path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None

@@ -2,15 +2,17 @@ data:
   source:
     name: tcga
     download:
-      enabled: false
+      enabled: true
       skip_existing: true
       include:
         pathology: false
         radiology: false
-        reports: true
+        reports: true  # this is pathology report
+        radiology_reports: false  # loooks like only brca have radiology report, so i think we're gonna skip it
       max_pathology_downloads:
       max_report_downloads:
       max_radiology_series_downloads:
+      max_radiology_report_downloads:
       max_series_per_study:
     tcga:
       exclude_project_ids: []

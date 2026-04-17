@@ -1,3 +1,0 @@
-pathology:
-  name: pathology_segmentation_placeholder
-  adapter_class: SegmentationAdapterBase

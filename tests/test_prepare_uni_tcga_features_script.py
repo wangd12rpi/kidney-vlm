@@ -11,7 +11,7 @@ import numpy as np
 @lru_cache(maxsize=1)
 def _load_script_module():
     repo_root = Path(__file__).resolve().parents[1]
-    script_path = repo_root / "scripts" / "data" / "04_prepare_uni_tcga_features.py"
+    script_path = repo_root / "scripts" / "01_pathology_features" / "04_prepare_uni_tcga_features.py"
     spec = importlib.util.spec_from_file_location("prepare_uni_tcga_features_script", script_path)
     assert spec is not None
     assert spec.loader is not None

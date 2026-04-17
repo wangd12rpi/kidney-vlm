@@ -8,7 +8,7 @@ from pathlib import Path
 @lru_cache(maxsize=1)
 def _load_script_module():
     repo_root = Path(__file__).resolve().parents[1]
-    script_path = repo_root / "scripts" / "path_proj_train" / "02_gen_path_case_captions.py"
+    script_path = repo_root / "scripts" / "01_pathology_proj" / "02_gen_path_case_captions.py"
     spec = importlib.util.spec_from_file_location("path_case_caption_script", script_path)
     assert spec is not None
     assert spec.loader is not None

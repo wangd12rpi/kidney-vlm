@@ -26,12 +26,10 @@ def test_resolve_feature_path_uses_patch_encoder_folder(tmp_path: Path) -> None:
 
     cfg = module.OmegaConf.create(
         {
-            "embeding_extraction": {
-                "pathology": {
-                    "patch_encoder": "conch_v15",
-                    "save_format": "h5",
-                    "features_root": str(tmp_path / "features"),
-                }
+            "pathology_features": {
+                "patch_encoder": "conch_v15",
+                "save_format": "h5",
+                "features_root": str(tmp_path / "features"),
             }
         }
     )

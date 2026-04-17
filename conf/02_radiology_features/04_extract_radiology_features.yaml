@@ -1,0 +1,8 @@
+radiology:
+  series_manifest_path: ${data.staging_root}/radiology/tcga_radiology_series_manifest.parquet
+  feature_store_path: ${project.root_dir}/data/processes/radiology/features/features_medsiglip448_tcga.h5
+  model_name: google/medsiglip-448
+  input_size: 448
+  batch_size: 16
+  device: cuda
+  skip_existing_features: true

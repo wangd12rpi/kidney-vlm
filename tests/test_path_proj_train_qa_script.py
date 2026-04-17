@@ -11,7 +11,7 @@ import pandas as pd
 @lru_cache(maxsize=1)
 def _load_script_module():
     repo_root = Path(__file__).resolve().parents[1]
-    script_path = repo_root / "scripts" / "path_proj_train" / "03_build_path_proj_train_qa.py"
+    script_path = repo_root / "scripts" / "01_pathology_proj" / "03_build_path_proj_train_qa.py"
     spec = importlib.util.spec_from_file_location("path_proj_train_qa_script", script_path)
     assert spec is not None
     assert spec.loader is not None

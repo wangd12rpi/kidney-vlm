@@ -64,9 +64,9 @@ def _build_tokenizer(model_name_or_path: str, trust_remote_code: bool):
 
 
 def _resolve_feature_path(cfg: Any, file_stem: str) -> Path:
-    patch_encoder_name = str(cfg.embeding_extraction.pathology.patch_encoder)
-    save_format = str(cfg.embeding_extraction.pathology.get("save_format", "h5")).lower()
-    features_root = _resolve_path(cfg.embeding_extraction.pathology.features_root)
+    patch_encoder_name = str(cfg.pathology_features.patch_encoder)
+    save_format = str(cfg.pathology_features.get("save_format", "h5")).lower()
+    features_root = _resolve_path(cfg.pathology_features.features_root)
     feature_path = features_root / f"features_{patch_encoder_name}" / f"{file_stem}.{save_format}"
     if not feature_path.exists():
         raise FileNotFoundError(f"Feature file not found for stem '{file_stem}': {feature_path}")
@@ -135,21 +135,21 @@ def _resolve_checkpoint_path(path_value: str | Path, checkpoint_name: str | None
 
 
 def _load_path_projector_model(cfg: Any, state: dict[str, Any], device: torch.device) -> PathologyQwenProjectorLM:
-    model_name_or_path = str(state.get("model_name_or_path") or cfg.path_proj_train.model_name_or_path)
-    pathology_embedding_dim = int(state.get("pathology_embedding_dim") or cfg.path_proj_train.pathology_embedding_dim)
+    model_name_or_path = str(state.get("model_name_or_path") or cfg.pathology_proj.model_name_or_path)
+    pathology_embedding_dim = int(state.get("pathology_embedding_dim") or cfg.pathology_proj.pathology_embedding_dim)
 
     model = PathologyQwenProjectorLM.from_pretrained(
         model_name_or_path,
         pathology_in_dim=pathology_embedding_dim,
-        projector_type=str(state.get("projector_type") or cfg.path_proj_train.get("projector_type", "mlp")),
-        projector_num_latents=int(state.get("projector_num_latents") or cfg.path_proj_train.get("projector_num_latents", 64)),
-        projector_depth=int(state.get("projector_depth") or cfg.path_proj_train.get("projector_depth", 2)),
-        projector_num_heads=int(state.get("projector_num_heads") or cfg.path_proj_train.get("projector_num_heads", 8)),
-        projector_mlp_ratio=float(state.get("projector_mlp_ratio") or cfg.path_proj_train.get("projector_mlp_ratio", 4.0)),
-        projector_dropout=float(state.get("projector_dropout") or cfg.path_proj_train.get("projector_dropout", 0.0)),
-        trust_remote_code=bool(cfg.path_proj_train.trust_remote_code),
-        torch_dtype=cfg.path_proj_train.get("torch_dtype"),
-        attn_implementation=cfg.path_proj_train.get("attn_implementation"),
+        projector_type=str(state.get("projector_type") or cfg.pathology_proj.get("projector_type", "mlp")),
+        projector_num_latents=int(state.get("projector_num_latents") or cfg.pathology_proj.get("projector_num_latents", 64)),
+        projector_depth=int(state.get("projector_depth") or cfg.pathology_proj.get("projector_depth", 2)),
+        projector_num_heads=int(state.get("projector_num_heads") or cfg.pathology_proj.get("projector_num_heads", 8)),
+        projector_mlp_ratio=float(state.get("projector_mlp_ratio") or cfg.pathology_proj.get("projector_mlp_ratio", 4.0)),
+        projector_dropout=float(state.get("projector_dropout") or cfg.pathology_proj.get("projector_dropout", 0.0)),
+        trust_remote_code=bool(cfg.pathology_proj.trust_remote_code),
+        torch_dtype=cfg.pathology_proj.get("torch_dtype"),
+        attn_implementation=cfg.pathology_proj.get("attn_implementation"),
     )
     state_dict = state.get("path_projector_state_dict") or state.get("projector_state_dict")
     if state_dict is None:
@@ -182,7 +182,7 @@ def _resolve_demo_file_stems(cfg: Any, demo_cfg: Any) -> list[str]:
     elif explicit_file_stems:
         stems = explicit_file_stems
     else:
-        qa_parquet_path = _resolve_path(cfg.path_proj_train.qa_parquet_path)
+        qa_parquet_path = _resolve_path(cfg.pathology_proj.qa_parquet_path)
         if not qa_parquet_path.exists():
             raise FileNotFoundError(f"Pathology projector training parquet not found: {qa_parquet_path}")
         columns = ["slide_stem"]
@@ -218,7 +218,7 @@ def _resolve_demo_file_stems(cfg: Any, demo_cfg: Any) -> list[str]:
 
 
 def _load_project_labels_by_slide_stem(cfg: Any) -> dict[str, str]:
-    qa_parquet_path = _resolve_path(cfg.path_proj_train.qa_parquet_path)
+    qa_parquet_path = _resolve_path(cfg.pathology_proj.qa_parquet_path)
     if not qa_parquet_path.exists():
         return {}
     frame = pd.read_parquet(qa_parquet_path, columns=["slide_stem", "project_id"])
@@ -307,11 +307,11 @@ def main() -> None:
         raise FileNotFoundError(f"Path projector checkpoint not found: {checkpoint_path}")
 
     state = _load_path_projector_state(checkpoint_path)
-    model_name_or_path = str(state.get("model_name_or_path") or cfg.path_proj_train.model_name_or_path)
-    device = _resolve_device(cfg.path_proj_train.device)
+    model_name_or_path = str(state.get("model_name_or_path") or cfg.pathology_proj.model_name_or_path)
+    device = _resolve_device(cfg.pathology_proj.device)
     tokenizer = _build_tokenizer(
         model_name_or_path=model_name_or_path,
-        trust_remote_code=bool(cfg.path_proj_train.trust_remote_code),
+        trust_remote_code=bool(cfg.pathology_proj.trust_remote_code),
     )
     model = _load_path_projector_model(cfg, state=state, device=device)
     project_labels_by_slide_stem = _load_project_labels_by_slide_stem(cfg)

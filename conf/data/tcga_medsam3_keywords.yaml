@@ -1,0 +1,158 @@
+tcga_medsam3_keywords:
+  TCGA-BLCA:
+    CT:
+      - bladder tumor
+      - urinary bladder
+      - bladder wall
+    MR:
+      - bladder tumor
+      - urinary bladder
+      - bladder wall
+      - detrusor muscle
+  TCGA-BRCA:
+    MR:
+      - breast mass
+      - breast tumor
+      - enhancing breast lesion
+      - fibroglandular tissue
+  TCGA-CESC:
+    MR:
+      - cervical tumor
+      - uterine cervix
+      - cervix
+      - parametrium
+  TCGA-COAD:
+    CT:
+      - colon tumor
+      - colorectal mass
+      - colonic wall
+      - pericolonic fat
+  TCGA-ESCA:
+    CT:
+      - esophageal tumor
+      - esophagus
+      - esophageal mass
+      - periesophageal tissue
+  TCGA-KICH:
+    CT:
+      - kidney tumor
+      - renal mass
+      - kidney
+      - perinephric fat
+    MR:
+      - kidney tumor
+      - renal mass
+      - kidney
+      - renal sinus
+  TCGA-KIRC:
+    CT:
+      - kidney tumor
+      - renal mass
+      - kidney
+      - perinephric fat
+    MR:
+      - kidney tumor
+      - renal mass
+      - kidney
+      - renal sinus
+  TCGA-KIRP:
+    CT:
+      - kidney tumor
+      - renal mass
+      - kidney
+      - perinephric fat
+    MR:
+      - kidney tumor
+      - renal mass
+      - kidney
+      - renal sinus
+  TCGA-LIHC:
+    CT:
+      - liver tumor
+      - hepatic lesion
+      - liver
+      - hepatic mass
+    MR:
+      - liver tumor
+      - hepatic lesion
+      - liver
+      - hepatic mass
+  TCGA-LUAD:
+    CT:
+      - lung tumor
+      - pulmonary nodule
+      - lung mass
+      - ground glass opacity
+  TCGA-LUSC:
+    CT:
+      - lung tumor
+      - pulmonary mass
+      - central lung mass
+      - hilar mass
+  TCGA-OV:
+    CT:
+      - ovarian tumor
+      - adnexal mass
+      - pelvic mass
+      - peritoneal implant
+    MR:
+      - ovarian tumor
+      - adnexal mass
+      - pelvic mass
+      - ovary
+  TCGA-PRAD:
+    CT:
+      - prostate
+      - pelvic soft tissue
+    MR:
+      - prostate tumor
+      - peripheral zone lesion
+      - transition zone lesion
+      - prostate
+  TCGA-READ:
+    CT:
+      - rectal tumor
+      - rectum
+      - pelvic mass
+      - mesorectal fat
+    MR:
+      - rectal tumor
+      - rectum
+      - mesorectal fascia
+      - rectal wall
+      - presacral space
+  TCGA-SARC:
+    CT:
+      - soft tissue tumor
+      - soft tissue sarcoma
+      - soft tissue mass
+      - muscle mass
+    MR:
+      - soft tissue tumor
+      - soft tissue sarcoma
+      - intramuscular tumor
+      - muscle compartment
+  TCGA-STAD:
+    CT:
+      - gastric tumor
+      - stomach
+      - gastric wall thickening
+      - gastric mass
+  TCGA-THCA:
+    CT:
+      - thyroid tumor
+      - thyroid nodule
+      - thyroid gland
+      - neck mass
+  TCGA-UCEC:
+    CT:
+      - uterine tumor
+      - uterus
+      - endometrial mass
+      - pelvic mass
+    MR:
+      - uterine tumor
+      - endometrium
+      - myometrium
+      - junctional zone
+      - uterus

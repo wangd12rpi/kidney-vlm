@@ -18,6 +18,6 @@ def test_hydra_compose_root_config() -> None:
         cfg = compose(config_name="config")
 
     assert str(cfg.project.name) == "kidney-vlm"
-    assert str(cfg.embeding_extraction.pathology.name) == "trident"
+    assert str(cfg.pathology_features.name) == "trident"
     assert str(cfg.vlm_train.name) == "medgemma_hf"
-    assert str(cfg.dnam_proj_train.modality_tag) == "dnam"
+    assert str(cfg.dnam_proj.modality_tag) == "dnam"

@@ -22,8 +22,10 @@ from kidney_vlm.data.sources.tcga import (
     APIQueryError,
     GDCClient,
     TCIAClient,
+    TCIA_REPORT_MODALITIES,
     build_tcga_registry_rows,
     index_ssm_hits_by_case_and_patient,
+    normalize_tcia_modality,
 )
 from kidney_vlm.data.unified_registry import replace_source_slice
 
@@ -105,9 +107,11 @@ def _describe_enabled_download_payloads(download_cfg: DictConfig, tcia_client: T
     if bool(download_cfg.include.pathology):
         payloads.append("pathology slide files")
     if bool(download_cfg.include.reports):
-        payloads.append("report PDFs")
+        payloads.append("pathology/clinical report PDFs")
+    if bool(download_cfg.include.get("radiology_reports", False)) and tcia_client is not None:
+        payloads.append("radiology report-like SR series zip files")
     if bool(download_cfg.include.radiology) and tcia_client is not None:
-        payloads.append("radiology series zip files")
+        payloads.append("radiology image series zip files")
     return payloads
 
 
@@ -277,16 +281,20 @@ def _download_tcia_series(
     patient_ids: set[str],
     raw_root: Path,
     source_name: str,
+    output_subfolder: str,
     skip_existing: bool,
     max_series_per_study: int | None,
     max_series_total: int | None,
+    progress_desc: str,
+    included_modalities: set[str] | None = None,
+    excluded_modalities: set[str] | None = None,
 ) -> tuple[dict[str, list[dict[str, str]]], int]:
     downloaded_by_patient: dict[str, list[dict[str, str]]] = {}
     total_downloaded = 0
     progress_total = max_series_total if max_series_total is not None else None
     progress = tqdm(
         total=progress_total,
-        desc="Downloading radiology series",
+        desc=progress_desc,
         unit="series",
         leave=False,
     )
@@ -316,12 +324,16 @@ def _download_tcia_series(
                     series_uid = str(series.get("SeriesInstanceUID", "")).strip()
                     if not series_uid:
                         continue
-                    modality = str(series.get("Modality", "")).strip()
+                    modality = normalize_tcia_modality(series.get("Modality", ""))
+                    if included_modalities is not None and modality not in included_modalities:
+                        continue
+                    if excluded_modalities is not None and modality in excluded_modalities:
+                        continue
 
                     output_path = (
                         raw_root
                         / source_name
-                        / "radiology"
+                        / output_subfolder
                         / collection
                         / patient_id
                         / study_uid
@@ -409,6 +421,7 @@ def main() -> None:
     pathology_download_count = 0
     report_download_count = 0
     radiology_download_count = 0
+    radiology_report_download_count = 0
 
     if download_enabled:
         raw_root = Path(str(cfg.data.raw_root))
@@ -443,34 +456,59 @@ def main() -> None:
                 report_files,
                 raw_root=raw_root,
                 source_name=source_name,
-                subfolder="reports",
+                subfolder="report_pathology",
             )
             downloaded_reports_by_file_id, report_download_count = _download_gdc_plan(
                 gdc_client,
                 report_plan,
                 skip_existing=skip_existing,
                 max_downloads=_optional_int(download_cfg.max_report_downloads),
-                progress_desc="Downloading report PDFs",
+                progress_desc="Downloading pathology/clinical report PDFs",
             )
-            print(f"Report PDF files downloaded/resolved: {report_download_count}")
+            print(f"Pathology/clinical report PDF files downloaded/resolved: {report_download_count}")
+
+        patient_ids = {
+            str(case.get("submitter_id", "")).strip()
+            for case in cases
+            if str(case.get("submitter_id", "")).strip()
+        }
 
         if bool(download_cfg.include.radiology) and tcia_client is not None:
-            patient_ids = {
-                str(case.get("submitter_id", "")).strip()
-                for case in cases
-                if str(case.get("submitter_id", "")).strip()
-            }
             downloaded_tcia_series_by_patient, radiology_download_count = _download_tcia_series(
                 tcia_client,
                 tcia_studies_by_patient=tcia_studies_by_patient,
                 patient_ids=patient_ids,
                 raw_root=raw_root,
                 source_name=source_name,
+                output_subfolder="radiology",
                 skip_existing=skip_existing,
                 max_series_per_study=_optional_int(download_cfg.max_series_per_study),
                 max_series_total=_optional_int(download_cfg.max_radiology_series_downloads),
+                progress_desc="Downloading radiology image series",
+                excluded_modalities=set(TCIA_REPORT_MODALITIES),
             )
-            print(f"Radiology series zip files downloaded/resolved: {radiology_download_count}")
+            print(f"Radiology image series zip files downloaded/resolved: {radiology_download_count}")
+
+        if bool(download_cfg.include.get("radiology_reports", False)) and tcia_client is not None:
+            downloaded_radiology_reports_by_patient, radiology_report_download_count = _download_tcia_series(
+                tcia_client,
+                tcia_studies_by_patient=tcia_studies_by_patient,
+                patient_ids=patient_ids,
+                raw_root=raw_root,
+                source_name=source_name,
+                output_subfolder="report_radiology",
+                skip_existing=skip_existing,
+                max_series_per_study=_optional_int(download_cfg.max_series_per_study),
+                max_series_total=_optional_int(download_cfg.get("max_radiology_report_downloads")),
+                progress_desc="Downloading radiology report-like SR series",
+                included_modalities=set(TCIA_REPORT_MODALITIES),
+            )
+            for patient_id, entries in downloaded_radiology_reports_by_patient.items():
+                downloaded_tcia_series_by_patient.setdefault(patient_id, []).extend(entries)
+            print(
+                "Radiology report-like SR series zip files downloaded/resolved: "
+                f"{radiology_report_download_count}"
+            )
 
     source_df = build_tcga_registry_rows(
         cases=cases,
@@ -530,6 +568,7 @@ def main() -> None:
                 "pathology_files": pathology_download_count,
                 "report_files": report_download_count,
                 "radiology_series": radiology_download_count,
+                "radiology_report_series": radiology_report_download_count,
             },
             "notes": "TCGA kidney source refresh with optional payload downloads and source-slice upsert.",
         },
@@ -539,7 +578,7 @@ def main() -> None:
     print(f"Projects: {project_ids}")
     print(f"Cases pulled: {len(cases)}")
     print(f"Pathology files pulled: {len(pathology_files)}")
-    print(f"Report PDF files pulled: {len(report_files)}")
+    print(f"Pathology/clinical report PDF files pulled: {len(report_files)}")
     print(f"Radiology patients pulled: {len(tcia_studies_by_patient)}")
     print(f"TCIA series metadata records pulled: {sum(len(entries) for entries in tcia_series_by_patient.values())}")
     print(f"SSM mutation hits pulled: {len(ssm_hits)}")

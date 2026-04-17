@@ -1,0 +1,18 @@
+radiology:
+  registry_path: ${data.unified_registry_path}
+  series_manifest_path: ${data.staging_root}/radiology/tcga_radiology_series_manifest.parquet
+  skip_existing_extraction: true
+  skip_existing_qc: true
+  series_limit:
+  qc:
+    enabled: true
+    min_rows: 64
+    min_cols: 64
+    min_usable_images: 5
+    max_rejected_fraction_for_series: 0.5
+    reject_multiframe_series: true
+    reject_derived_series: false
+    decode_pixels: false
+    force_read: true
+    detail_root: ${data.staging_root}/radiology/qc/details
+    report_jsonl_path: ${data.staging_root}/radiology/qc/report.jsonl

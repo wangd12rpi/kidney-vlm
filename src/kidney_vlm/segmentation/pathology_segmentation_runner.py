@@ -25,6 +25,7 @@ import openslide
 from kidney_vlm.data.registry_io import read_parquet_or_empty, write_registry_parquet
 from kidney_vlm.data.sources.tcga import GDCClient
 from kidney_vlm.repo_root import find_repo_root
+from kidney_vlm.script_config import load_script_cfg
 
 ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
@@ -74,10 +75,11 @@ class PathologySegmentationDiscoveryStats:
 
 
 def load_cfg():
-    with initialize_config_dir(version_base=None, config_dir=str(ROOT / "conf")):
-        cfg = compose(config_name="config", overrides=sys.argv[1:])
-    OmegaConf.set_struct(cfg, False)
-    return cfg
+    return load_script_cfg(
+        repo_root=ROOT,
+        config_relative_path="01_pathology_segmentation/01_run_pathology_segmentation.yaml",
+        overrides=sys.argv[1:],
+    )
 
 
 def _as_list(value: Any) -> list[str]:
@@ -951,7 +953,7 @@ def _print_metrics_line(label: str, *metrics: tuple[str, Any]) -> None:
 
 def main() -> None:
     cfg = load_cfg()
-    pathology_cfg = cfg.embeding_extraction.segmentation.pathology
+    pathology_cfg = cfg.pathology_segmentation
 
     registry_path = _resolve_registry_path(pathology_cfg.get("registry_path", cfg.data.unified_registry_path))
     registry_df = read_parquet_or_empty(registry_path)

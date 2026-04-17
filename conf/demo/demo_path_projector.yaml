@@ -4,9 +4,9 @@ max_samples: 100
 sample_seed: 42
 split_filter: test
 prompt: "What is this? Caption: "
-path_projector_ckpt_path: ${path_proj_train.output_dir}
+path_projector_ckpt_path: ${pathology_proj.output_dir}
 checkpoint_name: epoch_004.ckpt
-max_patch_tokens: ${path_proj_train.max_patch_tokens}
+max_patch_tokens: ${pathology_proj.max_patch_tokens}
 max_new_tokens: 192
 do_sample: false
 temperature: 1.0

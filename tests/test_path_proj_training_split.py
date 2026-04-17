@@ -12,7 +12,7 @@ from omegaconf import OmegaConf
 @lru_cache(maxsize=1)
 def _load_script_module():
     repo_root = Path(__file__).resolve().parents[1]
-    script_path = repo_root / "scripts" / "path_proj_train" / "04_train_path_projectors.py"
+    script_path = repo_root / "scripts" / "01_pathology_proj" / "04_train_path_projectors.py"
     spec = importlib.util.spec_from_file_location("train_path_projectors_script", script_path)
     assert spec is not None
     assert spec.loader is not None
@@ -93,8 +93,9 @@ def test_run_artifacts_are_saved_inside_timestamped_run_dir(tmp_path: Path) -> N
 
     cfg = OmegaConf.create(
         {
-            "path_proj_train": {
+            "pathology_proj": {
                 "modality_tag": "path",
+                "modality_dir_name": "pathology",
                 "model_name_or_path": "Qwen/Qwen3.5-9B",
                 "pathology_embedding_dim": 768,
                 "projector_type": "resampler",
@@ -104,12 +105,15 @@ def test_run_artifacts_are_saved_inside_timestamped_run_dir(tmp_path: Path) -> N
                 "projector_mlp_ratio": 4.0,
                 "projector_dropout": 0.1,
                 "max_patch_tokens": 1024,
+                "save_tokenizer_snapshot": False,
             }
         }
     )
 
     run_output_dir = module._build_run_output_dir(
         output_root=tmp_path,
+        llm_tag="qwen3_5_9b",
+        modality_dir_name="pathology",
         modality_tag="path",
         projector_type="resampler",
     )
@@ -134,13 +138,13 @@ def test_run_artifacts_are_saved_inside_timestamped_run_dir(tmp_path: Path) -> N
         best_validation_loss=0.25,
     )
 
-    assert run_output_dir.parent == tmp_path
+    assert run_output_dir.parent == tmp_path / "qwen3_5_9b" / "pathology"
     assert run_output_dir.name.startswith("path_resampler_")
     assert run_output_dir.name.endswith("_EST")
     assert state_path.name == "epoch_001.ckpt"
     assert state_path.exists()
     assert (run_output_dir / "config.yaml").exists()
-    assert (run_output_dir / "tokenizer" / "tokenizer.json").exists()
+    assert not (run_output_dir / "tokenizer").exists()
 
     metadata = metadata_path.read_text()
     assert str(state_path) in metadata

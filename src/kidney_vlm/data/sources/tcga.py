@@ -120,6 +120,14 @@ DEFAULT_PANCANCER_MUTATION_GENE_PANEL = sorted(
 
 DEFAULT_KIDNEY_MUTATION_GENE_PANEL = list(DEFAULT_PANCANCER_MUTATION_GENE_PANEL)
 
+TCIA_MODALITY_ALIASES = {
+    "MRI": "MR",
+    "MAMMOGRAPHY": "MG",
+    "PET": "PT",
+}
+
+TCIA_REPORT_MODALITIES = {"SR"}
+
 
 class APIQueryError(RuntimeError):
     """Raised for upstream API failures with endpoint context."""
@@ -754,6 +762,26 @@ def _to_text_list(value: Any) -> list[str]:
     return [text]
 
 
+def normalize_tcia_modality(value: Any) -> str:
+    text = str(value).strip().upper()
+    if not text:
+        return ""
+    compact = text.replace(" ", "").replace("-", "")
+    return TCIA_MODALITY_ALIASES.get(compact, compact)
+
+
+def normalize_tcia_modality_list(values: Any) -> list[str]:
+    normalized: list[str] = []
+    raw_values = _to_text_list(values)
+    for raw_value in raw_values:
+        chunks = str(raw_value).replace("\\", ",").replace("/", ",").split(",")
+        for chunk in chunks:
+            modality = normalize_tcia_modality(chunk)
+            if modality:
+                normalized.append(modality)
+    return _unique_sorted_non_empty(normalized)
+
+
 def _walk_nested(value: Any):
     if isinstance(value, dict):
         yield value
@@ -891,6 +919,23 @@ def _unique_sorted_non_empty(values: list[str]) -> list[str]:
     return sorted({str(value).strip() for value in values if str(value).strip()})
 
 
+def _dedupe_radiology_path_entries(entries: list[tuple[str, Any]]) -> tuple[list[str], list[str]]:
+    path_to_modalities: dict[str, list[str]] = {}
+    for raw_path, raw_modalities in entries:
+        path = str(raw_path).strip()
+        if not path:
+            continue
+        normalized_modalities = normalize_tcia_modality_list(raw_modalities)
+        collected_modalities = path_to_modalities.setdefault(path, [])
+        for modality in normalized_modalities:
+            if modality not in collected_modalities:
+                collected_modalities.append(modality)
+
+    paths = sorted(path_to_modalities)
+    modalities = ["|".join(path_to_modalities[path]) for path in paths]
+    return paths, modalities
+
+
 def _to_float_or_none(value: Any) -> float | None:
     if value is None:
         return None
@@ -1016,6 +1061,7 @@ def build_tcga_registry_rows(
     mutation_gene_panel: list[str] | None = None,
     tcia_series_by_patient: dict[str, list[dict[str, str]]] | None = None,
     downloaded_tcia_series_by_patient: dict[str, list[dict[str, str]]] | None = None,
+    downloaded_radiology_only: bool = False,
     project_root: Path | None = None,
     mutation_query_succeeded: bool = True,
     mutation_panel_version: str | None = None,
@@ -1201,9 +1247,11 @@ def build_tcga_registry_rows(
 
         radiology_entries = tcia_studies_by_patient.get(patient_id, [])
         series_metadata_entries = tcia_series_by_patient.get(patient_id, [])
-        radiology_study_fallback_paths: list[str] = []
-        radiology_series_fallback_paths: list[str] = []
+        radiology_study_fallback_entries: list[tuple[str, list[str]]] = []
+        radiology_series_fallback_entries: list[tuple[str, str]] = []
         radiology_uri_paths: list[str] = []
+        radiology_report_uri_paths: list[str] = []
+        radiology_report_download_paths: list[str] = []
         tcia_study_uids: list[str] = []
         tcia_collections: list[str] = []
         tcia_study_dates: list[str] = []
@@ -1214,14 +1262,17 @@ def build_tcga_registry_rows(
             study_uid = str(entry.get("study_instance_uid", "")).strip()
             study_date = str(entry.get("study_date", "")).strip()
             study_description = str(entry.get("study_description", "")).strip()
-            modalities_in_study = _to_text_list(entry.get("modalities_in_study", []))
+            modalities_in_study = normalize_tcia_modality_list(entry.get("modalities_in_study", []))
             if study_uid:
                 radiology_uri_paths.append(f"tcia://{collection}/{patient_id}/{study_uid}")
                 study_fallback = (
                     raw_root / source_name / "radiology" / collection / patient_id / study_uid
                 )
-                radiology_study_fallback_paths.append(
-                    _to_project_relative_path(study_fallback, resolved_project_root)
+                radiology_study_fallback_entries.append(
+                    (
+                        _to_project_relative_path(study_fallback, resolved_project_root),
+                        modalities_in_study,
+                    )
                 )
                 tcia_study_uids.append(study_uid)
             elif collection:
@@ -1255,26 +1306,52 @@ def build_tcga_registry_rows(
                 if str(entry.get("series_description", "")).strip()
             }
         )
+        radiology_report_series_descriptions = sorted(
+            {
+                str(entry.get("series_description", "")).strip()
+                for entry in series_metadata_entries
+                if normalize_tcia_modality(entry.get("modality", "")) in TCIA_REPORT_MODALITIES
+                and str(entry.get("series_description", "")).strip()
+            }
+        )
         tcia_modalities.extend(
             [
-                str(entry.get("modality", "")).strip()
+                normalize_tcia_modality(entry.get("modality", ""))
                 for entry in series_metadata_entries
-                if str(entry.get("modality", "")).strip()
+                if normalize_tcia_modality(entry.get("modality", ""))
             ]
         )
         for entry in series_metadata_entries:
             collection = str(entry.get("collection", "")).strip() or project_id
             study_uid = str(entry.get("study_instance_uid", "")).strip()
             series_uid = str(entry.get("series_instance_uid", "")).strip()
+            modality = normalize_tcia_modality(entry.get("modality", ""))
             if study_uid and series_uid:
                 series_fallback = (
                     raw_root / source_name / "radiology" / collection / patient_id / study_uid / f"{series_uid}.zip"
                 )
-                radiology_series_fallback_paths.append(
-                    _to_project_relative_path(series_fallback, resolved_project_root)
+                radiology_series_fallback_entries.append(
+                    (
+                        _to_project_relative_path(series_fallback, resolved_project_root),
+                        modality,
+                    )
                 )
+                if modality in TCIA_REPORT_MODALITIES:
+                    radiology_report_uri_paths.append(
+                        f"tcia://{collection}/{patient_id}/{study_uid}/{series_uid}"
+                    )
 
         downloaded_series_entries = downloaded_tcia_series_by_patient.get(patient_id, [])
+        accepted_downloaded_series_entries = [
+            entry
+            for entry in downloaded_series_entries
+            if normalize_tcia_modality(entry.get("modality", "")) not in TCIA_REPORT_MODALITIES
+            if bool(entry.get("accepted", True))
+            and (
+                str(entry.get("png_dir", "")).strip()
+                or str(entry.get("extracted_path", "")).strip()
+            )
+        ]
         tcia_series_uids = sorted(
             set(tcia_series_uids).union(
                 {
@@ -1286,23 +1363,97 @@ def build_tcga_registry_rows(
         )
         tcia_modalities.extend(
             [
-                str(entry.get("modality", "")).strip()
+                normalize_tcia_modality(entry.get("modality", ""))
                 for entry in downloaded_series_entries
-                if str(entry.get("modality", "")).strip()
+                if normalize_tcia_modality(entry.get("modality", ""))
             ]
         )
         radiology_download_paths = sorted(
             {
                 _to_project_relative_path(str(entry.get("local_path", "")), resolved_project_root)
                 for entry in downloaded_series_entries
+                if normalize_tcia_modality(entry.get("modality", "")) not in TCIA_REPORT_MODALITIES
                 if str(entry.get("local_path", "")).strip()
             }
         )
-        radiology_paths = radiology_download_paths
-        if not radiology_paths:
-            radiology_paths = sorted(set(radiology_series_fallback_paths))
-        if not radiology_paths:
-            radiology_paths = sorted(set(radiology_study_fallback_paths))
+        radiology_report_download_paths = sorted(
+            {
+                _to_project_relative_path(str(entry.get("local_path", "")), resolved_project_root)
+                for entry in downloaded_series_entries
+                if normalize_tcia_modality(entry.get("modality", "")) in TCIA_REPORT_MODALITIES
+                and str(entry.get("local_path", "")).strip()
+            }
+        )
+        radiology_report_uri_paths = _unique_sorted_non_empty(radiology_report_uri_paths)
+        radiology_download_entries = [
+            (
+                _to_project_relative_path(
+                    str(entry.get("png_dir", "")).strip() or str(entry.get("extracted_path", "")).strip(),
+                    resolved_project_root,
+                ),
+                str(entry.get("modality", "")).strip(),
+            )
+            for entry in accepted_downloaded_series_entries
+            if str(entry.get("png_dir", "")).strip() or str(entry.get("extracted_path", "")).strip()
+        ]
+        radiology_embedding_paths: list[str] = []
+        radiology_mask_paths: list[str] = []
+        radiology_mask_manifest_paths: list[str] = []
+        radiology_png_dirs: list[str] = []
+        radiology_series_slice_counts: list[int] = []
+        seen_embedding_refs: set[str] = set()
+        seen_mask_paths: set[str] = set()
+        seen_mask_manifest_paths: set[str] = set()
+        seen_png_dirs: set[str] = set()
+        for entry in accepted_downloaded_series_entries:
+            embedding_ref = str(entry.get("embedding_ref", "")).strip()
+            if embedding_ref and embedding_ref not in seen_embedding_refs:
+                seen_embedding_refs.add(embedding_ref)
+                radiology_embedding_paths.append(embedding_ref)
+
+            for mask_path_value in list(entry.get("mask_paths", []) or []):
+                mask_path = _to_project_relative_path(str(mask_path_value), resolved_project_root)
+                if mask_path and mask_path not in seen_mask_paths:
+                    seen_mask_paths.add(mask_path)
+                    radiology_mask_paths.append(mask_path)
+
+            mask_manifest_path = _to_project_relative_path(
+                str(entry.get("mask_manifest_path", "")),
+                resolved_project_root,
+            )
+            if mask_manifest_path and mask_manifest_path not in seen_mask_manifest_paths:
+                seen_mask_manifest_paths.add(mask_manifest_path)
+                radiology_mask_manifest_paths.append(mask_manifest_path)
+
+            png_dir = _to_project_relative_path(str(entry.get("png_dir", "")), resolved_project_root)
+            if png_dir and png_dir not in seen_png_dirs:
+                seen_png_dirs.add(png_dir)
+                radiology_png_dirs.append(png_dir)
+
+            slice_count_text = str(entry.get("slice_count", "")).strip()
+            if slice_count_text:
+                try:
+                    slice_count = int(float(slice_count_text))
+                except ValueError:
+                    slice_count = 0
+                if slice_count > 0:
+                    radiology_series_slice_counts.append(slice_count)
+
+        # Keep radiology_image_paths reserved for extracted/processed image-like artifacts.
+        # Raw TCIA zip downloads are tracked separately in radiology_download_paths.
+        radiology_paths, radiology_modalities = _dedupe_radiology_path_entries(radiology_download_entries)
+        if downloaded_radiology_only:
+            has_radiology = bool(radiology_paths)
+        else:
+            has_radiology = bool(
+                radiology_paths
+                or radiology_download_paths
+                or radiology_uri_paths
+                or tcia_study_uids
+                or tcia_series_uids
+                or radiology_series_fallback_entries
+                or radiology_study_fallback_entries
+            )
 
         split_group_id = make_split_group_id(
             source_name=source_name,
@@ -1313,7 +1464,6 @@ def build_tcga_registry_rows(
         sample_id = make_sample_id(source_name, patient_id, case_id or patient_id, modality_scope="patient_study")
         pathology_tile_embedding_paths: list[str] = []
         pathology_slide_embedding_paths: list[str] = []
-        radiology_embedding_paths: list[str] = []
 
         row = {
             "sample_id": sample_id,
@@ -1330,15 +1480,22 @@ def build_tcga_registry_rows(
             "genomics_cnv_paths": [],
             "genomics_cnv_feature_path": "",
             "pathology_wsi_paths": pathology_paths,
-            "radiology_image_paths": sorted(set(radiology_paths)),
+            "radiology_image_paths": radiology_paths,
+            "radiology_image_modalities": radiology_modalities,
+            "radiology_report_download_paths": list(radiology_report_download_paths),
+            "radiology_report_uri_paths": list(radiology_report_uri_paths),
+            "radiology_report_series_descriptions": list(radiology_report_series_descriptions),
             "pathology_mask_paths": [],
             "pathology_segmentation_slide_image_paths": [],
             "pathology_segmentation_overlay_paths": [],
             "pathology_segmentation_metadata_paths": [],
-            "radiology_mask_paths": [],
+            "radiology_mask_paths": list(radiology_mask_paths),
             "pathology_tile_embedding_paths": list(pathology_tile_embedding_paths),
             "pathology_slide_embedding_paths": list(pathology_slide_embedding_paths),
             "radiology_embedding_paths": list(radiology_embedding_paths),
+            "radiology_mask_manifest_paths": list(radiology_mask_manifest_paths),
+            "radiology_png_dirs": list(radiology_png_dirs),
+            "radiology_series_slice_counts": list(radiology_series_slice_counts),
             "biomarkers_text": build_biomarkers_text(case),
             "question": "",
             "answer": "",
@@ -1394,7 +1551,7 @@ def build_tcga_registry_rows(
             "report_file_ids": report_file_ids,
             "report_file_names": report_file_names,
             "has_pathology": bool(pathology_paths),
-            "has_radiology": bool(radiology_paths),
+            "has_radiology": has_radiology,
         }
         for gene in mutation_gene_panel_upper:
             row[f"mutation_{gene.lower()}"] = (gene in mutation_gene_set) if mutation_query_succeeded else None
