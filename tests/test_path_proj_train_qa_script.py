@@ -238,7 +238,15 @@ def test_prepare_training_frame_keeps_middle_patch_count_quantiles(tmp_path: Pat
 def test_filter_missing_pathology_report_form_rows_excludes_sample_ids(monkeypatch) -> None:
     module = _load_script_module()
 
-    def fake_sample_ids_with_missing_pathology_report_forms(rows, *, repo_root, sample_id_key="sample_id", report_paths_key="report_pdf_paths"):
+    def fake_sample_ids_with_missing_pathology_report_forms(
+        rows,
+        *,
+        repo_root,
+        sample_id_key="sample_id",
+        report_paths_key="report_pdf_paths",
+        progress_desc=None,
+        total=None,
+    ):
         return {"tcga-bad"}
 
     monkeypatch.setattr(

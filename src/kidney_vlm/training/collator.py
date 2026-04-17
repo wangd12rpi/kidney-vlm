@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 import random
@@ -10,24 +11,19 @@ import torch
 
 
 DEFAULT_PATHOLOGY_PROJECTOR_PROMPT_TEXTS = (
-    "Describe the pathology image.\nCaption:",
-    "Summarize the pathology image.\nCaption:",
-    "Provide a pathology caption for this image.\nCaption:",
-    "Write a detailed pathology description for this image.\nCaption:",
-    "Explain the key pathology findings visible in this image.\nCaption:",
-    "Generate a pathology caption based on this image.\nCaption:",
-    "Describe the histopathology shown in this image.\nCaption:",
-    "Write a pathology report-style caption for this image.\nCaption:",
-    "Give a concise pathology description of this image.\nCaption:",
-    "State the main morphologic features seen in this pathology image.\nCaption:",
+    "Describe the pathology image.",
+    "Summarize the pathology image.",
+    "Write a pathology caption.",
+    "State the main pathology findings.",
+    "Give a concise pathology description.",
 )
 
 DEFAULT_DNAM_PROJECTOR_PROMPT_TEXTS = (
-    "Describe the DNA methylation profile.\nCaption:",
-    "Summarize the DNAm case.\nCaption:",
-    "Write a DNA methylation caption for this case.\nCaption:",
-    "Provide a methylation-profile description for this case.\nCaption:",
-    "Explain the key DNAm findings in this profile.\nCaption:",
+    "Describe the DNA methylation profile.",
+    "Summarize the DNAm case.",
+    "Write a DNAm caption.",
+    "State the main DNAm findings.",
+    "Give a concise DNAm description.",
 )
 
 
@@ -43,6 +39,96 @@ def _normalize_list(value: Any) -> list[str]:
         if isinstance(converted, list):
             return [str(item) for item in converted]
     return [str(value)]
+
+
+def _coerce_token_ids(value: Any) -> list[int]:
+    if isinstance(value, Mapping):
+        if "input_ids" not in value:
+            raise TypeError("Token payload mapping does not contain 'input_ids'.")
+        return _coerce_token_ids(value["input_ids"])
+    if isinstance(value, list):
+        return [int(item) for item in value]
+    if isinstance(value, tuple):
+        return [int(item) for item in value]
+    if torch.is_tensor(value):
+        if value.ndim == 0:
+            return [int(value.item())]
+        if value.ndim == 1:
+            return [int(item) for item in value.tolist()]
+        if value.ndim == 2 and value.shape[0] == 1:
+            return [int(item) for item in value.squeeze(0).tolist()]
+        raise TypeError(f"Unsupported token tensor shape: {tuple(value.shape)}")
+    if hasattr(value, "tolist"):
+        converted = value.tolist()
+        if isinstance(converted, list):
+            if converted and isinstance(converted[0], list):
+                if len(converted) != 1:
+                    raise TypeError(f"Unsupported batched token id payload with {len(converted)} rows.")
+                converted = converted[0]
+            return [int(item) for item in converted]
+    raise TypeError(f"Unsupported token id payload type: {type(value).__name__}")
+
+
+def _shared_prefix_length(left: list[int], right: list[int]) -> int:
+    prefix_len = 0
+    for left_token, right_token in zip(left, right, strict=False):
+        if left_token != right_token:
+            break
+        prefix_len += 1
+    return prefix_len
+
+
+def _apply_chat_template_tokens(
+    tokenizer: Any,
+    messages: list[dict[str, str]],
+    *,
+    add_generation_prompt: bool,
+) -> list[int]:
+    if not hasattr(tokenizer, "apply_chat_template"):
+        raise AttributeError("Tokenizer does not provide apply_chat_template.")
+
+    kwargs = {
+        "tokenize": True,
+        "add_generation_prompt": add_generation_prompt,
+    }
+    try:
+        token_ids = tokenizer.apply_chat_template(
+            messages,
+            chat_template_kwargs={"enable_thinking": False},
+            **kwargs,
+        )
+    except TypeError:
+        token_ids = tokenizer.apply_chat_template(messages, **kwargs)
+    return _coerce_token_ids(token_ids)
+
+
+def _build_chat_text_pair(
+    *,
+    tokenizer: Any,
+    prompt_text: str,
+    answer_text: str,
+    max_text_length: int,
+) -> tuple[list[int], list[int]]:
+    prompt_messages = [{"role": "user", "content": prompt_text}]
+    full_messages = prompt_messages + [{"role": "assistant", "content": answer_text}]
+
+    prompt_ids = _apply_chat_template_tokens(
+        tokenizer,
+        prompt_messages,
+        add_generation_prompt=True,
+    )
+    full_ids = _apply_chat_template_tokens(
+        tokenizer,
+        full_messages,
+        add_generation_prompt=False,
+    )
+    prefix_len = _shared_prefix_length(prompt_ids, full_ids)
+    if prefix_len == 0:
+        raise ValueError("Chat template prompt prefix did not align with the full assistant conversation.")
+
+    input_ids = full_ids[:max_text_length]
+    labels = (([-100] * prefix_len) + full_ids[prefix_len:])[:max_text_length]
+    return input_ids, labels
 
 
 def _resolve_existing_path(root_dir: Path, values: Any) -> Path:
@@ -227,6 +313,14 @@ class PathologyProjectorQACollator:
         if not prompt_text:
             raise ValueError("Prompt text is empty.")
 
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            return _build_chat_text_pair(
+                tokenizer=self.tokenizer,
+                prompt_text=prompt_text,
+                answer_text=answer,
+                max_text_length=self.max_text_length,
+            )
+
         eos_text = self.tokenizer.eos_token or ""
         prompt_ids = self.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
         answer_ids = self.tokenizer(f" {answer}{eos_text}", add_special_tokens=False)["input_ids"]
@@ -319,6 +413,14 @@ class DNAMProjectorQACollator:
             raise ValueError("Empty answer/caption encountered in DNAm projector batch.")
 
         prompt_text = self._select_prompt_text()
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            return _build_chat_text_pair(
+                tokenizer=self.tokenizer,
+                prompt_text=prompt_text,
+                answer_text=answer,
+                max_text_length=self.max_text_length,
+            )
+
         eos_text = self.tokenizer.eos_token or ""
         prompt_ids = self.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
         answer_ids = self.tokenizer(f" {answer}{eos_text}", add_special_tokens=False)["input_ids"]

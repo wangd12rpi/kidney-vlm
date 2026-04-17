@@ -4,6 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
+from tqdm.auto import tqdm
 
 MISSING_PATHOLOGY_REPORT_SIGNATURES = (
     "tcga missing pathology report form",
@@ -71,9 +72,21 @@ def sample_ids_with_missing_pathology_report_forms(
     repo_root: Path,
     sample_id_key: str = "sample_id",
     report_paths_key: str = "report_pdf_paths",
+    progress_desc: str | None = None,
+    total: int | None = None,
 ) -> set[str]:
     sample_ids: set[str] = set()
-    for row in rows:
+    iterable: Iterable[dict[str, Any]] = rows
+    if progress_desc:
+        iterable = tqdm(
+            rows,
+            total=total,
+            desc=progress_desc,
+            unit="row",
+            leave=False,
+            dynamic_ncols=True,
+        )
+    for row in iterable:
         sample_id = str(row.get(sample_id_key, "")).strip()
         if not sample_id:
             continue

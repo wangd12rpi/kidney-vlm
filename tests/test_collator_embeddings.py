@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import UserDict
 import numpy as np
 import pytest
 import torch
@@ -47,9 +48,20 @@ class _ProjectorTokenizer:
     def __call__(self, text, **_kwargs):
         return {"input_ids": [ord(char) for char in str(text)]}
 
+    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, chat_template_kwargs=None):
+        assert tokenize is True
+        assert chat_template_kwargs == {"enable_thinking": False}
+        pieces = []
+        for message in messages:
+            role = str(message["role"]).upper()
+            pieces.append(f"<{role}>{message['content']}")
+        if add_generation_prompt:
+            pieces.append("<ASSISTANT>")
+        return [ord(char) for char in "".join(pieces)]
 
-def test_projector_collator_uses_hardcoded_prompt_texts_not_parquet_instruction(monkeypatch: pytest.MonkeyPatch) -> None:
-    selected_prompt = "Write a detailed pathology description for this image.\nCaption:"
+
+def test_projector_collator_uses_chat_template_with_hardcoded_prompt_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    selected_prompt = "Write a pathology caption."
     monkeypatch.setattr(
         "kidney_vlm.training.collator.random.choice",
         lambda options: selected_prompt,
@@ -66,20 +78,98 @@ def test_projector_collator_uses_hardcoded_prompt_texts_not_parquet_instruction(
         }
     )
 
-    expected_prompt_ids = [ord(char) for char in selected_prompt]
-    expected_answer_ids = [ord(char) for char in f" Clear cell renal neoplasm.<eos>"]
+    expected_prompt = f"<USER>{selected_prompt}<ASSISTANT>"
+    expected_full = f"{expected_prompt}Clear cell renal neoplasm."
+    expected_prompt_ids = [ord(char) for char in expected_prompt]
+    expected_full_ids = [ord(char) for char in expected_full]
 
-    assert input_ids == expected_prompt_ids + expected_answer_ids
-    assert labels == ([-100] * len(expected_prompt_ids)) + expected_answer_ids
+    assert input_ids == expected_full_ids
+    assert labels == ([-100] * len(expected_prompt_ids)) + expected_full_ids[len(expected_prompt_ids) :]
 
 
-def test_projector_collator_has_ten_default_prompt_texts() -> None:
+def test_projector_collator_has_five_default_prompt_texts() -> None:
     collator = PathologyProjectorQACollator(
         tokenizer=_ProjectorTokenizer(),
         root_dir=".",
     )
 
-    assert len(collator.prompt_texts) == 10
+    assert len(collator.prompt_texts) == 5
+
+
+def test_projector_collator_accepts_batch_encoding_like_chat_template(monkeypatch: pytest.MonkeyPatch) -> None:
+    selected_prompt = "Describe the pathology image."
+    monkeypatch.setattr(
+        "kidney_vlm.training.collator.random.choice",
+        lambda options: selected_prompt,
+    )
+
+    class _BatchEncodingLikeTokenizer(_ProjectorTokenizer):
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, chat_template_kwargs=None):
+            encoded = super().apply_chat_template(
+                messages,
+                tokenize=tokenize,
+                add_generation_prompt=add_generation_prompt,
+                chat_template_kwargs=chat_template_kwargs,
+            )
+            return {"input_ids": torch.tensor([encoded], dtype=torch.long)}
+
+    collator = PathologyProjectorQACollator(
+        tokenizer=_BatchEncodingLikeTokenizer(),
+        root_dir=".",
+    )
+
+    input_ids, labels = collator._build_text_pair(
+        {
+            "instruction": "THIS SHOULD BE IGNORED",
+            "answer": "Example pathology caption.",
+        }
+    )
+
+    expected_prompt = f"<USER>{selected_prompt}<ASSISTANT>"
+    expected_full = f"{expected_prompt}Example pathology caption."
+    expected_prompt_ids = [ord(char) for char in expected_prompt]
+    expected_full_ids = [ord(char) for char in expected_full]
+
+    assert input_ids == expected_full_ids
+    assert labels == ([-100] * len(expected_prompt_ids)) + expected_full_ids[len(expected_prompt_ids) :]
+
+
+def test_projector_collator_accepts_mapping_like_chat_template(monkeypatch: pytest.MonkeyPatch) -> None:
+    selected_prompt = "Describe the pathology image."
+    monkeypatch.setattr(
+        "kidney_vlm.training.collator.random.choice",
+        lambda options: selected_prompt,
+    )
+
+    class _MappingLikeTokenizer(_ProjectorTokenizer):
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, chat_template_kwargs=None):
+            encoded = super().apply_chat_template(
+                messages,
+                tokenize=tokenize,
+                add_generation_prompt=add_generation_prompt,
+                chat_template_kwargs=chat_template_kwargs,
+            )
+            return UserDict({"input_ids": encoded})
+
+    collator = PathologyProjectorQACollator(
+        tokenizer=_MappingLikeTokenizer(),
+        root_dir=".",
+    )
+
+    input_ids, labels = collator._build_text_pair(
+        {
+            "instruction": "THIS SHOULD BE IGNORED",
+            "answer": "Example pathology caption.",
+        }
+    )
+
+    expected_prompt = f"<USER>{selected_prompt}<ASSISTANT>"
+    expected_full = f"{expected_prompt}Example pathology caption."
+    expected_prompt_ids = [ord(char) for char in expected_prompt]
+    expected_full_ids = [ord(char) for char in expected_full]
+
+    assert input_ids == expected_full_ids
+    assert labels == ([-100] * len(expected_prompt_ids)) + expected_full_ids[len(expected_prompt_ids) :]
 
 
 def test_dnam_projector_collator_loads_pt_features(tmp_path) -> None:

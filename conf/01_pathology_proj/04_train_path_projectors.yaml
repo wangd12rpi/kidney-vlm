@@ -20,11 +20,11 @@ projector_mlp_ratio: 4.0
 projector_dropout: 0.1
 allowed_slide_kinds:
   - DX
-batch_size: 4
+batch_size: 1
 num_epochs: 10
 learning_rate: 5e-5
 weight_decay: 0.01
-gradient_accumulation_steps: 8
+gradient_accumulation_steps: 16
 grad_clip_norm: 1.0
 lr_scheduler_type: cosine
 warmup_ratio: 0.05

@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
+from tqdm.auto import tqdm
 
 BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
 SRC = BOOTSTRAP_ROOT / "src"
@@ -143,20 +144,35 @@ def _attach_patch_counts(frame: pd.DataFrame) -> pd.DataFrame:
         return frame.copy()
 
     enriched = frame.copy()
-    patch_counts: list[int | None] = []
-    for _, row in enriched.iterrows():
-        existing_value = row.get("pathology_patch_count")
+    patch_counts: list[int | None] = [None] * len(enriched)
+    path_rows: dict[str, list[int]] = {}
+
+    for row_index, row in enumerate(enriched.itertuples(index=False)):
+        row_dict = row._asdict()
+        existing_value = row_dict.get("pathology_patch_count")
         if existing_value is not None and not (isinstance(existing_value, float) and pd.isna(existing_value)):
             text = str(existing_value).strip()
             if text:
-                patch_counts.append(int(float(existing_value)))
+                patch_counts[row_index] = int(float(existing_value))
                 continue
 
-        tile_paths = _as_list(row.get("pathology_tile_embedding_paths"))
+        tile_paths = _as_list(row_dict.get("pathology_tile_embedding_paths"))
         if not tile_paths:
-            patch_counts.append(None)
             continue
-        patch_counts.append(_resolve_patch_count(tile_paths[0]))
+        path_rows.setdefault(tile_paths[0], []).append(row_index)
+
+    if path_rows:
+        for tile_path, row_indices in tqdm(
+            path_rows.items(),
+            total=len(path_rows),
+            desc="Reading pathology patch counts",
+            unit="file",
+            leave=False,
+            dynamic_ncols=True,
+        ):
+            patch_count = _resolve_patch_count(tile_path)
+            for row_index in row_indices:
+                patch_counts[row_index] = patch_count
 
     enriched["pathology_patch_count"] = patch_counts
     return enriched
@@ -208,8 +224,10 @@ def _filter_missing_pathology_report_form_rows(frame: pd.DataFrame) -> tuple[pd.
         return frame.copy(), set()
 
     bad_sample_ids = sample_ids_with_missing_pathology_report_forms(
-        [row.to_dict() for _, row in frame.iterrows()],
+        frame.to_dict(orient="records"),
         repo_root=ROOT,
+        progress_desc="Scanning pathology report PDFs",
+        total=len(frame),
     )
     if not bad_sample_ids:
         return frame.copy(), set()
@@ -498,7 +516,15 @@ def main() -> None:
         if str(value).strip()
     ]
     slide_rows: list[dict[str, Any]] = []
-    for _, row in registry_df.iterrows():
+    registry_iterable = tqdm(
+        registry_df.iterrows(),
+        total=len(registry_df),
+        desc="Expanding pathology case rows to slide rows",
+        unit="case",
+        leave=False,
+        dynamic_ncols=True,
+    )
+    for _, row in registry_iterable:
         slide_rows.extend(
             _expand_case_row_to_slide_rows(
                 row.to_dict(),
@@ -514,7 +540,7 @@ def main() -> None:
 
     all_training_rows = _expand_slide_rows_to_training_rows(
         slide_rows,
-        [row.to_dict() for _, row in case_caption_df.iterrows()],
+        case_caption_df.to_dict(orient="records"),
         default_instruction=str(qa_cfg.get("instruction", "Describe the pathology image.")).strip(),
     )
     all_training_frame, filter_stats = _prepare_training_frame(

@@ -34,3 +34,6 @@ wandb*.json
 external/SAMPath/model.ckpt
 external/SAMPath/weights/*.pth
 external/SAMPath/weights/*.ckpt
+
+**/wandb/run*
+**/wandb/latest-run
