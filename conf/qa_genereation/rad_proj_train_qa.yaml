@@ -1,0 +1,18 @@
+task: rad_proj_train_qa
+
+feature_store_path: ${project.root_dir}/data/processes/pmc_oa/pmc_oa_features.h5
+feature_index_path: ${project.root_dir}/data/processes/pmc_oa/pmc_oa_feature_index.parquet
+rebuild_feature_index: false
+
+image_root_dir: ${project.root_dir}/data/raw/pmc_oa/images
+train_jsonl_path: ${project.root_dir}/data/raw/pmc_oa/train.jsonl
+validation_jsonl_path: ${project.root_dir}/data/raw/pmc_oa/valid.jsonl
+test_jsonl_path: ${project.root_dir}/data/raw/pmc_oa/test.jsonl
+
+output_parquet_path: ${project.root_dir}/data/rad_proj_train/rad_proj_train_qa.parquet
+overwrite_output: false
+require_existing_image_files: false
+fail_on_missing_features: true
+print_first_n: 2
+
+instruction: "Describe the radiology image."
