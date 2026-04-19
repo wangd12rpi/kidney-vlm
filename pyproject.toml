@@ -24,6 +24,7 @@ dependencies = [
   "omegaconf>=2.3.0",
   "pandas>=2.2.0",
   "pillow>=12.1.1",
+  "pydicom>=3.0.0",
   "pypdf>=5.1.0",
   "pyarrow>=15.0.0",
   "requests>=2.32.0",

@@ -19,5 +19,6 @@ def test_hydra_compose_root_config() -> None:
 
     assert str(cfg.project.name) == "kidney-vlm"
     assert str(cfg.pathology_features.name) == "trident"
+    assert str(cfg.radiology_proj.modality_tag) == "radiology"
     assert str(cfg.vlm_train.name) == "medgemma_hf"
     assert str(cfg.dnam_proj.modality_tag) == "dnam"

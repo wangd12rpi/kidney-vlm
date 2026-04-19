@@ -11,6 +11,7 @@ _SCRIPT_CONFIG_PACKAGE_BY_DIR = {
     "01_pathology_features": "pathology_features",
     "01_pathology_proj": "pathology_proj",
     "01_pathology_segmentation": "pathology_segmentation",
+    "02_radiology_proj": "radiology_proj",
     "03_dnam_proj": "dnam_proj",
 }
 

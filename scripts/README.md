@@ -7,6 +7,7 @@
   - `scripts/01_pathology_proj/`
   - `scripts/01_pathology_segmentation/`
   - `scripts/02_radiology_features/`
+  - `scripts/02_radiology_proj/`
   - `scripts/02_radiology_segmentation/`
   - `scripts/03_dnam_features/`
   - `scripts/03_dnam_proj/`
@@ -22,6 +23,11 @@
     - `uv run python scripts/data/01_upsert_tcga_registry_rows.py data.source.download.enabled=false`
   - Example full download run:
     - `uv run python scripts/data/01_upsert_tcga_registry_rows.py data.source.download.enabled=true`
+- `scripts/data/01_build_pmc_oa_source.py`
+  - Builds a registry-backed `source='pmc_oa'` slice from PMC-OA caption JSONL splits plus a PMC-OA MedSigLIP feature store.
+  - Keeps PMC-OA radiology supervision aligned with the same unified split and source-slice replacement flow used elsewhere in the repo.
+  - Example:
+    - `uv run python scripts/data/01_build_pmc_oa_source.py`
 - `scripts/data/print_registry_status.py`
   - Prints per-source database status and checks local existence of referenced binaries in path columns (`*_path`, `*_paths`).
   - Reports missing reference counts and prints one sampled row per source by default.
@@ -71,6 +77,13 @@
   - Runs radiology segmentation on the rendered PNG slices and writes per-series mask artifacts plus a manifest.
 - `scripts/02_radiology_features/06_register_radiology_artifacts_into_registry.py`
   - Writes radiology embedding refs, PNG dirs, mask paths, and mask manifests back into the unified registry.
+- `scripts/02_radiology_proj/01_import_pmc_oa_captions.py`
+  - Normalizes PMC-OA caption JSONL splits into `data/proj_train/radiology/pmc_oa_radiology_captions.parquet`.
+- `scripts/02_radiology_proj/02_build_radiology_proj_train_qa.py`
+  - Builds split-aware radiology projector QA rows by joining registry-backed radiology embeddings with imported caption rows.
+  - Preserves the unified registry split as the source of truth even if imported caption metadata uses a different split label.
+- `scripts/02_radiology_proj/03_train_radiology_projectors.py`
+  - Stage 1: radiology projector training entrypoint that follows the unified registry train/val/test split.
 - `scripts/hf_integration/01_upload_projector_train_to_hf.py`
   - Uploads projector-train parquet datasets to HF Hub using split-aware `DatasetDict` payloads.
   - Uses its own config file at `conf/hf_integration/projector_train_upload.yaml`.
@@ -96,4 +109,5 @@
   - `radiology`
   - `dnam`
   - `rna`
+- External supervision corpora should be normalized through a source builder plus modality projector parquet steps before training; do not point projector trainers at raw JSONL files directly.
 - Radiology segmentation artifacts live under `data/segmentation/radiology/`.
