@@ -4,7 +4,7 @@ defaults:
   - 01_pathology_segmentation@pathology_segmentation: 01_run_pathology_segmentation
   - 01_pathology_proj@pathology_proj: 04_train_path_projectors
   - 03_dnam_proj@dnam_proj: 04_train_dnam_projectors
-  - demo: demo_path_projector
+  - demo: demo_projector
   - vlm_train: medgemma_hf
   - _self_
 

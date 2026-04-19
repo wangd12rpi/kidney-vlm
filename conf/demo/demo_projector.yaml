@@ -1,0 +1,29 @@
+modality: pathology
+sample_key: ""
+sample_keys: []
+max_samples: 100
+sample_seed: 42
+split_filter: test
+checkpoint_name: best.ckpt
+max_new_tokens: 192
+do_sample: false
+temperature: 1.0
+top_p: 1.0
+
+modalities:
+  pathology:
+    projector_ckpt_path: ${project.root_dir}/outputs/projectors/qwen3_5_9b/pathology
+    qa_parquet_path: ${pathology_proj.qa_parquet_path}
+    sample_key_field: slide_stem
+    feature_path_field: pathology_tile_embedding_paths
+    label_field: project_id
+    max_feature_tokens: ${pathology_proj.max_patch_tokens}
+    patch_compression_method: ${pathology_proj.patch_compression_method}
+    patch_compression_kernel_size: ${pathology_proj.patch_compression_kernel_size}
+  dnam:
+    projector_ckpt_path: ${project.root_dir}/outputs/projectors/qwen3_5_9b/dnam
+    qa_parquet_path: ${dnam_proj.qa_parquet_path}
+    sample_key_field: sample_id
+    feature_path_field: genomics_dna_methylation_feature_path
+    label_field: project_id
+    max_feature_tokens: ${dnam_proj.max_dnam_tokens}

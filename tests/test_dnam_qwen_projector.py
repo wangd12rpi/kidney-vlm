@@ -22,8 +22,9 @@ def test_dnam_qwen_projector_expands_single_feature_to_prefix_tokens() -> None:
         language_model=backbone,
         dnam_in_dim=8,
         projector_type="mlp",
-        dnam_prefix_tokens=4,
+        dnam_prefix_tokens=8,
     )
+    expander = model.projectors["dnam_prefix_expander"]
 
     input_ids = torch.randint(0, config.vocab_size, (2, 5))
     attention_mask = torch.ones_like(input_ids)
@@ -40,7 +41,8 @@ def test_dnam_qwen_projector_expands_single_feature_to_prefix_tokens() -> None:
     )
 
     assert output.loss is not None
-    assert output.logits.shape == (2, 9, config.vocab_size)
+    assert output.logits.shape == (2, 13, config.vocab_size)
+    assert expander.token_embeddings.shape == (8, config.n_embd)
     assert any(parameter.requires_grad is True for parameter in model.projectors.parameters())
     assert all(parameter.requires_grad is False for parameter in model.language_model.parameters())
 
