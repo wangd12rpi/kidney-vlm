@@ -22,6 +22,7 @@ This repository provides a clean starting point for kidney multimodal research w
 - Keep registry and source-index builders in `scripts/data/`.
 - Keep modality processing and projector-train code in modality-specific folders instead of generic task buckets.
 - Use the split already stored in `unified.parquet` as the source of truth; do not create a second train/val/test split inside projector scripts.
+- Normalize external supervision corpora (for example PMC-OA radiology captions) into a proper source slice plus projector parquet artifacts before training; do not wire raw JSONL files directly into trainer scripts.
 - Projector checkpoints should be written under:
   `outputs/projectors/<llm>/<modality>/<run>/`
 
@@ -79,6 +80,11 @@ Built-in TCGA source:
 - Script: `scripts/data/01_upsert_tcga_registry_rows.py`
 - Config: `conf/data/sources/tcga.yaml`
 
+Built-in PMC-OA radiology-caption source:
+- Script: `scripts/data/01_build_pmc_oa_source.py`
+- Config: `conf/data/sources/pmc_oa.yaml`
+- Purpose: normalizes PMC-OA image-level caption supervision into the unified registry so radiology projector stages can stay split-aware and registry-first.
+
 Mutation panel provenance for TCGA:
 - The current shared pan-cancer mutation panel in `conf/data/sources/tcga.yaml` is derived from the official GDC PanCanAtlas driver publication: https://gdc.cancer.gov/about-data/publications/pancan-driver
 - Source supplement tables used:
@@ -98,6 +104,9 @@ uv run python scripts/02_radiology_features/02_prepare_radiology_series_manifest
 uv run python scripts/02_radiology_features/03_extract_radiology_pngs.py
 uv run python scripts/02_radiology_features/04_extract_radiology_features.py
 uv run python scripts/02_radiology_segmentation/05_extract_radiology_segmentation.py
+uv run python scripts/02_radiology_proj/01_import_pmc_oa_captions.py
+uv run python scripts/02_radiology_proj/02_build_radiology_proj_train_qa.py
+uv run python scripts/02_radiology_proj/03_train_radiology_projectors.py
 uv run python scripts/03_dnam_proj/02_gen_dnam_case_captions.py
 uv run python scripts/03_dnam_proj/03_build_dnam_proj_train_qa.py
 uv run python scripts/03_dnam_proj/04_train_dnam_projectors.py
@@ -125,5 +134,7 @@ Multi-image support:
 Projector-train parquet layout:
 - `data/proj_train/pathology/`
 - `data/proj_train/radiology/`
+- `data/proj_train/radiology/pmc_oa_radiology_captions.parquet`
+- `data/proj_train/radiology/radiology_proj_train_qa.parquet`
 - `data/proj_train/dnam/`
 - `data/proj_train/rna/`

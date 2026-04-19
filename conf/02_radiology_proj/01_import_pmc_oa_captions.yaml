@@ -1,0 +1,17 @@
+task: import_radiology_captions
+
+feature_store_path: ${project.root_dir}/data/processes/pmc_oa/pmc_oa_features.h5
+feature_index_path: ${project.root_dir}/data/processes/pmc_oa/pmc_oa_feature_index.parquet
+rebuild_feature_index: false
+image_root_dir: ${project.root_dir}/data/raw/pmc_oa/images
+train_jsonl_path: ${project.root_dir}/data/raw/pmc_oa/train.jsonl
+validation_jsonl_path: ${project.root_dir}/data/raw/pmc_oa/valid.jsonl
+test_jsonl_path: ${project.root_dir}/data/raw/pmc_oa/test.jsonl
+output_parquet_path: ${project.root_dir}/data/proj_train/radiology/pmc_oa_radiology_captions.parquet
+overwrite_output: true
+require_existing_image_files: false
+fail_on_missing_features: true
+caption_model: pmc_oa_human
+instruction: "Describe the radiology image."
+first_n:
+print_first_n: 3
