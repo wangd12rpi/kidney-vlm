@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from functools import lru_cache
 from pathlib import Path
 import shutil
@@ -112,8 +113,8 @@ def test_run_artifacts_are_saved_inside_timestamped_run_dir() -> None:
         assert (run_output_dir / "config.yaml").exists()
         assert not (run_output_dir / "tokenizer").exists()
 
-        metadata = metadata_path.read_text()
-        assert str(state_path) in metadata
-        assert str(run_output_dir / "config.yaml") in metadata
+        metadata = json.loads(metadata_path.read_text())
+        assert metadata["epoch_checkpoint_paths"] == [state_path.resolve().relative_to(repo_root).as_posix()]
+        assert metadata["config_path"] == (run_output_dir / "config.yaml").resolve().relative_to(repo_root).as_posix()
     finally:
         shutil.rmtree(tmp_path, ignore_errors=True)

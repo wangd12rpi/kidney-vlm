@@ -291,6 +291,7 @@ def _save_artifacts(
             "projector_mlp_ratio": float(cfg.dnam_proj.get("projector_mlp_ratio", 4.0)),
             "projector_dropout": float(cfg.dnam_proj.get("projector_dropout", 0.0)),
             "dnam_prefix_tokens": int(cfg.dnam_proj.get("dnam_prefix_tokens", 0)),
+            "dnam_prefix_expander_mlp_ratio": float(cfg.dnam_proj.get("dnam_prefix_expander_mlp_ratio", 1.0)),
             "hidden_size": int(model.hidden_size),
             "max_dnam_tokens": int(cfg.dnam_proj.max_dnam_tokens),
             "global_step": int(global_step),
@@ -331,6 +332,7 @@ def _write_run_metadata(
         "total_parameters": int(model.total_parameter_count()),
         "model_name_or_path": str(cfg.dnam_proj.model_name_or_path),
         "dnam_prefix_tokens": int(cfg.dnam_proj.get("dnam_prefix_tokens", 0)),
+        "dnam_prefix_expander_mlp_ratio": float(cfg.dnam_proj.get("dnam_prefix_expander_mlp_ratio", 1.0)),
         "run_output_dir": _portable_path(run_output_dir),
         "config_path": _portable_path(run_output_dir / "config.yaml"),
         "tokenizer_model_name_or_path": str(cfg.dnam_proj.model_name_or_path),
@@ -428,6 +430,7 @@ def main() -> None:
         projector_mlp_ratio=float(stage_cfg.get("projector_mlp_ratio", 4.0)),
         projector_dropout=float(stage_cfg.get("projector_dropout", 0.0)),
         dnam_prefix_tokens=int(stage_cfg.get("dnam_prefix_tokens", 0)),
+        dnam_prefix_expander_mlp_ratio=float(stage_cfg.get("dnam_prefix_expander_mlp_ratio", 1.0)),
         trust_remote_code=bool(stage_cfg.trust_remote_code),
         torch_dtype=stage_cfg.get("torch_dtype"),
         attn_implementation=stage_cfg.get("attn_implementation"),
@@ -515,6 +518,7 @@ def main() -> None:
     print(f"Projector dtype: {projector_dtype}")
     print(f"Projector type: {projector_type}")
     print(f"DNAm prefix tokens: {int(stage_cfg.get('dnam_prefix_tokens', 0))}")
+    print(f"DNAm prefix expander MLP ratio: {float(stage_cfg.get('dnam_prefix_expander_mlp_ratio', 1.0))}")
     print(f"Device: {device}")
     print(f"Run output dir: {run_output_dir}")
     print(f"Trainable parameters: {model.trainable_parameter_count():,}")

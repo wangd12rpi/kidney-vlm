@@ -5,7 +5,7 @@ defaults:
   - 01_pathology_proj@pathology_proj: 04_train_path_projectors
   - 02_radiology_proj@radiology_proj: 03_train_radiology_projectors
   - 03_dnam_proj@dnam_proj: 04_train_dnam_projectors
-  - demo: demo_path_projector
+  - demo: demo_projector
   - vlm_train: medgemma_hf
   - _self_
 

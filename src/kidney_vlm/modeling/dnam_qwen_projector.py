@@ -9,25 +9,40 @@ from kidney_vlm.modeling.path_projectors import ModalityProjector, masked_mean_p
 
 
 class DnamPrefixExpander(nn.Module):
-    """Turn a compact DNAm representation into multiple learned soft tokens."""
+    """Turn a compact DNAm representation into token-conditioned soft prompts."""
 
-    def __init__(self, hidden_size: int, output_tokens: int):
+    def __init__(
+        self,
+        hidden_size: int,
+        output_tokens: int,
+        *,
+        mlp_ratio: float = 1.0,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         self.hidden_size = int(hidden_size)
         self.output_tokens = int(output_tokens)
         if self.output_tokens < 1:
             raise ValueError("DnamPrefixExpander.output_tokens must be >= 1.")
-        self.norm = nn.LayerNorm(self.hidden_size)
-        self.token_scale = nn.Parameter(torch.zeros(self.output_tokens, self.hidden_size))
-        self.token_bias = nn.Parameter(torch.empty(self.output_tokens, self.hidden_size))
-        nn.init.normal_(self.token_bias, mean=0.0, std=0.02)
+        hidden_dim = max(self.hidden_size, int(round(self.hidden_size * float(mlp_ratio))))
+        self.input_norm = nn.LayerNorm(self.hidden_size)
+        self.token_embeddings = nn.Parameter(torch.empty(self.output_tokens, self.hidden_size))
+        self.net = nn.Sequential(
+            nn.LayerNorm(self.hidden_size),
+            nn.Linear(self.hidden_size, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, self.hidden_size),
+            nn.Dropout(dropout),
+            nn.LayerNorm(self.hidden_size),
+        )
+        nn.init.normal_(self.token_embeddings, mean=0.0, std=0.02)
 
     def forward(self, projected_tokens: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         pooled = masked_mean_pool(projected_tokens, mask=mask)
-        base = self.norm(pooled).unsqueeze(1)
-        scale = 1.0 + self.token_scale.unsqueeze(0)
-        bias = self.token_bias.unsqueeze(0)
-        return base * scale + bias
+        base = self.input_norm(pooled).unsqueeze(1)
+        token_conditioned = base + self.token_embeddings.unsqueeze(0)
+        return self.net(token_conditioned)
 
 
 class DnamQwenProjectorLM(nn.Module):
@@ -43,6 +58,7 @@ class DnamQwenProjectorLM(nn.Module):
         projector_mlp_ratio: float = 4.0,
         projector_dropout: float = 0.0,
         dnam_prefix_tokens: int = 0,
+        dnam_prefix_expander_mlp_ratio: float = 1.0,
         language_model_is_quantized: bool = False,
     ):
         super().__init__()
@@ -58,6 +74,7 @@ class DnamQwenProjectorLM(nn.Module):
             "projector_mlp_ratio": float(projector_mlp_ratio),
             "projector_dropout": float(projector_dropout),
             "dnam_prefix_tokens": int(dnam_prefix_tokens),
+            "dnam_prefix_expander_mlp_ratio": float(dnam_prefix_expander_mlp_ratio),
         }
         self.dnam_prefix_tokens = max(0, int(dnam_prefix_tokens))
         self.projectors = nn.ModuleDict(
@@ -78,6 +95,8 @@ class DnamQwenProjectorLM(nn.Module):
             self.projectors["dnam_prefix_expander"] = DnamPrefixExpander(
                 hidden_size=self.hidden_size,
                 output_tokens=self.dnam_prefix_tokens,
+                mlp_ratio=self.projector_config["dnam_prefix_expander_mlp_ratio"],
+                dropout=self.projector_config["projector_dropout"],
             )
         if hasattr(self.language_model.config, "use_cache"):
             self.language_model.config.use_cache = False
@@ -96,6 +115,7 @@ class DnamQwenProjectorLM(nn.Module):
         projector_mlp_ratio: float = 4.0,
         projector_dropout: float = 0.0,
         dnam_prefix_tokens: int = 0,
+        dnam_prefix_expander_mlp_ratio: float = 1.0,
         trust_remote_code: bool = True,
         torch_dtype: str | torch.dtype | None = None,
         attn_implementation: str | None = None,
@@ -132,6 +152,7 @@ class DnamQwenProjectorLM(nn.Module):
             projector_mlp_ratio=projector_mlp_ratio,
             projector_dropout=projector_dropout,
             dnam_prefix_tokens=dnam_prefix_tokens,
+            dnam_prefix_expander_mlp_ratio=dnam_prefix_expander_mlp_ratio,
             language_model_is_quantized=load_in_8bit,
         )
 

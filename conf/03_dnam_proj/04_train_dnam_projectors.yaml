@@ -6,19 +6,18 @@ trust_remote_code: true
 qa_parquet_path: ${project.root_dir}/data/proj_train/dnam/dnam_proj_train_qa.parquet
 dnam_embedding_dim: 512
 
-# Simple DNAm projector baseline
+# DNAm projector. CpGPT currently gives one compact case embedding, so the MLP
+# maps it into LLM space and a nonlinear expander turns it into soft prompt slots.
 projector_type: mlp
 projector_num_latents: 64
 projector_depth: 2
 projector_num_heads: 8
 projector_mlp_ratio: 4.0
 projector_dropout: 0.05
-# CpGPT commonly gives one compact case embedding. For MLP projectors, expand
-# that compact representation into this many learned soft prefix tokens.
-# Set to 0 to use the raw projected token count from the feature file.
-dnam_prefix_tokens: 4
+dnam_prefix_tokens: 8
+dnam_prefix_expander_mlp_ratio: 1.0
 
-batch_size: 8
+batch_size: 4
 num_epochs: 10
 learning_rate: 5e-5
 weight_decay: 0.01

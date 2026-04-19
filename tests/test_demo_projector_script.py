@@ -13,8 +13,8 @@ import torch
 @lru_cache(maxsize=1)
 def _load_script_module():
     repo_root = Path(__file__).resolve().parents[1]
-    script_path = repo_root / "scripts" / "demo" / "demo_path_projector.py"
-    spec = importlib.util.spec_from_file_location("demo_path_projector_script", script_path)
+    script_path = repo_root / "scripts" / "demo" / "demo_projector.py"
+    spec = importlib.util.spec_from_file_location("demo_projector_script", script_path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -39,7 +39,8 @@ def test_resolve_feature_path_uses_patch_encoder_folder(tmp_path: Path) -> None:
     expected = feature_dir / "slide-a.h5"
     expected.write_bytes(b"x")
 
-    resolved = module._resolve_feature_path(cfg, "slide-a")
+    modality_cfg = module.OmegaConf.create({"feature_path_field": "pathology_tile_embedding_paths"})
+    resolved = module._resolve_feature_path(cfg, "pathology", modality_cfg, "slide-a")
 
     assert resolved == expected.resolve()
 
@@ -62,11 +63,47 @@ def test_resolve_feature_path_prefers_projector_parquet_mapping(tmp_path: Path) 
 
     resolved = module._resolve_feature_path(
         cfg,
+        "pathology",
+        module.OmegaConf.create({"feature_path_field": "pathology_tile_embedding_paths"}),
         "slide-a",
-        feature_paths_by_slide_stem={"slide-a": str(uni_feature)},
+        feature_paths_by_sample_key={"slide-a": str(uni_feature)},
     )
 
     assert resolved == uni_feature.resolve()
+
+
+def test_resolve_feature_path_supports_dnam_parquet_mapping(tmp_path: Path) -> None:
+    module = _load_script_module()
+
+    feature_path = tmp_path / "data" / "features" / "features_cpgpt_dnam" / "case-a.pt"
+    feature_path.parent.mkdir(parents=True)
+    torch.save({"embedding": torch.randn(1, 8)}, feature_path)
+
+    resolved = module._resolve_feature_path(
+        module.OmegaConf.create({}),
+        "dnam",
+        module.OmegaConf.create({"feature_path_field": "genomics_dna_methylation_feature_path"}),
+        "case-a",
+        feature_paths_by_sample_key={"case-a": str(feature_path)},
+    )
+
+    assert resolved == feature_path.resolve()
+
+
+def test_build_chat_prompt_input_ids_uses_fixed_demo_prompt() -> None:
+    module = _load_script_module()
+
+    class DummyTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            assert messages == [{"role": "user", "content": "what is this. caption: "}]
+            assert kwargs["tokenize"] is True
+            assert kwargs["add_generation_prompt"] is True
+            assert kwargs["chat_template_kwargs"] == {"enable_thinking": False}
+            return [11, 12, 13]
+
+    input_ids = module._build_chat_prompt_input_ids(DummyTokenizer(), device=torch.device("cpu"))
+
+    assert input_ids.tolist() == [[11, 12, 13]]
 
 
 def test_load_h5_patch_features_downsamples_to_max_patch_tokens(tmp_path: Path) -> None:
