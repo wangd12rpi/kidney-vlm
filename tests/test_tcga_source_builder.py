@@ -184,9 +184,14 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
     rna_bulk_metadata_by_patient_id = {
         "TCGA-AA-0001": {
             "genomics_rna_bulk_molecular_subtype": "ccA",
-            "genomics_rna_bulk_immune_subtype": "C3",
+            "genomics_rna_bulk_subtype_mrna": "mRNA-ccA",
+            "genomics_dna_methylation_subtype": "CIMP-high",
+            "genomics_integrative_subtype": "iCluster-2",
+            "genomics_msi_status": "MSI",
             "genomics_rna_bulk_leukocyte_fraction": "0.143",
             "genomics_rna_bulk_tumor_purity": "0.82",
+            "genomics_aneuploidy_score": "14",
+            "genomics_hrd_score": "27",
             "genomics_rna_bulk_top_immune_cell_types": ["T cells CD8", "Macrophages M2"],
             "genomics_rna_bulk_top_immune_cell_fractions": ["0.331", "0.214"],
         }
@@ -250,9 +255,14 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
     assert row1["genomics_rna_bulk_sample_types"] == ["Primary Tumor"]
     assert row1["genomics_rna_bulk_workflow_types"] == ["STAR - Counts"]
     assert row1["genomics_rna_bulk_molecular_subtype"] == "ccA"
-    assert row1["genomics_rna_bulk_immune_subtype"] == "C3"
+    assert row1["genomics_rna_bulk_subtype_mrna"] == "mRNA-ccA"
+    assert row1["genomics_dna_methylation_subtype"] == "CIMP-high"
+    assert row1["genomics_integrative_subtype"] == "iCluster-2"
+    assert row1["genomics_msi_status"] == "MSI"
     assert row1["genomics_rna_bulk_leukocyte_fraction"] == "0.143"
     assert row1["genomics_rna_bulk_tumor_purity"] == "0.82"
+    assert row1["genomics_aneuploidy_score"] == "14"
+    assert row1["genomics_hrd_score"] == "27"
     assert row1["genomics_rna_bulk_top_immune_cell_types"] == ["T cells CD8", "Macrophages M2"]
     assert row1["genomics_rna_bulk_top_immune_cell_fractions"] == ["0.331", "0.214"]
 
@@ -273,7 +283,12 @@ def test_build_tcga_registry_rows_multimodal_lists() -> None:
     assert row2["genomics_rna_bulk_sample_types"] == ["Solid Tissue Normal"]
     assert row2["genomics_rna_bulk_workflow_types"] == ["HTSeq - Counts"]
     assert row2["genomics_rna_bulk_molecular_subtype"] == ""
-    assert row2["genomics_rna_bulk_immune_subtype"] == ""
+    assert row2["genomics_rna_bulk_subtype_mrna"] == ""
+    assert row2["genomics_dna_methylation_subtype"] == ""
+    assert row2["genomics_integrative_subtype"] == ""
+    assert row2["genomics_msi_status"] == ""
+    assert row2["genomics_aneuploidy_score"] == ""
+    assert row2["genomics_hrd_score"] == ""
     assert row2["genomics_rna_bulk_top_immune_cell_types"] == []
     assert row2["genomics_rna_bulk_top_immune_cell_fractions"] == []
 

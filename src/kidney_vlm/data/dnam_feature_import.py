@@ -11,7 +11,6 @@ import pandas as pd
 
 
 ANVIL_DNA_PREFIX = "/anvil/projects/x-cis250966/dna/"
-LOCAL_DNA_PREFIX = "/media/volume/patho_meth/"
 
 
 @dataclass(frozen=True)
@@ -27,22 +26,48 @@ class CpGPTCacheRecord:
 
 
 def normalize_cpgpt_cache_key(key: str | Path) -> str:
-    return str(key).replace(ANVIL_DNA_PREFIX, LOCAL_DNA_PREFIX)
+    return str(key)
 
 
-def cpgpt_cache_hash_for_beta_path(beta_path: str | Path) -> str:
-    normalized = normalize_cpgpt_cache_key(beta_path)
+def _normalize_path_prefix(prefix: str | Path | None) -> str:
+    text = str(prefix or "").strip()
+    if not text:
+        return ""
+    return text if text.endswith("/") else f"{text}/"
+
+
+def normalize_cpgpt_cache_key_with_prefix(
+    key: str | Path,
+    *,
+    local_prefix: str | Path | None = None,
+    anvil_prefix: str | Path = ANVIL_DNA_PREFIX,
+) -> str:
+    normalized = str(key)
+    normalized_anvil_prefix = _normalize_path_prefix(anvil_prefix)
+    normalized_local_prefix = _normalize_path_prefix(local_prefix)
+    if normalized_anvil_prefix and normalized_local_prefix:
+        normalized = normalized.replace(normalized_anvil_prefix, normalized_local_prefix)
+    return normalized
+
+
+def cpgpt_cache_hash_for_beta_path(beta_path: str | Path, *, local_prefix: str | Path | None = None) -> str:
+    normalized = normalize_cpgpt_cache_key_with_prefix(beta_path, local_prefix=local_prefix)
     return hashlib.md5(normalized.encode()).hexdigest()
 
 
-def resolve_tcga_beta_path(beta_metadata: dict[str, object], *, raw_root: Path) -> str | None:
+def resolve_tcga_beta_path(
+    beta_metadata: dict[str, object],
+    *,
+    raw_root: Path,
+    local_prefix: str | Path | None = None,
+) -> str | None:
     beta = beta_metadata.get("local_path") or beta_metadata.get("file_path")
     if beta is None:
         return None
     beta_path = Path(str(beta))
     if not beta_path.is_absolute():
         beta_path = raw_root / beta_path
-    return normalize_cpgpt_cache_key(beta_path)
+    return normalize_cpgpt_cache_key_with_prefix(beta_path, local_prefix=local_prefix)
 
 
 def _clean_text(value: object) -> str:
@@ -90,16 +115,22 @@ def _ensure_compatible_records(existing: CpGPTCacheRecord, candidate: CpGPTCache
         )
 
 
-def parse_cpgpt_index_row(row: dict[str, object], *, raw_root: Path, index_name: str) -> CpGPTCacheRecord | None:
+def parse_cpgpt_index_row(
+    row: dict[str, object],
+    *,
+    raw_root: Path,
+    index_name: str,
+    local_prefix: str | Path | None = None,
+) -> CpGPTCacheRecord | None:
     meth = row.get("methylation_beta")
     if not isinstance(meth, dict):
         return None
 
-    beta_path = resolve_tcga_beta_path(meth, raw_root=raw_root)
+    beta_path = resolve_tcga_beta_path(meth, raw_root=raw_root, local_prefix=local_prefix)
     if not beta_path:
         return None
 
-    cache_hash = cpgpt_cache_hash_for_beta_path(beta_path)
+    cache_hash = cpgpt_cache_hash_for_beta_path(beta_path, local_prefix=local_prefix)
     return CpGPTCacheRecord(
         cache_hash=cache_hash,
         beta_path=beta_path,
@@ -112,7 +143,12 @@ def parse_cpgpt_index_row(row: dict[str, object], *, raw_root: Path, index_name:
     )
 
 
-def build_cpgpt_hash_index(index_paths: Iterable[Path], *, raw_root: Path) -> dict[str, CpGPTCacheRecord]:
+def build_cpgpt_hash_index(
+    index_paths: Iterable[Path],
+    *,
+    raw_root: Path,
+    local_prefix: str | Path | None = None,
+) -> dict[str, CpGPTCacheRecord]:
     records: dict[str, CpGPTCacheRecord] = {}
     for index_path in index_paths:
         with index_path.open("r", encoding="utf-8") as handle:
@@ -121,7 +157,12 @@ def build_cpgpt_hash_index(index_paths: Iterable[Path], *, raw_root: Path) -> di
                 if not stripped:
                     continue
                 row = json.loads(stripped)
-                record = parse_cpgpt_index_row(row, raw_root=raw_root, index_name=index_path.name)
+                record = parse_cpgpt_index_row(
+                    row,
+                    raw_root=raw_root,
+                    index_name=index_path.name,
+                    local_prefix=local_prefix,
+                )
                 if record is None:
                     continue
                 existing = records.get(record.cache_hash)

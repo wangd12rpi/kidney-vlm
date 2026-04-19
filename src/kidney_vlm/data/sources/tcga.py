@@ -92,6 +92,17 @@ DEFAULT_RNA_BULK_FILE_FIELDS = [
     "cases.samples.sample_type",
 ]
 
+DEFAULT_SSM_FIELDS = [
+    "ssm_id",
+    "mutation_subtype",
+    "occurrence.case.case_id",
+    "occurrence.case.submitter_id",
+    "occurrence.case.project.project_id",
+    "consequence.transcript.gene.symbol",
+    "consequence.transcript.consequence_type",
+    "consequence.transcript.vep_consequence",
+]
+
 DEFAULT_MUTATION_PANEL_VERSION = "pancanatlas_driver_union_v1"
 DEFAULT_SPLIT_SCHEME_VERSION = "tcga_project_patient_hash_v1"
 PROJECT_DRIVER_GENE_JSON_PATH = Path(__file__).with_name("tcga_project_driver_genes.json")
@@ -502,78 +513,43 @@ class GDCClient:
         if not project_ids:
             return []
 
-        project_field_candidates = [
-            "occurrence.case.project.project_id",
-            "case.project.project_id",
-            "cases.project.project_id",
-        ]
-        gene_field_candidates = [
-            "consequence.transcript.gene.symbol",
-            "gene.symbol",
-        ]
         normalized_genes = _unique_sorted_non_empty([str(gene).upper() for gene in (gene_symbols or [])])
 
-        last_error: Exception | None = None
-        for project_field in project_field_candidates:
-            filters: list[dict[str, Any]] = [
+        filters: list[dict[str, Any]] = [
+            {
+                "op": "in",
+                "content": {
+                    "field": "occurrence.case.project.project_id",
+                    "value": project_ids,
+                },
+            }
+        ]
+        if normalized_genes:
+            filters.append(
                 {
                     "op": "in",
                     "content": {
-                        "field": project_field,
-                        "value": project_ids,
+                        "field": "consequence.transcript.gene.symbol",
+                        "value": normalized_genes,
                     },
                 }
-            ]
-            if normalized_genes:
-                filters.append(
-                    {
-                        "op": "in",
-                        "content": {
-                            "field": gene_field_candidates[0],
-                            "value": normalized_genes,
-                        },
-                    }
-                )
+            )
 
-            payload = {
-                "filters": {
-                    "op": "and",
-                    "content": filters,
-                },
-                "sort": "ssm_id:asc",
-            }
-            try:
-                return self._post_hits("ssms", payload, max_records=max_hits)
-            except APIQueryError as exc:
-                last_error = exc
-                if normalized_genes:
-                    # Retry with an alternate gene symbol field key.
-                    payload_alt = {
-                        "filters": {
-                            "op": "and",
-                            "content": [
-                                filters[0],
-                                {
-                                    "op": "in",
-                                    "content": {
-                                        "field": gene_field_candidates[1],
-                                        "value": normalized_genes,
-                                    },
-                                },
-                            ],
-                        },
-                        "sort": "ssm_id:asc",
-                    }
-                    try:
-                        return self._post_hits("ssms", payload_alt, max_records=max_hits)
-                    except APIQueryError as nested_exc:
-                        last_error = nested_exc
-                        continue
-                continue
-
-        if last_error is not None:
-            raise APIQueryError(f"GDC SSM query failed across candidate filters: {last_error}") from last_error
-        return []
+        payload = {
+            "filters": {
+                "op": "and",
+                "content": filters,
+            },
+            "fields": ",".join(DEFAULT_SSM_FIELDS),
+            "sort": "ssm_id:asc",
+        }
+        try:
+            return self._post_hits("ssms", payload, max_records=max_hits)
+        except APIQueryError as exc:
+            raise APIQueryError(
+                "GDC SSM query failed for occurrence.case.project.project_id "
+                "and consequence.transcript.gene.symbol"
+            ) from exc
 
     def download_data_file(
         self,
@@ -996,7 +972,10 @@ def index_ssm_hits_by_case_and_patient(
         if not isinstance(hit, dict):
             continue
         ssm_id = _first_non_empty(hit, ["ssm_id", "id"])
-        mutation_type = _first_non_empty(hit, ["mutation_type", "mutationType", "variant_type"])
+        mutation_type = _first_non_empty(
+            hit,
+            ["mutation_type", "mutationType", "mutation_subtype", "mutationSubtype", "variant_type"],
+        )
         gene_symbols = _extract_gene_symbols_from_ssm_hit(hit)
         consequence_terms = _extract_consequence_terms_from_ssm_hit(hit)
         if not gene_symbols and not ssm_id:
@@ -1670,9 +1649,14 @@ def build_tcga_registry_rows(
             "genomics_rna_bulk_sample_types": list(genomics_rna_bulk_sample_types),
             "genomics_rna_bulk_workflow_types": list(genomics_rna_bulk_workflow_types),
             "genomics_rna_bulk_molecular_subtype": str(rna_bulk_metadata.get("genomics_rna_bulk_molecular_subtype", "")),
-            "genomics_rna_bulk_immune_subtype": str(rna_bulk_metadata.get("genomics_rna_bulk_immune_subtype", "")),
+            "genomics_rna_bulk_subtype_mrna": str(rna_bulk_metadata.get("genomics_rna_bulk_subtype_mrna", "")),
+            "genomics_dna_methylation_subtype": str(rna_bulk_metadata.get("genomics_dna_methylation_subtype", "")),
+            "genomics_integrative_subtype": str(rna_bulk_metadata.get("genomics_integrative_subtype", "")),
+            "genomics_msi_status": str(rna_bulk_metadata.get("genomics_msi_status", "")),
             "genomics_rna_bulk_leukocyte_fraction": str(rna_bulk_metadata.get("genomics_rna_bulk_leukocyte_fraction", "")),
             "genomics_rna_bulk_tumor_purity": str(rna_bulk_metadata.get("genomics_rna_bulk_tumor_purity", "")),
+            "genomics_aneuploidy_score": str(rna_bulk_metadata.get("genomics_aneuploidy_score", "")),
+            "genomics_hrd_score": str(rna_bulk_metadata.get("genomics_hrd_score", "")),
             "genomics_rna_bulk_top_immune_cell_types": list(rna_bulk_metadata.get("genomics_rna_bulk_top_immune_cell_types", [])),
             "genomics_rna_bulk_top_immune_cell_fractions": list(rna_bulk_metadata.get("genomics_rna_bulk_top_immune_cell_fractions", [])),
             "genomics_dna_methylation_paths": [],

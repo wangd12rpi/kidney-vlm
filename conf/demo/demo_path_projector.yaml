@@ -4,9 +4,11 @@ max_samples: 100
 sample_seed: 42
 split_filter: test
 prompt: "What is this? Caption: "
-path_projector_ckpt_path: ${pathology_proj.output_dir}
-checkpoint_name: epoch_004.ckpt
+path_projector_ckpt_path: ${oc.env:KIDNEY_VLM_ROOT}/outputs/projectors/qwen3_5_9b/pathology/path_resampler_20260417_180638_EST
+checkpoint_name: best.ckpt
 max_patch_tokens: ${pathology_proj.max_patch_tokens}
+patch_compression_method: ${pathology_proj.patch_compression_method}
+patch_compression_kernel_size: ${pathology_proj.patch_compression_kernel_size}
 max_new_tokens: 192
 do_sample: false
 temperature: 1.0

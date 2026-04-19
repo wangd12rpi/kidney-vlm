@@ -62,14 +62,23 @@ def _normalize_local_path(path_value: str) -> Path:
     return path.resolve()
 
 
+def _to_portable_path(path_value: str | Path) -> str:
+    resolved = Path(path_value).expanduser().resolve()
+    return Path(os.path.relpath(resolved, start=ROOT)).as_posix()
+
+
 def _to_prompt_value(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, float) and pd.isna(value):
         return ""
-    if isinstance(value, (list, tuple)):
-        return ", ".join(str(item) for item in value if str(item).strip())
-    return str(value).strip()
+    if isinstance(value, (list, tuple)) or (hasattr(value, "tolist") and not isinstance(value, str)):
+        items = _as_list(value)
+        return ", ".join(item for item in items if item.lower() not in {"nan", "none", "null", "not_available"})
+    text = str(value).strip()
+    if text.lower() in {"nan", "none", "null", "not_available", "[]"}:
+        return ""
+    return text
 
 
 def _build_caption_row_id(sample_id: str, caption_variant_index: int) -> str:
@@ -290,14 +299,14 @@ def _build_dnam_metadata_lines(
     if age_years:
         metadata_lines.append(f"age_years_approx: {age_years}")
 
-    metadata_lines.append(f"dnam_probe_count: {int(beta_stats['probe_count'])}")
-    metadata_lines.append(f"dnam_beta_mean: {float(beta_stats['mean']):.4f}")
-    metadata_lines.append(f"dnam_beta_std: {float(beta_stats['std']):.4f}")
+    # Keep the prompt compact: enough numeric grounding for DNAm distribution,
+    # but not so many statistics that GPT turns captions into a table recap.
     metadata_lines.append(f"dnam_beta_median: {float(beta_stats['median']):.4f}")
-    metadata_lines.append(f"dnam_beta_q25: {float(beta_stats['q25']):.4f}")
-    metadata_lines.append(f"dnam_beta_q75: {float(beta_stats['q75']):.4f}")
+    metadata_lines.append(
+        "dnam_beta_iqr_q25_to_q75: "
+        f"{float(beta_stats['q25']):.4f}-{float(beta_stats['q75']):.4f}"
+    )
     metadata_lines.append(f"dnam_low_methylation_fraction_lt_{low_threshold:.1f}: {float(beta_stats['low_frac']):.4f}")
-    metadata_lines.append(f"dnam_intermediate_methylation_fraction_{low_threshold:.1f}_to_{high_threshold:.1f}: {float(beta_stats['mid_frac']):.4f}")
     metadata_lines.append(f"dnam_high_methylation_fraction_gt_{high_threshold:.1f}: {float(beta_stats['high_frac']):.4f}")
 
     positive_driver_mutations = _positive_project_driver_mutations(row, max_driver_mutations_to_list)
@@ -355,7 +364,7 @@ def _build_caption_request_prompt(
         f"instruction: {instruction}\n"
         f"caption_style_guidance: {caption_prompt_variant}\n"
         f"length_guidance: {caption_length_instruction}\n"
-        "focus: explain that this is a DNA methylation profile, summarize the overall beta-value distribution, then briefly connect it to the cancer context\n"
+        "focus: explain that this is a DNA methylation profile, summarize the compact beta-value distribution summary, then briefly connect it to the cancer context and supported molecular annotations\n"
         "mutation_guidance: mention positive cancer-relevant driver mutations only when they are explicitly provided; if no positive mutations are supplied, usually omit mutation discussion entirely; avoid exhaustive gene lists and avoid unsupported claims\n"
         "output: exactly one plain-text caption and nothing else\n"
         "</requirements>\n\n"
@@ -594,7 +603,7 @@ def main() -> None:
                 "answer": caption,
                 "caption_model": str(azure_cfg.deployment),
                 "selected_dnam_sample_id": selected_sample_id,
-                "selected_dnam_beta_path": selected_beta_path.as_posix(),
+                "selected_dnam_beta_path": _to_portable_path(selected_beta_path),
                 "selected_dnam_feature_path": feature_path_value,
             }
             generated_rows.append(caption_row)

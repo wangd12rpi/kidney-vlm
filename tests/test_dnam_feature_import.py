@@ -11,14 +11,14 @@ from kidney_vlm.data.dnam_feature_import import (
     build_cpgpt_hash_index,
     build_cpgpt_output_path,
     cpgpt_cache_hash_for_beta_path,
-    normalize_cpgpt_cache_key,
+    normalize_cpgpt_cache_key_with_prefix,
     parse_cpgpt_index_row,
 )
 
 
 def test_normalize_cpgpt_cache_key_rewrites_anvil_prefix() -> None:
     original = "/anvil/projects/x-cis250966/dna/tcga/file.txt"
-    assert normalize_cpgpt_cache_key(original) == "/media/volume/patho_meth/tcga/file.txt"
+    assert normalize_cpgpt_cache_key_with_prefix(original, local_prefix="/tmp/local_root") == "/tmp/local_root/tcga/file.txt"
 
 
 def test_parse_cpgpt_index_row_resolves_relative_beta_path(tmp_path: Path) -> None:
@@ -96,7 +96,7 @@ def test_build_case_level_dnam_assignments_chooses_primary_tumor_feature() -> No
                 "project_id": "TCGA-BRCA",
                 "case_submitter_id": "TCGA-LL-A440",
                 "sample_submitter_id": "TCGA-LL-A440-11A",
-                "beta_path": "/raw/TCGA-LL-A440-11A/normal.txt",
+                "beta_path": "../hescapedna/raw/TCGA-LL-A440-11A/normal.txt",
                 "feature_path": "data/features/features_cpgpt_dnam/TCGA-BRCA/TCGA-LL-A440-11A__normal.pt",
                 "beta_file_id": "normal",
             },
@@ -104,7 +104,7 @@ def test_build_case_level_dnam_assignments_chooses_primary_tumor_feature() -> No
                 "project_id": "TCGA-BRCA",
                 "case_submitter_id": "TCGA-LL-A440",
                 "sample_submitter_id": "TCGA-LL-A440-01A",
-                "beta_path": "/raw/TCGA-LL-A440-01A/tumor.txt",
+                "beta_path": "../hescapedna/raw/TCGA-LL-A440-01A/tumor.txt",
                 "feature_path": "data/features/features_cpgpt_dnam/TCGA-BRCA/TCGA-LL-A440-01A__tumor.pt",
                 "beta_file_id": "tumor",
             },
@@ -119,6 +119,6 @@ def test_build_case_level_dnam_assignments_chooses_primary_tumor_feature() -> No
     assert row["selected_sample_submitter_id"] == "TCGA-LL-A440-01A"
     assert row["genomics_dna_methylation_feature_path"].endswith("TCGA-LL-A440-01A__tumor.pt")
     assert row["genomics_dna_methylation_paths"] == [
-        "/raw/TCGA-LL-A440-01A/tumor.txt",
-        "/raw/TCGA-LL-A440-11A/normal.txt",
+        "../hescapedna/raw/TCGA-LL-A440-01A/tumor.txt",
+        "../hescapedna/raw/TCGA-LL-A440-11A/normal.txt",
     ]

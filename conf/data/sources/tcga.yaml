@@ -159,6 +159,8 @@ data:
           - leukocyte_fraction
           - cibersort
           - absolute_scores
+          - absolute_purity
+          - hrd_scores
       tcia:
         enabled: true
         base_url: https://services.cancerimagingarchive.net/nbia-api/services

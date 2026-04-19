@@ -24,18 +24,28 @@ batch_size: 1
 num_epochs: 10
 learning_rate: 5e-5
 weight_decay: 0.01
-gradient_accumulation_steps: 16
+gradient_accumulation_steps: 32
 grad_clip_norm: 1.0
 lr_scheduler_type: cosine
 warmup_ratio: 0.05
 warmup_steps:
-max_patch_tokens: 1024
+# Applied after optional on-the-fly patch compression.
+max_patch_tokens: 9012
+# On-the-fly patch compression before max_patch_tokens:
+# - none: keep raw patch sequence
+# - mean_pool: average nearby 2D patches within local windows
+# - stride: keep one representative patch per local window
+patch_compression_method: none
+# Spatial window width/height in patch-grid units. 2 means 2x2 local windows.
+patch_compression_kernel_size: 2
 patch_token_dropout_prob: 0.10
 max_text_length: 1024
 dataloader_num_workers: 0
 device: cuda:0
+load_in_8bit: true
 torch_dtype: bfloat16
-autocast_dtype: bfloat16
+autocast_dtype: float16
+projector_dtype: float32
 attn_implementation:
 gradient_checkpointing: true
 seed: 42

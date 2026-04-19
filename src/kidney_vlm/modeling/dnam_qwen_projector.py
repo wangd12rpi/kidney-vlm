@@ -5,7 +5,29 @@ from typing import Any
 import torch
 from torch import nn
 
-from kidney_vlm.modeling.path_projectors import ModalityProjector
+from kidney_vlm.modeling.path_projectors import ModalityProjector, masked_mean_pool
+
+
+class DnamPrefixExpander(nn.Module):
+    """Turn a compact DNAm representation into multiple learned soft tokens."""
+
+    def __init__(self, hidden_size: int, output_tokens: int):
+        super().__init__()
+        self.hidden_size = int(hidden_size)
+        self.output_tokens = int(output_tokens)
+        if self.output_tokens < 1:
+            raise ValueError("DnamPrefixExpander.output_tokens must be >= 1.")
+        self.norm = nn.LayerNorm(self.hidden_size)
+        self.token_scale = nn.Parameter(torch.zeros(self.output_tokens, self.hidden_size))
+        self.token_bias = nn.Parameter(torch.empty(self.output_tokens, self.hidden_size))
+        nn.init.normal_(self.token_bias, mean=0.0, std=0.02)
+
+    def forward(self, projected_tokens: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+        pooled = masked_mean_pool(projected_tokens, mask=mask)
+        base = self.norm(pooled).unsqueeze(1)
+        scale = 1.0 + self.token_scale.unsqueeze(0)
+        bias = self.token_bias.unsqueeze(0)
+        return base * scale + bias
 
 
 class DnamQwenProjectorLM(nn.Module):
@@ -20,9 +42,12 @@ class DnamQwenProjectorLM(nn.Module):
         projector_num_heads: int = 8,
         projector_mlp_ratio: float = 4.0,
         projector_dropout: float = 0.0,
+        dnam_prefix_tokens: int = 0,
+        language_model_is_quantized: bool = False,
     ):
         super().__init__()
         self.language_model = language_model
+        self.language_model_is_quantized = bool(language_model_is_quantized)
         self.dnam_in_dim = int(dnam_in_dim)
         self.hidden_size = int(getattr(language_model.config, "hidden_size"))
         self.projector_config = {
@@ -32,7 +57,9 @@ class DnamQwenProjectorLM(nn.Module):
             "projector_num_heads": int(projector_num_heads),
             "projector_mlp_ratio": float(projector_mlp_ratio),
             "projector_dropout": float(projector_dropout),
+            "dnam_prefix_tokens": int(dnam_prefix_tokens),
         }
+        self.dnam_prefix_tokens = max(0, int(dnam_prefix_tokens))
         self.projectors = nn.ModuleDict(
             {
                 "dnam": ModalityProjector(
@@ -47,6 +74,11 @@ class DnamQwenProjectorLM(nn.Module):
                 )
             }
         )
+        if self.projector_config["projector_type"] == "mlp" and self.dnam_prefix_tokens > 0:
+            self.projectors["dnam_prefix_expander"] = DnamPrefixExpander(
+                hidden_size=self.hidden_size,
+                output_tokens=self.dnam_prefix_tokens,
+            )
         if hasattr(self.language_model.config, "use_cache"):
             self.language_model.config.use_cache = False
         self.freeze_language_model()
@@ -63,19 +95,27 @@ class DnamQwenProjectorLM(nn.Module):
         projector_num_heads: int = 8,
         projector_mlp_ratio: float = 4.0,
         projector_dropout: float = 0.0,
+        dnam_prefix_tokens: int = 0,
         trust_remote_code: bool = True,
         torch_dtype: str | torch.dtype | None = None,
         attn_implementation: str | None = None,
+        load_in_8bit: bool = False,
+        device_map: Any | None = None,
         **kwargs: Any,
     ) -> "DnamQwenProjectorLM":
         try:
-            from transformers import AutoModelForCausalLM
+            from transformers import AutoModelForCausalLM, BitsAndBytesConfig
         except ImportError as exc:
             raise RuntimeError("transformers is not installed. Install project dependencies first.") from exc
 
         resolved_dtype = _resolve_torch_dtype(torch_dtype)
         model_kwargs: dict[str, Any] = {"trust_remote_code": trust_remote_code}
-        if resolved_dtype is not None:
+        if load_in_8bit:
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+            model_kwargs["low_cpu_mem_usage"] = True
+            if device_map is not None:
+                model_kwargs["device_map"] = device_map
+        elif resolved_dtype is not None:
             model_kwargs["torch_dtype"] = resolved_dtype
         if attn_implementation:
             model_kwargs["attn_implementation"] = attn_implementation
@@ -91,6 +131,8 @@ class DnamQwenProjectorLM(nn.Module):
             projector_num_heads=projector_num_heads,
             projector_mlp_ratio=projector_mlp_ratio,
             projector_dropout=projector_dropout,
+            dnam_prefix_tokens=dnam_prefix_tokens,
+            language_model_is_quantized=load_in_8bit,
         )
 
     def freeze_language_model(self) -> None:
@@ -101,6 +143,9 @@ class DnamQwenProjectorLM(nn.Module):
         super().train(mode)
         self.language_model.eval()
         return self
+
+    def move_trainable_modules_to(self, device: torch.device, *, dtype: torch.dtype | None = None) -> None:
+        self.projectors.to(device=device, dtype=dtype)
 
     def forward(
         self,
@@ -124,16 +169,30 @@ class DnamQwenProjectorLM(nn.Module):
             )
 
         dnam_projected, _ = self.projectors["dnam"](dnam_features, dnam_feature_mask)
-        text_embeddings = self.language_model.get_input_embeddings()(input_ids)
-        dnam_projected = dnam_projected.to(dtype=text_embeddings.dtype)
-
-        prefix_attention = self.projectors["dnam"].build_output_mask(
+        projected_mask = self.projectors["dnam"].build_output_mask(
             dnam_feature_mask,
             batch_size=dnam_projected.shape[0],
             output_length=dnam_projected.shape[1],
-            device=attention_mask.device,
-            dtype=attention_mask.dtype,
+            device=dnam_projected.device,
+            dtype=dnam_projected.dtype,
         )
+        if "dnam_prefix_expander" in self.projectors:
+            dnam_projected = self.projectors["dnam_prefix_expander"](dnam_projected, mask=projected_mask)
+            prefix_attention = torch.ones(
+                (dnam_projected.shape[0], dnam_projected.shape[1]),
+                device=attention_mask.device,
+                dtype=attention_mask.dtype,
+            )
+        else:
+            prefix_attention = self.projectors["dnam"].build_output_mask(
+                dnam_feature_mask,
+                batch_size=dnam_projected.shape[0],
+                output_length=dnam_projected.shape[1],
+                device=attention_mask.device,
+                dtype=attention_mask.dtype,
+            )
+        text_embeddings = self.language_model.get_input_embeddings()(input_ids)
+        dnam_projected = dnam_projected.to(dtype=text_embeddings.dtype)
         combined_embeddings = torch.cat([dnam_projected, text_embeddings], dim=1)
         combined_attention = torch.cat([prefix_attention, attention_mask], dim=1)
 

@@ -14,6 +14,8 @@ PANCAN_RNA_METADATA_URLS = {
     "leukocyte_fraction": "https://api.gdc.cancer.gov/data/6f75c9d7-5134-4ed1-b8f3-72856c98a4e8",
     "cibersort": "https://api.gdc.cancer.gov/data/b3df502e-3594-46ef-9f94-d041a20a0b9a",
     "absolute_scores": "https://api.gdc.cancer.gov/data/0e8831f4-dd7e-4673-8624-b4519c2e0d65",
+    "absolute_purity": "https://api.gdc.cancer.gov/data/4f277128-f793-4354-a13d-30cc7fe9f6b5",
+    "hrd_scores": "https://api.gdc.cancer.gov/data/66dd07d7-6366-4774-83c3-5ad1e22b177e",
 }
 
 PANCAN_RNA_METADATA_FILE_NAMES = {
@@ -21,6 +23,8 @@ PANCAN_RNA_METADATA_FILE_NAMES = {
     "leukocyte_fraction": "TCGA_all_leuk_estimate.masked.20170107.tsv",
     "cibersort": "TCGA.Kallisto.fullIDs.cibersort.relative.tsv",
     "absolute_scores": "ABSOLUTE_scores.tsv",
+    "absolute_purity": "TCGA_mastercalls.abs_tables_JSedit.fixed.txt",
+    "hrd_scores": "TCGA.HRD_withSampleID.txt",
 }
 
 DEFAULT_RNA_METADATA_KEYS = (
@@ -28,14 +32,17 @@ DEFAULT_RNA_METADATA_KEYS = (
     "leukocyte_fraction",
     "cibersort",
     "absolute_scores",
+    "absolute_purity",
+    "hrd_scores",
 )
 
 
 def patient_from_barcode(barcode: str) -> str:
-    parts = str(barcode).strip().split("-")
+    text = str(barcode).strip().replace(".", "-")
+    parts = [part for part in text.split("-") if part]
     if len(parts) >= 3:
         return "-".join(parts[:3])
-    return str(barcode).strip()
+    return text
 
 
 def _normalized_keys(keys: list[str] | tuple[str, ...] | None) -> list[str]:
@@ -125,7 +132,7 @@ def _first_matching_column(columns: list[str], patterns: list[str]) -> str | Non
 
 
 def _sample_priority(barcode: str) -> tuple[int, str]:
-    parts = str(barcode).strip().split("-")
+    parts = str(barcode).strip().replace(".", "-").split("-")
     sample_portion = parts[3] if len(parts) >= 4 else ""
     sample_code = sample_portion[:2]
     try:
@@ -140,6 +147,30 @@ def _format_decimal(value: Any, *, digits: int = 3) -> str:
         return f"{float(value):.{digits}f}"
     except (TypeError, ValueError):
         return ""
+
+
+def _format_int_string(value: Any) -> str:
+    try:
+        return str(int(float(value)))
+    except (TypeError, ValueError):
+        return ""
+
+
+def _format_immune_cell_label(column_name: str) -> str:
+    text = str(column_name).strip().replace(".", " ").replace("_", " ")
+    return " ".join(text.split())
+
+
+def _table_or_headerless_three_column(path: Path, *, names: list[str]) -> pd.DataFrame:
+    df = _load_table(path)
+    if not df.empty and len(df.columns) == len(names):
+        sample_col = _first_matching_column(list(df.columns), ["sampleid", "sample"])
+        if sample_col is not None:
+            return df
+    try:
+        return pd.read_csv(path, sep="\t", header=None, names=names, low_memory=False)
+    except Exception:
+        return df
 
 
 def _choose_best_sample_rows(df: pd.DataFrame, sample_column: str) -> dict[str, pd.Series]:
@@ -162,7 +193,9 @@ def _load_subtypes_index(data_dir: Path, patient_ids: set[str]) -> dict[str, dic
         return {}
     sample_col = _first_matching_column(list(df.columns), ["sampleid", "sample"])
     subtype_col = _first_matching_column(list(df.columns), ["Subtype_Selected", "Subtype"])
-    immune_col = _first_matching_column(list(df.columns), ["Immune_Subtype"])
+    mrna_col = _first_matching_column(list(df.columns), ["Subtype_mRNA"])
+    dnam_col = _first_matching_column(list(df.columns), ["Subtype_DNAmeth"])
+    integrative_col = _first_matching_column(list(df.columns), ["Subtype_Integrative"])
     if sample_col is None:
         return {}
 
@@ -176,17 +209,30 @@ def _load_subtypes_index(data_dir: Path, patient_ids: set[str]) -> dict[str, dic
             text = str(row.get(subtype_col, "")).strip()
             if text:
                 record["genomics_rna_bulk_molecular_subtype"] = text
-        if immune_col is not None:
-            text = str(row.get(immune_col, "")).strip()
+                if "msi" in text.lower():
+                    record["genomics_msi_status"] = "MSI"
+        if mrna_col is not None:
+            text = str(row.get(mrna_col, "")).strip()
             if text:
-                record["genomics_rna_bulk_immune_subtype"] = text
+                record["genomics_rna_bulk_subtype_mrna"] = text
+        if dnam_col is not None:
+            text = str(row.get(dnam_col, "")).strip()
+            if text:
+                record["genomics_dna_methylation_subtype"] = text
+        if integrative_col is not None:
+            text = str(row.get(integrative_col, "")).strip()
+            if text:
+                record["genomics_integrative_subtype"] = text
         if record:
             result[patient_id] = record
     return result
 
 
 def _index_leukocyte_fraction(data_dir: Path, patient_ids: set[str]) -> dict[str, str]:
-    df = _load_table(data_dir / PANCAN_RNA_METADATA_FILE_NAMES["leukocyte_fraction"])
+    df = _table_or_headerless_three_column(
+        data_dir / PANCAN_RNA_METADATA_FILE_NAMES["leukocyte_fraction"],
+        names=["CancerType", "SampleID", "leukocyte_fraction"],
+    )
     if df.empty:
         return {}
     sample_col = _first_matching_column(list(df.columns), ["sampleid", "sample"])
@@ -206,10 +252,25 @@ def _index_leukocyte_fraction(data_dir: Path, patient_ids: set[str]) -> dict[str
 
 
 def _index_tumor_purity(data_dir: Path, patient_ids: set[str]) -> dict[str, str]:
-    df = _load_table(data_dir / PANCAN_RNA_METADATA_FILE_NAMES["absolute_scores"])
+    score_df = _load_table(data_dir / PANCAN_RNA_METADATA_FILE_NAMES["absolute_scores"])
+    sample_col = _first_matching_column(list(score_df.columns), ["sampleid", "sample"])
+    purity_col = _first_matching_column(list(score_df.columns), ["purity"])
+    if sample_col is not None and purity_col is not None:
+        best_rows = _choose_best_sample_rows(score_df, sample_col)
+        result: dict[str, str] = {}
+        for patient_id, row in best_rows.items():
+            if patient_id not in patient_ids:
+                continue
+            value = _format_decimal(row.get(purity_col), digits=2)
+            if value:
+                result[patient_id] = value
+        if result:
+            return result
+
+    df = _load_table(data_dir / PANCAN_RNA_METADATA_FILE_NAMES["absolute_purity"])
     if df.empty:
         return {}
-    sample_col = _first_matching_column(list(df.columns), ["sampleid", "sample"])
+    sample_col = _first_matching_column(list(df.columns), ["sampleid", "sample", "barcode"])
     purity_col = _first_matching_column(list(df.columns), ["purity"])
     if sample_col is None or purity_col is None:
         return {}
@@ -220,6 +281,52 @@ def _index_tumor_purity(data_dir: Path, patient_ids: set[str]) -> dict[str, str]
         if patient_id not in patient_ids:
             continue
         value = _format_decimal(row.get(purity_col), digits=2)
+        if value:
+            result[patient_id] = value
+    return result
+
+
+def _index_aneuploidy_scores(data_dir: Path, patient_ids: set[str]) -> dict[str, str]:
+    df = _load_table(data_dir / PANCAN_RNA_METADATA_FILE_NAMES["absolute_scores"])
+    if df.empty:
+        return {}
+    sample_col = _first_matching_column(list(df.columns), ["sampleid", "sample"])
+    if sample_col is None and len(df.columns) > 0:
+        sample_col = str(df.columns[0])
+    aneuploidy_col = _first_matching_column(list(df.columns), ["aneuploidy"])
+    if aneuploidy_col is None and "AS" in df.columns:
+        aneuploidy_col = "AS"
+    if sample_col is None or aneuploidy_col is None:
+        return {}
+
+    best_rows = _choose_best_sample_rows(df, sample_col)
+    result: dict[str, str] = {}
+    for patient_id, row in best_rows.items():
+        if patient_id not in patient_ids:
+            continue
+        value = _format_int_string(row.get(aneuploidy_col))
+        if value:
+            result[patient_id] = value
+    return result
+
+
+def _index_hrd_scores(data_dir: Path, patient_ids: set[str]) -> dict[str, str]:
+    df = _load_table(data_dir / PANCAN_RNA_METADATA_FILE_NAMES["hrd_scores"])
+    if df.empty:
+        return {}
+    sample_col = _first_matching_column(list(df.columns), ["sampleid", "sample", "barcode"])
+    if sample_col is None and len(df.columns) > 0:
+        sample_col = str(df.columns[0])
+    hrd_col = _first_matching_column(list(df.columns), ["hrd"])
+    if sample_col is None or hrd_col is None:
+        return {}
+
+    best_rows = _choose_best_sample_rows(df, sample_col)
+    result: dict[str, str] = {}
+    for patient_id, row in best_rows.items():
+        if patient_id not in patient_ids:
+            continue
+        value = _format_int_string(row.get(hrd_col))
         if value:
             result[patient_id] = value
     return result
@@ -267,7 +374,7 @@ def _index_top_immune_cells(
         ranked.sort(key=lambda item: (-item[0], item[1]))
         top = ranked[:top_k]
         result[patient_id] = {
-            "genomics_rna_bulk_top_immune_cell_types": [label for _, label in top],
+            "genomics_rna_bulk_top_immune_cell_types": [_format_immune_cell_label(label) for _, label in top],
             "genomics_rna_bulk_top_immune_cell_fractions": [f"{value:.3f}" for value, _ in top],
         }
     return result
@@ -290,6 +397,8 @@ def build_tcga_rna_metadata_by_patient_id(
     subtypes_by_patient = _load_subtypes_index(cache_dir, patient_ids)
     leukocyte_by_patient = _index_leukocyte_fraction(cache_dir, patient_ids)
     purity_by_patient = _index_tumor_purity(cache_dir, patient_ids)
+    aneuploidy_by_patient = _index_aneuploidy_scores(cache_dir, patient_ids)
+    hrd_by_patient = _index_hrd_scores(cache_dir, patient_ids)
     immune_cells_by_patient = _index_top_immune_cells(cache_dir, patient_ids)
 
     metadata_by_patient: dict[str, dict[str, Any]] = {}
@@ -302,6 +411,12 @@ def build_tcga_rna_metadata_by_patient_id(
         tumor_purity = purity_by_patient.get(patient_id, "")
         if tumor_purity:
             record["genomics_rna_bulk_tumor_purity"] = tumor_purity
+        aneuploidy_score = aneuploidy_by_patient.get(patient_id, "")
+        if aneuploidy_score:
+            record["genomics_aneuploidy_score"] = aneuploidy_score
+        hrd_score = hrd_by_patient.get(patient_id, "")
+        if hrd_score:
+            record["genomics_hrd_score"] = hrd_score
         record.update(immune_cells_by_patient.get(patient_id, {}))
         metadata_by_patient[patient_id] = record
     return metadata_by_patient

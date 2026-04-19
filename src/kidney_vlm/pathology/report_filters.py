@@ -10,6 +10,9 @@ MISSING_PATHOLOGY_REPORT_SIGNATURES = (
     "tcga missing pathology report form",
     "pathology report is not available",
 )
+LEGACY_PATH_REPLACEMENTS = (
+    ("data/raw/tcga/reports", "data/raw/tcga/report_pathology"),
+)
 
 
 def _as_list(value: Any) -> list[str]:
@@ -29,8 +32,37 @@ def _as_list(value: Any) -> list[str]:
 
 def _normalize_local_path(path_value: str, *, repo_root: Path) -> Path:
     path = Path(str(path_value).strip()).expanduser()
-    if not path.is_absolute():
-        path = repo_root / path
+    candidates: list[Path] = []
+    if path.is_absolute():
+        candidates.append(path)
+        if "data" in path.parts:
+            data_index = path.parts.index("data")
+            candidates.append(repo_root / Path(*path.parts[data_index:]))
+    else:
+        candidates.append(repo_root / path)
+
+    expanded_candidates: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate_str = candidate.as_posix()
+        if candidate_str not in seen:
+            seen.add(candidate_str)
+            expanded_candidates.append(candidate)
+        for old_snippet, new_snippet in LEGACY_PATH_REPLACEMENTS:
+            if old_snippet not in candidate_str:
+                continue
+            remapped = Path(candidate_str.replace(old_snippet, new_snippet, 1))
+            remapped_str = remapped.as_posix()
+            if remapped_str not in seen:
+                seen.add(remapped_str)
+                expanded_candidates.append(remapped)
+
+    for candidate in expanded_candidates:
+        resolved = candidate.resolve()
+        if resolved.exists():
+            return resolved
+    if expanded_candidates:
+        return expanded_candidates[-1].resolve()
     return path.resolve()
 
 
@@ -60,6 +92,11 @@ def _pdf_head_text(path_key: str) -> str:
 
 def is_missing_pathology_report_form(path_value: str | Path, *, repo_root: Path) -> bool:
     normalized_path = _normalize_local_path(str(path_value), repo_root=repo_root)
+    if not normalized_path.exists():
+        raise FileNotFoundError(
+            "Pathology report path could not be resolved to an existing PDF: "
+            f"{path_value!s} -> {normalized_path}"
+        )
     text = _pdf_head_text(str(normalized_path)).lower()
     if not text:
         return False

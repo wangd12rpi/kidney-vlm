@@ -20,9 +20,11 @@ class PathologyQwenProjectorLM(nn.Module):
         projector_num_heads: int = 8,
         projector_mlp_ratio: float = 4.0,
         projector_dropout: float = 0.0,
+        language_model_is_quantized: bool = False,
     ):
         super().__init__()
         self.language_model = language_model
+        self.language_model_is_quantized = bool(language_model_is_quantized)
         self.pathology_in_dim = int(pathology_in_dim)
         self.hidden_size = int(getattr(language_model.config, "hidden_size"))
         self.path_projector_config = {
@@ -66,10 +68,12 @@ class PathologyQwenProjectorLM(nn.Module):
         trust_remote_code: bool = True,
         torch_dtype: str | torch.dtype | None = None,
         attn_implementation: str | None = None,
+        load_in_8bit: bool = False,
+        device_map: Any | None = None,
         **kwargs: Any,
     ) -> "PathologyQwenProjectorLM":
         try:
-            from transformers import AutoModelForCausalLM
+            from transformers import AutoModelForCausalLM, BitsAndBytesConfig
         except ImportError as exc:
             raise RuntimeError("transformers is not installed. Install project dependencies first.") from exc
 
@@ -77,7 +81,12 @@ class PathologyQwenProjectorLM(nn.Module):
         model_kwargs: dict[str, Any] = {
             "trust_remote_code": trust_remote_code,
         }
-        if resolved_dtype is not None:
+        if load_in_8bit:
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+            model_kwargs["low_cpu_mem_usage"] = True
+            if device_map is not None:
+                model_kwargs["device_map"] = device_map
+        elif resolved_dtype is not None:
             model_kwargs["torch_dtype"] = resolved_dtype
         if attn_implementation:
             model_kwargs["attn_implementation"] = attn_implementation
@@ -93,6 +102,7 @@ class PathologyQwenProjectorLM(nn.Module):
             projector_num_heads=projector_num_heads,
             projector_mlp_ratio=projector_mlp_ratio,
             projector_dropout=projector_dropout,
+            language_model_is_quantized=load_in_8bit,
         )
 
     def freeze_language_model(self) -> None:
@@ -103,6 +113,9 @@ class PathologyQwenProjectorLM(nn.Module):
         super().train(mode)
         self.language_model.eval()
         return self
+
+    def move_trainable_modules_to(self, device: torch.device, *, dtype: torch.dtype | None = None) -> None:
+        self.path_projectors.to(device=device, dtype=dtype)
 
     def forward(
         self,

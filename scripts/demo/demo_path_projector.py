@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import torch
 from hydra import compose, initialize_config_dir
@@ -20,6 +19,7 @@ if str(SRC) not in sys.path:
 
 from kidney_vlm.modeling.pathology_qwen_projector import PathologyQwenProjectorLM
 from kidney_vlm.repo_root import find_repo_root
+from kidney_vlm.training.collator import _load_h5_patch_features as _load_h5_patch_features_shared
 
 ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
@@ -63,7 +63,37 @@ def _build_tokenizer(model_name_or_path: str, trust_remote_code: bool):
     return tokenizer
 
 
-def _resolve_feature_path(cfg: Any, file_stem: str) -> Path:
+def _as_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if hasattr(value, "tolist") and not isinstance(value, str):
+        converted = value.tolist()
+        if isinstance(converted, list):
+            return [str(item).strip() for item in converted if str(item).strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _resolve_feature_path(
+    cfg: Any,
+    file_stem: str,
+    *,
+    feature_paths_by_slide_stem: dict[str, str] | None = None,
+) -> Path:
+    mapped_feature_path = str((feature_paths_by_slide_stem or {}).get(file_stem, "")).strip()
+    if mapped_feature_path:
+        resolved_mapped = _resolve_path(mapped_feature_path)
+        if resolved_mapped.exists():
+            return resolved_mapped
+        raise FileNotFoundError(
+            f"Feature file from pathology projector parquet not found for stem '{file_stem}': {resolved_mapped}"
+        )
+
     patch_encoder_name = str(cfg.pathology_features.patch_encoder)
     save_format = str(cfg.pathology_features.get("save_format", "h5")).lower()
     features_root = _resolve_path(cfg.pathology_features.features_root)
@@ -73,20 +103,19 @@ def _resolve_feature_path(cfg: Any, file_stem: str) -> Path:
     return feature_path
 
 
-def _load_h5_patch_features(path: Path, max_patch_tokens: int) -> torch.Tensor:
-    import h5py
-
-    with h5py.File(path, "r") as handle:
-        if "features" not in handle:
-            raise KeyError(f"Missing 'features' dataset in {path}")
-        features = np.asarray(handle["features"])
-
-    if features.ndim != 2:
-        raise ValueError(f"Expected 2D pathology features, got shape {tuple(features.shape)}")
-    if max_patch_tokens > 0 and features.shape[0] > max_patch_tokens:
-        indices = np.linspace(0, features.shape[0] - 1, num=max_patch_tokens, dtype=np.int64)
-        features = features[indices]
-    return torch.from_numpy(features).to(dtype=torch.float32)
+def _load_h5_patch_features(
+    path: Path,
+    max_patch_tokens: int,
+    *,
+    compression_method: str = "none",
+    compression_kernel_size: int = 1,
+) -> torch.Tensor:
+    return _load_h5_patch_features_shared(
+        path,
+        max_patch_tokens=max_patch_tokens,
+        compression_method=compression_method,
+        compression_kernel_size=compression_kernel_size,
+    )
 
 
 def _load_path_projector_state(checkpoint_path: Path) -> dict[str, Any]:
@@ -112,25 +141,27 @@ def _resolve_checkpoint_path(path_value: str | Path, checkpoint_name: str | None
         if direct_best.exists():
             return direct_best
 
-    run_dirs = sorted(
-        [path for path in resolved.iterdir() if path.is_dir()],
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
+    def _sorted_checkpoint_candidates(pattern: str) -> list[Path]:
+        return sorted(
+            [path for path in resolved.rglob(pattern) if path.is_file()],
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+
     if desired_name:
-        for run_dir in run_dirs:
-            named_checkpoint = run_dir / desired_name
-            if named_checkpoint.exists():
-                return named_checkpoint
+        named_candidates = _sorted_checkpoint_candidates(desired_name)
+        if named_candidates:
+            return named_candidates[0]
         raise FileNotFoundError(f"Requested checkpoint '{desired_name}' was not found under: {resolved}")
-    for run_dir in run_dirs:
-        best_path = run_dir / "best.ckpt"
-        if best_path.exists():
-            return best_path
-    for run_dir in run_dirs:
-        epoch_ckpts = sorted(run_dir.glob("epoch_*.ckpt"))
-        if epoch_ckpts:
-            return epoch_ckpts[-1]
+
+    best_candidates = _sorted_checkpoint_candidates("best.ckpt")
+    if best_candidates:
+        return best_candidates[0]
+
+    epoch_candidates = _sorted_checkpoint_candidates("epoch_*.ckpt")
+    if epoch_candidates:
+        return epoch_candidates[0]
+
     raise FileNotFoundError(f"No best.ckpt or epoch_*.ckpt found under: {resolved}")
 
 
@@ -233,6 +264,22 @@ def _load_project_labels_by_slide_stem(cfg: Any) -> dict[str, str]:
     return mapping
 
 
+def _load_feature_paths_by_slide_stem(cfg: Any) -> dict[str, str]:
+    qa_parquet_path = _resolve_path(cfg.pathology_proj.qa_parquet_path)
+    if not qa_parquet_path.exists():
+        return {}
+    frame = pd.read_parquet(qa_parquet_path, columns=["slide_stem", "pathology_tile_embedding_paths"])
+    if "slide_stem" not in frame.columns or "pathology_tile_embedding_paths" not in frame.columns:
+        return {}
+    mapping: dict[str, str] = {}
+    for row in frame.drop_duplicates("slide_stem").itertuples(index=False):
+        slide_stem = str(row.slide_stem).strip()
+        tile_paths = _as_list(row.pathology_tile_embedding_paths)
+        if slide_stem and tile_paths:
+            mapping[slide_stem] = tile_paths[0]
+    return mapping
+
+
 def _generate_response(
     *,
     model: PathologyQwenProjectorLM,
@@ -315,14 +362,30 @@ def main() -> None:
     )
     model = _load_path_projector_model(cfg, state=state, device=device)
     project_labels_by_slide_stem = _load_project_labels_by_slide_stem(cfg)
+    feature_paths_by_slide_stem = _load_feature_paths_by_slide_stem(cfg)
     print(f"Checkpoint: {checkpoint_path}")
     print(f"Prompt: {prompt}")
     if str(demo_cfg.get("split_filter", "")).strip():
         print(f"Split filter: {str(demo_cfg.get('split_filter')).strip()}")
     print(f"Samples: {len(file_stems)}")
+    print(
+        "Patch compression: "
+        f"{str(demo_cfg.get('patch_compression_method', 'none'))} "
+        f"(kernel={int(demo_cfg.get('patch_compression_kernel_size', 1))}); "
+        "max_patch_tokens is applied after compression."
+    )
     for index, file_stem in enumerate(file_stems, start=1):
-        feature_path = _resolve_feature_path(cfg, file_stem)
-        pathology_features = _load_h5_patch_features(feature_path, max_patch_tokens=int(demo_cfg.max_patch_tokens))
+        feature_path = _resolve_feature_path(
+            cfg,
+            file_stem,
+            feature_paths_by_slide_stem=feature_paths_by_slide_stem,
+        )
+        pathology_features = _load_h5_patch_features(
+            feature_path,
+            max_patch_tokens=int(demo_cfg.max_patch_tokens),
+            compression_method=str(demo_cfg.get("patch_compression_method", "none")),
+            compression_kernel_size=int(demo_cfg.get("patch_compression_kernel_size", 1)),
+        )
         response = _generate_response(
             model=model,
             tokenizer=tokenizer,

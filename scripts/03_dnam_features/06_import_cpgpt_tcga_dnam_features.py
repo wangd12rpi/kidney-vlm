@@ -24,11 +24,31 @@ ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 
 
+def _resolve_hescapedna_root() -> Path:
+    env_value = os.getenv("HESCAPEDNA_ROOT", "").strip()
+    if env_value:
+        return Path(env_value).expanduser().resolve()
+
+    sibling = (ROOT.parent / "hescapedna").resolve()
+    if sibling.exists():
+        return sibling
+
+    raise FileNotFoundError(
+        "Could not resolve hescapedna root. Set HESCAPEDNA_ROOT or place the repo at ../hescapedna."
+    )
+
+
+def _portable_relative_path(path: str | Path) -> str:
+    path_obj = Path(path).expanduser().resolve()
+    return Path(os.path.relpath(path_obj, start=ROOT)).as_posix()
+
+
 # External source locations
-HESCAPEDNA_ROOT = Path("/media/volume/patho_meth/hescapedna")
+HESCAPEDNA_ROOT = _resolve_hescapedna_root()
 HESCAPEDNA_INDEX_DIR = HESCAPEDNA_ROOT / "data" / "wsi_dnameth"
 HESCAPEDNA_RAW_DNAM_ROOT = HESCAPEDNA_INDEX_DIR / "raw"
 HESCAPEDNA_CPGPT_CACHE_DIR = HESCAPEDNA_ROOT / "cache" / "cpgpt_embeddings"
+HESCAPEDNA_LOCAL_PREFIX = HESCAPEDNA_ROOT.parent
 
 # Local output locations
 OUTPUT_FEATURES_DIR = ROOT / "data" / "features" / "features_cpgpt_dnam"
@@ -51,10 +71,7 @@ def _selected_index_paths() -> list[Path]:
 
 
 def _relative_to_repo(path: Path) -> str:
-    try:
-        return path.relative_to(ROOT).as_posix()
-    except ValueError:
-        return path.as_posix()
+    return _portable_relative_path(path)
 
 
 def _filtered_records_by_hash(records_by_hash):
@@ -107,7 +124,11 @@ def main() -> None:
     print(f"Top-k features: {TOP_K_FEATURES if TOP_K_FEATURES is not None else 'ALL'}")
 
     print("Building CpGPT hash index from hescapedna metadata...")
-    records_by_hash = build_cpgpt_hash_index(index_paths, raw_root=HESCAPEDNA_RAW_DNAM_ROOT)
+    records_by_hash = build_cpgpt_hash_index(
+        index_paths,
+        raw_root=HESCAPEDNA_RAW_DNAM_ROOT,
+        local_prefix=HESCAPEDNA_LOCAL_PREFIX,
+    )
     print(f"Indexed CpGPT hash entries: {len(records_by_hash)}")
 
     cache_paths = sorted(path for path in HESCAPEDNA_CPGPT_CACHE_DIR.glob("*.pt") if path.is_file())
@@ -149,10 +170,10 @@ def main() -> None:
                 "sample_submitter_id": record.sample_submitter_id,
                 "beta_file_id": record.beta_file_id,
                 "beta_file_name": record.beta_file_name,
-                "beta_path": record.beta_path,
+                "beta_path": _portable_relative_path(record.beta_path),
                 "source_index_files": list(record.source_index_files),
                 "cache_hash": record.cache_hash,
-                "source_cache_path": cache_path.as_posix(),
+                "source_cache_path": _portable_relative_path(cache_path),
                 "feature_path": _relative_to_repo(output_path),
                 "feature_filename": output_path.name,
             }

@@ -20,8 +20,8 @@ allowed_slide_kinds:
 required_pathology_embedding_path_substrings:
   - features_uni/
 exclude_normal_tcga_slides: true
-patch_count_lower_quantile: 0.05
-patch_count_upper_quantile: 0.95
+patch_count_lower_quantile: 0.02
+patch_count_upper_quantile: 0.90
 # Limits the number of slide rows after case-to-slide expansion for quick debugging.
 first_n:
 print_first_n: 2

@@ -152,6 +152,105 @@ def _sample_patch_features(features: np.ndarray, max_patch_tokens: int) -> np.nd
     return features[indices]
 
 
+def _contiguous_mean_pool(features: np.ndarray, group_size: int) -> np.ndarray:
+    if group_size <= 1 or features.shape[0] <= 1:
+        return features
+    pooled: list[np.ndarray] = []
+    for start in range(0, features.shape[0], group_size):
+        pooled.append(features[start : start + group_size].mean(axis=0, dtype=np.float32))
+    return np.stack(pooled, axis=0)
+
+
+def _infer_global_coord_step(coords: np.ndarray) -> int | None:
+    if coords.ndim != 2 or coords.shape[1] < 2 or coords.shape[0] == 0:
+        return None
+
+    positive_diffs: list[np.ndarray] = []
+    for axis in range(2):
+        unique_axis = np.unique(coords[:, axis].astype(np.int64, copy=False))
+        if unique_axis.size <= 1:
+            continue
+        axis_diffs = np.diff(unique_axis)
+        axis_diffs = axis_diffs[axis_diffs > 0]
+        if axis_diffs.size > 0:
+            positive_diffs.append(axis_diffs)
+
+    if not positive_diffs:
+        return None
+
+    step = int(np.gcd.reduce(np.concatenate(positive_diffs, axis=0)))
+    if step <= 0:
+        return None
+    return step
+
+
+def _spatial_bucket_keys(coords: np.ndarray, kernel_size: int) -> np.ndarray | None:
+    if coords.ndim != 2 or coords.shape[1] < 2 or coords.shape[0] == 0:
+        return None
+    step = _infer_global_coord_step(coords)
+    if step is None:
+        return None
+
+    x = coords[:, 0].astype(np.int64, copy=False)
+    y = coords[:, 1].astype(np.int64, copy=False)
+    grid_x = (x - int(x.min())) // step
+    grid_y = (y - int(y.min())) // step
+    bucket_x = grid_x // kernel_size
+    bucket_y = grid_y // kernel_size
+    return np.stack([bucket_x, bucket_y], axis=1)
+
+
+def _spatial_mean_pool(features: np.ndarray, coords: np.ndarray | None, kernel_size: int) -> np.ndarray:
+    if kernel_size <= 1 or features.shape[0] <= 1:
+        return features
+    group_size = kernel_size * kernel_size
+    if coords is None:
+        return _contiguous_mean_pool(features, group_size)
+    bucket_keys = _spatial_bucket_keys(coords, kernel_size)
+    if bucket_keys is None:
+        return _contiguous_mean_pool(features, group_size)
+
+    _, inverse = np.unique(bucket_keys, axis=0, return_inverse=True)
+    pooled = np.zeros((int(inverse.max()) + 1, features.shape[1]), dtype=np.float32)
+    np.add.at(pooled, inverse, features.astype(np.float32, copy=False))
+    counts = np.bincount(inverse).astype(np.float32, copy=False)
+    pooled /= counts[:, None]
+    return pooled
+
+
+def _spatial_stride_subsample(features: np.ndarray, coords: np.ndarray | None, kernel_size: int) -> np.ndarray:
+    if kernel_size <= 1 or features.shape[0] <= 1:
+        return features
+    group_size = kernel_size * kernel_size
+    if coords is None:
+        return features[::group_size]
+    bucket_keys = _spatial_bucket_keys(coords, kernel_size)
+    if bucket_keys is None:
+        return features[::group_size]
+
+    _, first_indices = np.unique(bucket_keys, axis=0, return_index=True)
+    ordered_indices = np.sort(first_indices)
+    return features[ordered_indices]
+
+
+def _compress_patch_features(
+    features: np.ndarray,
+    coords: np.ndarray | None,
+    *,
+    compression_method: str,
+    compression_kernel_size: int,
+) -> np.ndarray:
+    method = str(compression_method).strip().lower()
+    kernel_size = int(compression_kernel_size)
+    if method in {"", "none"} or kernel_size <= 1:
+        return features
+    if method == "mean_pool":
+        return _spatial_mean_pool(features, coords, kernel_size)
+    if method == "stride":
+        return _spatial_stride_subsample(features, coords, kernel_size)
+    raise ValueError(f"Unsupported pathology patch compression method: {compression_method}")
+
+
 def _sample_sequence_features(features: torch.Tensor, max_tokens: int) -> torch.Tensor:
     if features.ndim != 2:
         raise ValueError(f"Expected 2D feature tensor, got shape {tuple(features.shape)}")
@@ -161,14 +260,27 @@ def _sample_sequence_features(features: torch.Tensor, max_tokens: int) -> torch.
     return features[indices.round().to(dtype=torch.long)]
 
 
-def _load_h5_patch_features(path: Path, max_patch_tokens: int) -> torch.Tensor:
+def _load_h5_patch_features(
+    path: Path,
+    max_patch_tokens: int,
+    *,
+    compression_method: str = "none",
+    compression_kernel_size: int = 1,
+) -> torch.Tensor:
     import h5py
 
     with h5py.File(path, "r") as handle:
         if "features" not in handle:
             raise KeyError(f"Missing 'features' dataset in {path}")
         features = np.asarray(handle["features"])
+        coords = np.asarray(handle["coords"]) if "coords" in handle else None
 
+    features = _compress_patch_features(
+        features,
+        coords,
+        compression_method=compression_method,
+        compression_kernel_size=compression_kernel_size,
+    )
     features = _sample_patch_features(features, max_patch_tokens=max_patch_tokens)
     return torch.from_numpy(features).to(dtype=torch.float32)
 
@@ -286,6 +398,8 @@ class PathologyProjectorQACollator:
     root_dir: str | Path
     max_text_length: int = 512
     max_patch_tokens: int = 128
+    patch_compression_method: str = "none"
+    patch_compression_kernel_size: int = 1
     patch_token_dropout_prob: float = 0.0
     instruction_field: str = "instruction"
     answer_field: str = "answer"
@@ -294,6 +408,14 @@ class PathologyProjectorQACollator:
 
     def __post_init__(self) -> None:
         self.root_dir = Path(self.root_dir).expanduser().resolve()
+        self.patch_compression_method = str(self.patch_compression_method).strip().lower() or "none"
+        self.patch_compression_kernel_size = int(self.patch_compression_kernel_size)
+        if self.patch_compression_kernel_size < 1:
+            raise ValueError("PathologyProjectorQACollator.patch_compression_kernel_size must be >= 1.")
+        if self.patch_compression_method not in {"none", "mean_pool", "stride"}:
+            raise ValueError(
+                "PathologyProjectorQACollator.patch_compression_method must be one of: none, mean_pool, stride."
+            )
         self.patch_token_dropout_prob = float(self.patch_token_dropout_prob)
         if not 0.0 <= self.patch_token_dropout_prob <= 1.0:
             raise ValueError("PathologyProjectorQACollator.patch_token_dropout_prob must be in [0, 1].")
@@ -347,7 +469,12 @@ class PathologyProjectorQACollator:
             text_input_ids.append(input_ids)
             text_labels.append(labels)
             patch_path = _resolve_existing_path(self.root_dir, feature.get(self.pathology_embedding_field, []))
-            patch_tensor = _load_h5_patch_features(patch_path, max_patch_tokens=self.max_patch_tokens)
+            patch_tensor = _load_h5_patch_features(
+                patch_path,
+                max_patch_tokens=self.max_patch_tokens,
+                compression_method=self.patch_compression_method,
+                compression_kernel_size=self.patch_compression_kernel_size,
+            )
             patch_tensor = _apply_patch_token_dropout(patch_tensor, self.patch_token_dropout_prob)
             pathology_tensors.append(patch_tensor)
             for key in metadata_keys:

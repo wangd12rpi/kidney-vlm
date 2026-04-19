@@ -13,6 +13,10 @@ projector_depth: 2
 projector_num_heads: 8
 projector_mlp_ratio: 4.0
 projector_dropout: 0.05
+# CpGPT commonly gives one compact case embedding. For MLP projectors, expand
+# that compact representation into this many learned soft prefix tokens.
+# Set to 0 to use the raw projected token count from the feature file.
+dnam_prefix_tokens: 4
 
 batch_size: 8
 num_epochs: 10
@@ -27,8 +31,10 @@ max_dnam_tokens: 8
 max_text_length: 512
 dataloader_num_workers: 0
 device: cuda:0
+load_in_8bit: true
 torch_dtype: bfloat16
-autocast_dtype: bfloat16
+autocast_dtype: float16
+projector_dtype: float32
 attn_implementation:
 gradient_checkpointing: true
 seed: 42

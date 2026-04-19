@@ -114,11 +114,19 @@ def _build_tokenizer(model_name_or_path: str, trust_remote_code: bool):
     return tokenizer
 
 
-def _move_batch_to_device(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
+def _move_batch_to_device(
+    batch: dict[str, Any],
+    device: torch.device,
+    *,
+    floating_dtype: torch.dtype | None = None,
+) -> dict[str, Any]:
     output: dict[str, Any] = {}
     for key, value in batch.items():
         if torch.is_tensor(value):
-            output[key] = value.to(device)
+            if value.is_floating_point() and floating_dtype is not None:
+                output[key] = value.to(device=device, dtype=floating_dtype)
+            else:
+                output[key] = value.to(device)
         else:
             output[key] = value
     return output
@@ -246,13 +254,14 @@ def _run_validation(
     device: torch.device,
     autocast_dtype: torch.dtype,
     use_autocast: bool,
+    floating_input_dtype: torch.dtype | None,
 ) -> float:
     model.eval()
     running_loss = 0.0
     with torch.no_grad():
         loop = tqdm(val_loader, total=len(val_loader), desc='Validation', leave=False)
         for step, batch in enumerate(loop, start=1):
-            batch = _move_batch_to_device(batch, device)
+            batch = _move_batch_to_device(batch, device, floating_dtype=floating_input_dtype)
             with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
                 outputs = model(
                     input_ids=batch['input_ids'],
@@ -305,6 +314,21 @@ def _resolve_modality_dir_name(stage_cfg: Any) -> str:
     if modality_tag.startswith("path"):
         return "pathology"
     return _slugify_label(modality_tag, default="pathology")
+
+
+def _resolve_mixed_precision_dtype(raw_value: Any, *, default: torch.dtype) -> torch.dtype:
+    normalized = str(raw_value or "").strip().lower()
+    if not normalized:
+        return default
+    mapping = {
+        "bf16": torch.bfloat16,
+        "bfloat16": torch.bfloat16,
+        "fp16": torch.float16,
+        "float16": torch.float16,
+        "fp32": torch.float32,
+        "float32": torch.float32,
+    }
+    return mapping.get(normalized, default)
 
 
 def _save_artifacts(
@@ -362,20 +386,24 @@ def _write_run_metadata(
     best_epoch: int | None,
     best_validation_loss: float | None,
 ) -> Path:
+    def _portable_path(path_value: str | Path) -> str:
+        resolved = Path(path_value).expanduser().resolve()
+        return Path(os.path.relpath(resolved, start=ROOT)).as_posix()
+
     metadata = {
         "global_step": int(global_step),
         "trainable_parameters": int(model.trainable_parameter_count()),
         "total_parameters": int(model.total_parameter_count()),
         "model_name_or_path": str(cfg.pathology_proj.model_name_or_path),
-        "run_output_dir": str(run_output_dir),
-        "config_path": str(run_output_dir / "config.yaml"),
+        "run_output_dir": _portable_path(run_output_dir),
+        "config_path": _portable_path(run_output_dir / "config.yaml"),
         "tokenizer_model_name_or_path": str(cfg.pathology_proj.model_name_or_path),
-        "epoch_checkpoint_paths": list(epoch_checkpoint_paths),
+        "epoch_checkpoint_paths": [_portable_path(path) for path in epoch_checkpoint_paths],
     }
     if bool(cfg.pathology_proj.get("save_tokenizer_snapshot", False)):
-        metadata["tokenizer_dir"] = str(run_output_dir / "tokenizer")
+        metadata["tokenizer_dir"] = _portable_path(run_output_dir / "tokenizer")
     if best_checkpoint_path is not None:
-        metadata["best_checkpoint_path"] = str(best_checkpoint_path)
+        metadata["best_checkpoint_path"] = _portable_path(best_checkpoint_path)
     if best_epoch is not None:
         metadata["best_epoch"] = int(best_epoch)
     if best_validation_loss is not None and math.isfinite(best_validation_loss):
@@ -433,6 +461,9 @@ def main() -> None:
     validation_dataset = PathologyProjectorQADataset(validation_frame)
 
     device = _resolve_device(stage_cfg.device)
+    load_in_8bit = bool(stage_cfg.get("load_in_8bit", False))
+    if load_in_8bit and device.type != "cuda":
+        raise RuntimeError("load_in_8bit=true requires a CUDA device.")
     tokenizer = _build_tokenizer(
         model_name_or_path=str(stage_cfg.model_name_or_path),
         trust_remote_code=bool(stage_cfg.trust_remote_code),
@@ -442,6 +473,8 @@ def main() -> None:
         root_dir=ROOT,
         max_text_length=int(stage_cfg.max_text_length),
         max_patch_tokens=int(stage_cfg.max_patch_tokens),
+        patch_compression_method=str(stage_cfg.get("patch_compression_method", "none")),
+        patch_compression_kernel_size=int(stage_cfg.get("patch_compression_kernel_size", 1)),
         patch_token_dropout_prob=float(stage_cfg.get("patch_token_dropout_prob", 0.0)),
     )
     validation_collator = PathologyProjectorQACollator(
@@ -449,6 +482,8 @@ def main() -> None:
         root_dir=ROOT,
         max_text_length=int(stage_cfg.max_text_length),
         max_patch_tokens=int(stage_cfg.max_patch_tokens),
+        patch_compression_method=str(stage_cfg.get("patch_compression_method", "none")),
+        patch_compression_kernel_size=int(stage_cfg.get("patch_compression_kernel_size", 1)),
         patch_token_dropout_prob=0.0,
     )
 
@@ -464,10 +499,20 @@ def main() -> None:
         trust_remote_code=bool(stage_cfg.trust_remote_code),
         torch_dtype=stage_cfg.get("torch_dtype"),
         attn_implementation=stage_cfg.get("attn_implementation"),
+        load_in_8bit=load_in_8bit,
+        device_map={"": str(device)} if load_in_8bit else None,
     )
     if bool(stage_cfg.get("gradient_checkpointing", False)) and hasattr(model.language_model, "gradient_checkpointing_enable"):
         model.language_model.gradient_checkpointing_enable()
-    model.to(device)
+    autocast_dtype = _resolve_mixed_precision_dtype(stage_cfg.get("autocast_dtype", "bfloat16"), default=torch.bfloat16)
+    projector_dtype = _resolve_mixed_precision_dtype(
+        stage_cfg.get("projector_dtype", stage_cfg.get("autocast_dtype", "bfloat16")),
+        default=autocast_dtype,
+    )
+    if load_in_8bit:
+        model.move_trainable_modules_to(device, dtype=projector_dtype)
+    else:
+        model.to(device=device, dtype=projector_dtype)
     model.train()
 
     train_loader = DataLoader(
@@ -525,26 +570,29 @@ def main() -> None:
         total_optimizer_steps=total_optimizer_steps,
     )
     grad_clip_norm = float(stage_cfg.grad_clip_norm)
-    autocast_dtype_name = str(stage_cfg.get("autocast_dtype", "bfloat16")).strip().lower()
-    autocast_dtype = {
-        "bf16": torch.bfloat16,
-        "bfloat16": torch.bfloat16,
-        "fp16": torch.float16,
-        "float16": torch.float16,
-    }.get(autocast_dtype_name, torch.bfloat16)
     use_autocast = device.type == "cuda"
+    use_grad_scaler = use_autocast and autocast_dtype == torch.float16 and projector_dtype == torch.float32
+    grad_scaler = torch.amp.GradScaler("cuda", enabled=use_grad_scaler)
 
     print("Stage 1 pathology projector training")
     print(f"Pathology projector parquet: {qa_parquet_path}")
     print(f"Train samples: {len(train_dataset)}")
     print(f"Validation samples: {len(validation_dataset)}")
     print(f"Model: {stage_cfg.model_name_or_path}")
+    print(f"Frozen LLM quantization: {'8-bit' if load_in_8bit else str(stage_cfg.get('torch_dtype', 'default'))}")
+    print(f"Projector dtype: {projector_dtype}")
     print(f"Projector type: {projector_type}")
     print(f"Device: {device}")
     print(f"Run output dir: {run_output_dir}")
     print(f"Trainable parameters: {model.trainable_parameter_count():,}")
     print(f"Total parameters: {model.total_parameter_count():,}")
     print(f"Max patch tokens: {int(stage_cfg.max_patch_tokens)}")
+    print(
+        "Patch compression: "
+        f"{str(stage_cfg.get('patch_compression_method', 'none'))} "
+        f"(kernel={int(stage_cfg.get('patch_compression_kernel_size', 1))}); "
+        "max_patch_tokens is applied after compression."
+    )
     print(f"Train patch token dropout: {float(stage_cfg.get('patch_token_dropout_prob', 0.0)):.2f}")
     print(f"Max text length: {int(stage_cfg.max_text_length)}")
     print(f"Scheduler: {scheduler_type}")
@@ -565,7 +613,7 @@ def main() -> None:
         running_loss = 0.0
         loop = tqdm(train_loader, total=len(train_loader), desc=f"Epoch {epoch + 1}/{num_epochs}")
         for step, batch in enumerate(loop, start=1):
-            batch = _move_batch_to_device(batch, device)
+            batch = _move_batch_to_device(batch, device, floating_dtype=projector_dtype)
             with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
                 outputs = model(
                     input_ids=batch["input_ids"],
@@ -579,11 +627,20 @@ def main() -> None:
                     raise RuntimeError("Model did not return a loss during pathology projector training.")
                 scaled_loss = loss / grad_accum
 
-            scaled_loss.backward()
+            if use_grad_scaler:
+                grad_scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
             if step % grad_accum == 0 or step == len(train_loader):
                 if grad_clip_norm > 0:
+                    if use_grad_scaler:
+                        grad_scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(trainable_parameters, grad_clip_norm)
-                optimizer.step()
+                if use_grad_scaler:
+                    grad_scaler.step(optimizer)
+                    grad_scaler.update()
+                else:
+                    optimizer.step()
                 if lr_scheduler is not None:
                     lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -622,6 +679,7 @@ def main() -> None:
                 device=device,
                 autocast_dtype=autocast_dtype,
                 use_autocast=use_autocast,
+                floating_input_dtype=projector_dtype,
             )
             print(f"Epoch {epoch + 1} validation loss: {validation_loss:.4f}")
             if wandb_run is not None:

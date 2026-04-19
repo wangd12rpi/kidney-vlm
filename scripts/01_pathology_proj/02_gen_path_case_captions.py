@@ -70,6 +70,11 @@ def _normalize_local_path(path_value: str) -> Path:
     return path.resolve()
 
 
+def _to_portable_path(path_value: str | Path) -> str:
+    resolved = Path(path_value).expanduser().resolve()
+    return Path(os.path.relpath(resolved, start=ROOT)).as_posix()
+
+
 def _to_prompt_value(value: Any) -> str:
     if value is None:
         return ""
@@ -687,7 +692,7 @@ def main() -> None:
             "caption_variant_index": _coerce_int(row.get("caption_variant_index"), default=0),
             "caption_prompt_variant": caption_prompt_variant,
             "caption_length_instruction": caption_length_instruction,
-            "report_pdf_paths": [str(path) for path in report_paths],
+            "report_pdf_paths": [_to_portable_path(path) for path in report_paths],
             "instruction": instruction_text,
             "question": instruction_text,
             "caption": caption,
