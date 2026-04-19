@@ -13,7 +13,6 @@ from typing import Any
 
 import pandas as pd
 import torch
-from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 from tqdm.auto import tqdm
 
@@ -77,6 +76,8 @@ class RemoteExtractionDiscoveryStats:
 
 
 def load_cfg():
+    from hydra import compose, initialize_config_dir
+
     with initialize_config_dir(version_base=None, config_dir=str(ROOT / "conf")):
         cfg = compose(config_name="config")
     OmegaConf.set_struct(cfg, False)

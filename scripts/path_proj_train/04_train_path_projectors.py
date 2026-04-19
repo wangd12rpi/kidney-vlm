@@ -13,7 +13,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
@@ -44,6 +43,8 @@ class PathologyProjectorQADataset(Dataset):
 
 
 def load_cfg():
+    from hydra import compose, initialize_config_dir
+
     with initialize_config_dir(version_base=None, config_dir=str(ROOT / "conf")):
         cfg = compose(config_name="config")
     OmegaConf.set_struct(cfg, False)

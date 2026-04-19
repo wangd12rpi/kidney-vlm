@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
 BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +24,8 @@ _PATCH_COUNT_CACHE: dict[str, int] = {}
 
 
 def load_cfg():
+    from hydra import compose, initialize_config_dir
+
     with initialize_config_dir(version_base=None, config_dir=str(ROOT / "conf")):
         cfg = compose(config_name="config", overrides=["qa_genereation=path_proj_train_qa"])
     OmegaConf.set_struct(cfg, False)

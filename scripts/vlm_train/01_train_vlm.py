@@ -5,8 +5,6 @@ import os
 import sys
 from pathlib import Path
 
-from hydra import compose, initialize_config_dir
-
 BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
 SRC = BOOTSTRAP_ROOT / "src"
 if str(SRC) not in sys.path:
@@ -21,6 +19,8 @@ os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 
 
 def load_cfg():
+    from hydra import compose, initialize_config_dir
+
     with initialize_config_dir(version_base=None, config_dir=str(ROOT / "conf")):
         return compose(config_name="config")
 

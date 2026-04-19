@@ -10,7 +10,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
 BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +25,8 @@ os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 
 
 def load_cfg():
+    from hydra import compose, initialize_config_dir
+
     with initialize_config_dir(version_base=None, config_dir=str(ROOT / "conf")):
         cfg = compose(config_name="config")
     OmegaConf.set_struct(cfg, False)

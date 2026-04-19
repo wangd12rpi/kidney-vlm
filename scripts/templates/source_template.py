@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
 
 BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
@@ -30,6 +29,8 @@ os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 
 
 def load_cfg(source_name: str) -> DictConfig:
+    from hydra import compose, initialize_config_dir
+
     conf_dir = ROOT / "conf"
     with initialize_config_dir(version_base=None, config_dir=str(conf_dir)):
         cfg = compose(config_name="config")

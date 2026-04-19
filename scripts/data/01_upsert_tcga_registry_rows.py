@@ -13,7 +13,6 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from tqdm.auto import tqdm
@@ -176,6 +175,8 @@ GENOMICS_RAW_PAYLOAD_SPECS: dict[str, dict[str, Any]] = {
 
 
 def load_cfg(source_name: str = "tcga", overrides: list[str] | None = None) -> DictConfig:
+    from hydra import compose, initialize_config_dir
+
     conf_dir = ROOT / "conf"
     with initialize_config_dir(version_base=None, config_dir=str(conf_dir)):
         base_cfg = compose(config_name="config")

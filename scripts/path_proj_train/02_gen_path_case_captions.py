@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 from tqdm.auto import tqdm
 
@@ -37,6 +36,8 @@ LEGACY_CASE_CAPTION_SOURCE_CANDIDATES = (
 
 
 def load_cfg():
+    from hydra import compose, initialize_config_dir
+
     with initialize_config_dir(version_base=None, config_dir=str(ROOT / "conf")):
         cfg = compose(config_name="config", overrides=["qa_genereation=path_case_caption"])
     OmegaConf.set_struct(cfg, False)
