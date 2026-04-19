@@ -45,6 +45,10 @@
   - Builds slide-caption pathology projector training rows by matching available slide embeddings with case captions.
 - `scripts/path_proj_train/04_train_path_projectors.py`
   - Stage 1: pathology projector training entrypoint.
+- `scripts/rad_proj_train/01_build_rad_proj_train_qa.py`
+  - Builds PMC-OA radiology projector training rows by joining train/valid/test caption JSONL files with the PMC-OA MedSigLIP feature store.
+- `scripts/rad_proj_train/02_train_rad_projectors.py`
+  - Stage 1: radiology projector training entrypoint for PMC-OA caption supervision.
 - `scripts/segmentation/01_run_segmentation.py`
   - Segmentation scaffold entrypoint.
 - `scripts/vlm_train/01_train_vlm.py`

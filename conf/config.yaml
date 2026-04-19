@@ -5,6 +5,7 @@ defaults:
   - embeding_extraction/radiology: foundation_placeholder
   - embeding_extraction/segmentation: pathology_placeholder
   - path_proj_train: default
+  - rad_proj_train: default
   - demo: demo_path_projector
   - vlm_train: medgemma_hf
   - _self_

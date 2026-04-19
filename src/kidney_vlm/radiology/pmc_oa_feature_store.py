@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from tqdm import tqdm
+
 
 PMC_OA_SAMPLE_TOKEN = "::sample="
 PMC_OA_IMAGE_TOKEN = "::image="
@@ -110,7 +112,7 @@ def build_pmc_oa_feature_index(
 
     with h5py.File(resolved_store_path, "r") as handle:
         samples = handle["samples"]
-        for sample_id in samples:
+        for sample_id in tqdm(samples, total=len(samples), desc="Indexing PMC-OA samples"):
             sample_group = samples[sample_id]
             for image_key in sample_group:
                 dataset = sample_group[image_key]
@@ -152,7 +154,6 @@ def read_or_build_pmc_oa_feature_index(
     resolved_index_path = _resolve_store_path(root_dir, index_path)
     if resolved_index_path.exists() and not rebuild:
         return pd.read_parquet(resolved_index_path)
-
     frame = build_pmc_oa_feature_index(root_dir=root_dir, store_path=store_path)
     resolved_index_path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(resolved_index_path, index=False)
