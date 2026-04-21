@@ -14,6 +14,8 @@ _SCRIPT_CONFIG_PACKAGE_BY_DIR = {
     "02_radiology_proj": "radiology_proj",
     "03_dnam_features": "dnam_features",
     "03_dnam_proj": "dnam_proj",
+    "04_rna_features": "rna_features",
+    "04_rna_proj": "rna_proj",
 }
 
 

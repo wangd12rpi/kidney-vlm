@@ -33,6 +33,14 @@ DEFAULT_DNAM_PROJECTOR_PROMPT_TEXTS = (
     "Give a concise DNAm description.",
 )
 
+DEFAULT_RNA_PROJECTOR_PROMPT_TEXTS = (
+    "Describe the bulk RNA-seq expression profile.",
+    "Summarize the RNA-seq case.",
+    "Write an RNA-seq caption.",
+    "State the main RNA expression findings.",
+    "Give a concise RNA-seq description.",
+)
+
 DEFAULT_RADIOLOGY_PROJECTOR_PROMPT_TEXTS = (
     "Describe the radiology image.",
     "Summarize the radiology study.",
@@ -812,6 +820,105 @@ class DNAMProjectorQACollator:
             "labels": labels,
             "dnam_features": dnam_features,
             "dnam_feature_mask": dnam_feature_mask,
+        }
+        batch.update(metadata)
+        return batch
+
+
+@dataclass
+class RNAProjectorQACollator:
+    tokenizer: Any
+    root_dir: str | Path
+    max_text_length: int = 512
+    max_rna_tokens: int = 1
+    instruction_field: str = "instruction"
+    answer_field: str = "answer"
+    rna_embedding_field: str = "genomics_rna_bulk_feature_path"
+    prompt_texts: tuple[str, ...] = DEFAULT_RNA_PROJECTOR_PROMPT_TEXTS
+
+    def __post_init__(self) -> None:
+        self.root_dir = Path(self.root_dir).expanduser().resolve()
+        self.prompt_texts = tuple(str(prompt).strip() for prompt in self.prompt_texts if str(prompt).strip())
+        if not self.prompt_texts:
+            raise ValueError("RNAProjectorQACollator requires at least one prompt text.")
+
+    def _select_prompt_text(self) -> str:
+        return random.choice(self.prompt_texts)
+
+    def _build_text_pair(self, feature: dict[str, Any]) -> tuple[list[int], list[int]]:
+        answer = str(feature.get(self.answer_field, "")).strip()
+        if not answer:
+            raise ValueError("Empty answer/caption encountered in RNA projector batch.")
+
+        prompt_text = self._select_prompt_text()
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            return _build_chat_text_pair(
+                tokenizer=self.tokenizer,
+                prompt_text=prompt_text,
+                answer_text=answer,
+                max_text_length=self.max_text_length,
+            )
+
+        eos_text = self.tokenizer.eos_token or ""
+        prompt_ids = self.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+        answer_ids = self.tokenizer(f" {answer}{eos_text}", add_special_tokens=False)["input_ids"]
+        input_ids = (prompt_ids + answer_ids)[: self.max_text_length]
+        labels = ([-100] * len(prompt_ids) + answer_ids)[: self.max_text_length]
+        return input_ids, labels
+
+    def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
+        if not features:
+            raise ValueError("RNAProjectorQACollator received an empty batch.")
+
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            raise ValueError("Tokenizer must define pad_token_id before batching projector data.")
+
+        text_input_ids: list[list[int]] = []
+        text_labels: list[list[int]] = []
+        rna_tensors: list[torch.Tensor] = []
+        metadata_keys = ("sample_id", "project_id", "source", "patient_id", "study_id")
+        metadata: dict[str, list[Any]] = {key: [] for key in metadata_keys}
+
+        for feature in features:
+            input_ids, labels = self._build_text_pair(feature)
+            text_input_ids.append(input_ids)
+            text_labels.append(labels)
+            feature_path = _resolve_existing_path(self.root_dir, feature.get(self.rna_embedding_field, []))
+            rna_tensor = _load_pt_feature_tensor(feature_path, max_tokens=self.max_rna_tokens)
+            rna_tensors.append(rna_tensor)
+            for key in metadata_keys:
+                metadata[key].append(feature.get(key))
+
+        batch_size = len(features)
+        max_text_tokens = max(len(item) for item in text_input_ids)
+        max_rna_tokens = max(tensor.shape[0] for tensor in rna_tensors)
+        rna_dim = rna_tensors[0].shape[1]
+
+        input_ids = torch.full((batch_size, max_text_tokens), pad_token_id, dtype=torch.long)
+        attention_mask = torch.zeros((batch_size, max_text_tokens), dtype=torch.long)
+        labels = torch.full((batch_size, max_text_tokens), -100, dtype=torch.long)
+        rna_features = torch.zeros((batch_size, max_rna_tokens, rna_dim), dtype=torch.float32)
+        rna_feature_mask = torch.zeros((batch_size, max_rna_tokens), dtype=torch.long)
+
+        for row_idx, (token_ids, token_labels, rna_tensor) in enumerate(
+            zip(text_input_ids, text_labels, rna_tensors, strict=True)
+        ):
+            text_len = len(token_ids)
+            token_count = rna_tensor.shape[0]
+
+            input_ids[row_idx, :text_len] = torch.tensor(token_ids, dtype=torch.long)
+            attention_mask[row_idx, :text_len] = 1
+            labels[row_idx, :text_len] = torch.tensor(token_labels, dtype=torch.long)
+            rna_features[row_idx, :token_count] = rna_tensor
+            rna_feature_mask[row_idx, :token_count] = 1
+
+        batch = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+            "rna_features": rna_features,
+            "rna_feature_mask": rna_feature_mask,
         }
         batch.update(metadata)
         return batch

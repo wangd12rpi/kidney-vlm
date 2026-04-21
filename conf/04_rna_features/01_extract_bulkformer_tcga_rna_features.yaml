@@ -1,0 +1,32 @@
+task: extract_bulkformer_tcga_rna_features
+
+# I/O
+source_registry_path: ${data.unified_registry_path}
+raw_rna_root: ${project.root_dir}/data/raw/tcga/rna_bulk
+output_features_dir: ${project.root_dir}/data/features/features_bulkformer_rna
+output_manifest_parquet: ${project.root_dir}/data/features/features_bulkformer_rna_manifest.parquet
+output_manifest_csv: ${project.root_dir}/data/features/features_bulkformer_rna_manifest.csv
+failure_csv: ${project.root_dir}/data/features/features_bulkformer_rna_failures.csv
+
+# BulkFormer runtime
+bulkformer_root: ${project.root_dir}/external/BulkFormer
+bulkformer_variant: 93M
+bulkformer_checkpoint: ${project.root_dir}/external/BulkFormer/checkpoints/BulkFormer_93M.pt
+bulkformer_graph: ${project.root_dir}/external/BulkFormer/data/G_tcga.pt
+bulkformer_weights: ${project.root_dir}/external/BulkFormer/data/G_tcga_weight.pt
+bulkformer_gene_emb: ${project.root_dir}/external/BulkFormer/data/esm2_feature_concat.pt
+bulkformer_gene_info: ${project.root_dir}/external/BulkFormer/data/bulkformer_gene_info.csv
+
+# Extraction
+aggregate_type: mean
+batch_size: 16
+device: cuda:0
+overwrite_existing: false
+validate_existing: true
+continue_on_error: false
+input_source: auto  # auto | registry | raw_tree
+
+# Selection/debug
+allowed_project_ids: []
+first_n_cases:
+write_csv_manifest: true
