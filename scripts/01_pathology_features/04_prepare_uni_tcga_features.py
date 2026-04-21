@@ -20,41 +20,10 @@ if str(SRC) not in sys.path:
 from kidney_vlm.data.registry_io import read_parquet_or_empty, write_registry_parquet
 from kidney_vlm.pathology.feature_registry import register_existing_pathology_features
 from kidney_vlm.repo_root import find_repo_root
+from kidney_vlm.script_config import load_script_cfg
 
 ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
-
-
-# Input/output locations
-ARCHIVE_DIR = ROOT / "data" / "staging" / "uni2_tcga_archives" / "TCGA"
-TEMP_EXTRACT_ROOT = ROOT / "data" / "staging" / "uni2_tcga_extracted"
-OUTPUT_FEATURES_DIR = ROOT / "data" / "features" / "features_uni"
-REGISTRY_PATH = ROOT / "data" / "registry" / "unified.parquet"
-
-# Archive selection
-# If empty, process every .tar.gz under ARCHIVE_DIR.
-PROJECT_ARCHIVES: list[str] = [
-    # "TCGA-KICH.tar.gz",
-    # "TCGA-KIRC.tar.gz",
-    # "TCGA-KIRP.tar.gz",
-]
-
-# Conversion settings
-FEATURE_DTYPE = np.float16
-HDF5_COMPRESSION = "none"  # "none" or "gzip"
-OVERWRITE_EXISTING_FEATURE_FILES = False
-ALLOWED_SLIDE_KINDS: list[str] = ["DX"]
-
-# Registry settings
-REGISTER_INTO_REGISTRY = True
-UNI_PATCH_SIZE = 256
-UNI_TARGET_MAGNIFICATION = 20
-UNI_COORDS_ROOT = ROOT / "data" / "features" / "coords_uni_unused"
-CLEAR_EXISTING_PATHOLOGY_PATCH_EMBEDDINGS_BEFORE_REGISTER = True
-
-# Cleanup settings
-DELETE_ARCHIVES_AFTER_PROCESSING = True
-DELETE_EXTRACTED_FILES_AFTER_PROCESSING = True
 
 
 def _archive_label(archive_path: Path) -> str:
@@ -64,10 +33,25 @@ def _archive_label(archive_path: Path) -> str:
     return archive_path.stem
 
 
-def _selected_archives() -> list[Path]:
-    if PROJECT_ARCHIVES:
-        return [ARCHIVE_DIR / str(name).strip() for name in PROJECT_ARCHIVES if str(name).strip()]
-    return sorted(path for path in ARCHIVE_DIR.glob("*.tar.gz") if path.is_file())
+def _string_list(values: Any) -> list[str]:
+    items: list[str] = []
+    for value in list(values or []):
+        text = str(value).strip()
+        if text and text not in items:
+            items.append(text)
+    return items
+
+
+def _source_value(mapping: Any, source_name: str) -> Any:
+    if source_name not in mapping:
+        raise KeyError(f"Missing pathology_features.uni value for source '{source_name}'.")
+    return mapping[source_name]
+
+
+def _selected_archives(*, archive_dir: Path, selected_archives: list[str]) -> list[Path]:
+    if selected_archives:
+        return [archive_dir / name for name in selected_archives]
+    return sorted(path for path in archive_dir.glob("*.tar.gz") if path.is_file())
 
 
 def _normalize_feature_array(features: np.ndarray) -> np.ndarray:
@@ -106,8 +90,8 @@ def _slide_kind(file_stem: str) -> str:
     return ""
 
 
-def _filter_h5_paths_by_allowed_slide_kinds(h5_paths: list[Path]) -> list[Path]:
-    allowed = {str(kind).strip().upper() for kind in ALLOWED_SLIDE_KINDS if str(kind).strip()}
+def _filter_h5_paths_by_allowed_slide_kinds(h5_paths: list[Path], allowed_slide_kinds: list[str]) -> list[Path]:
+    allowed = {str(kind).strip().upper() for kind in allowed_slide_kinds if str(kind).strip()}
     if not allowed:
         return h5_paths
     return [path for path in h5_paths if _slide_kind(path.stem) in allowed]
@@ -189,8 +173,17 @@ def convert_uni_h5_file(
     return tuple(original_features.shape), tuple(features.shape), str(features.dtype)
 
 
-def _convert_archive_h5s(extracted_h5_paths: list[Path], archive_path: Path) -> None:
-    selected_h5_paths = _filter_h5_paths_by_allowed_slide_kinds(extracted_h5_paths)
+def _convert_archive_h5s(
+    extracted_h5_paths: list[Path],
+    archive_path: Path,
+    *,
+    output_features_dir: Path,
+    feature_dtype: np.dtype,
+    compression: str,
+    overwrite_existing: bool,
+    allowed_slide_kinds: list[str],
+) -> None:
+    selected_h5_paths = _filter_h5_paths_by_allowed_slide_kinds(extracted_h5_paths, allowed_slide_kinds)
     loop = tqdm(
         selected_h5_paths,
         total=len(selected_h5_paths),
@@ -199,49 +192,83 @@ def _convert_archive_h5s(extracted_h5_paths: list[Path], archive_path: Path) -> 
         leave=False,
     )
     for extracted_h5_path in loop:
-        output_path = OUTPUT_FEATURES_DIR / extracted_h5_path.name
+        output_path = output_features_dir / extracted_h5_path.name
         convert_uni_h5_file(
             extracted_h5_path,
             output_path=output_path,
-            feature_dtype=np.dtype(FEATURE_DTYPE),
-            compression=HDF5_COMPRESSION,
-            overwrite=OVERWRITE_EXISTING_FEATURE_FILES,
+            feature_dtype=feature_dtype,
+            compression=compression,
+            overwrite=overwrite_existing,
         )
 
 
-def _register_output_features() -> None:
-    if not REGISTER_INTO_REGISTRY:
+def _clear_existing_pathology_embeddings(registry_df: Any, row_mask: Any) -> Any:
+    out = registry_df.copy()
+    for row_idx in out.index[row_mask]:
+        out.at[row_idx, "pathology_tile_embedding_paths"] = []
+        if "pathology_tile_embedding_patch_counts" in out.columns:
+            out.at[row_idx, "pathology_tile_embedding_patch_counts"] = []
+        if "pathology_embedding_patch_size" in out.columns:
+            out.at[row_idx, "pathology_embedding_patch_size"] = None
+        if "pathology_embedding_magnification" in out.columns:
+            out.at[row_idx, "pathology_embedding_magnification"] = None
+    return out
+
+
+def _register_output_features(
+    *,
+    registry_path: Path,
+    output_features_dir: Path,
+    coords_root: Path,
+    save_format: str,
+    patch_size: int,
+    target_magnification: int,
+    source_filter: str | None,
+    clear_existing: bool,
+    match_patient_id_when_no_wsi_paths: bool,
+    register_enabled: bool,
+) -> None:
+    if not register_enabled:
         return
-    if not REGISTRY_PATH.exists():
-        raise FileNotFoundError(f"Unified registry not found: {REGISTRY_PATH}")
+    if not registry_path.exists():
+        raise FileNotFoundError(f"Unified registry not found: {registry_path}")
 
-    registry_df = read_parquet_or_empty(REGISTRY_PATH)
+    registry_df = read_parquet_or_empty(registry_path)
     if registry_df.empty:
-        raise RuntimeError(f"Unified registry is empty: {REGISTRY_PATH}")
+        raise RuntimeError(f"Unified registry is empty: {registry_path}")
 
-    if CLEAR_EXISTING_PATHOLOGY_PATCH_EMBEDDINGS_BEFORE_REGISTER:
-        print("Clearing existing pathology patch embedding fields before UNI registration...")
-        registry_df = registry_df.copy()
-        registry_df["pathology_tile_embedding_paths"] = [[] for _ in range(len(registry_df))]
-        if "pathology_tile_embedding_patch_counts" in registry_df.columns:
-            registry_df["pathology_tile_embedding_patch_counts"] = [[] for _ in range(len(registry_df))]
-        if "pathology_embedding_patch_size" in registry_df.columns:
-            registry_df["pathology_embedding_patch_size"] = None
-        if "pathology_embedding_magnification" in registry_df.columns:
-            registry_df["pathology_embedding_magnification"] = None
+    if source_filter:
+        row_mask = registry_df["source"].fillna("").astype(str).str.lower().eq(source_filter.lower())
+    else:
+        row_mask = registry_df.index.to_series().map(lambda _idx: True)
+    if not bool(row_mask.any()):
+        raise RuntimeError(f"No registry rows selected for UNI registration source_filter={source_filter!r}.")
+
+    if clear_existing:
+        label = source_filter or "all sources"
+        print(f"Clearing existing pathology patch embedding fields before UNI registration ({label})...")
+        registry_df = _clear_existing_pathology_embeddings(registry_df, row_mask)
 
     print("Registering converted UNI features into the unified registry...")
+    target_df = registry_df.loc[row_mask].copy()
     updated_df, stats = register_existing_pathology_features(
-        registry_df,
-        patch_features_dir=OUTPUT_FEATURES_DIR,
-        coords_root=UNI_COORDS_ROOT,
-        save_format="h5",
-        patch_size=int(UNI_PATCH_SIZE),
-        target_mag=int(UNI_TARGET_MAGNIFICATION),
+        target_df,
+        patch_features_dir=output_features_dir,
+        coords_root=coords_root,
+        save_format=save_format,
+        patch_size=patch_size,
+        target_mag=target_magnification,
         root_dir=ROOT,
         progress=True,
+        match_patient_id_when_no_wsi_paths=match_patient_id_when_no_wsi_paths,
     )
-    write_registry_parquet(updated_df, REGISTRY_PATH, validate=True)
+
+    merged_df = registry_df.copy()
+    for column in updated_df.columns:
+        if column not in merged_df.columns:
+            merged_df[column] = None
+        merged_df.loc[updated_df.index, column] = updated_df[column]
+    write_registry_parquet(merged_df, registry_path, validate=True)
 
     print("UNI registry registration complete.")
     print(f"Cases scanned: {stats.cases_scanned}")
@@ -253,40 +280,86 @@ def _register_output_features() -> None:
 
 
 def main() -> None:
-    archives = _selected_archives()
-    if not ARCHIVE_DIR.exists():
-        raise FileNotFoundError(f"Archive dir not found: {ARCHIVE_DIR}")
+    cfg = load_script_cfg(
+        repo_root=ROOT,
+        config_relative_path="01_pathology_features/default.yaml",
+        overrides=sys.argv[1:],
+    )
+    feature_cfg = cfg.pathology_features
+    uni_cfg = feature_cfg.uni
+    source_name = str(uni_cfg.source).strip().lower()
+    dataset_subfolder = str(_source_value(uni_cfg.dataset_subfolders, source_name))
+    archive_root = Path(str(_source_value(uni_cfg.archive_roots, source_name)))
+    archive_dir = archive_root / dataset_subfolder
+    temp_extract_root = Path(str(_source_value(uni_cfg.extract_roots, source_name)))
+    output_features_dir = Path(str(_source_value(uni_cfg.output_feature_dirs, source_name)))
+    selected_archives = _string_list(_source_value(uni_cfg.selected_archives, source_name))
+    allowed_slide_kinds = _string_list(_source_value(uni_cfg.allowed_slide_kinds, source_name))
+    feature_dtype = np.dtype(str(uni_cfg.feature_dtype))
+    hdf5_compression = str(uni_cfg.hdf5_compression)
+    register_cfg = uni_cfg.register
+    register_source_filter = register_cfg.get("source_filter")
+    source_filter = str(register_source_filter).strip() if register_source_filter else source_name
+    match_patient_id_when_no_wsi_paths = bool(
+        _source_value(register_cfg.match_patient_id_when_no_wsi_paths, source_name)
+    )
+
+    archives = _selected_archives(archive_dir=archive_dir, selected_archives=selected_archives)
+    if not archive_dir.exists():
+        raise FileNotFoundError(f"Archive dir not found: {archive_dir}")
     if not archives:
-        raise RuntimeError(f"No .tar.gz UNI archives selected under: {ARCHIVE_DIR}")
+        raise RuntimeError(f"No .tar.gz UNI archives selected under: {archive_dir}")
 
-    TEMP_EXTRACT_ROOT.mkdir(parents=True, exist_ok=True)
-    OUTPUT_FEATURES_DIR.mkdir(parents=True, exist_ok=True)
+    temp_extract_root.mkdir(parents=True, exist_ok=True)
+    output_features_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Archive dir: {ARCHIVE_DIR}")
-    print(f"Temp extract root: {TEMP_EXTRACT_ROOT}")
-    print(f"Output features dir: {OUTPUT_FEATURES_DIR}")
+    print(f"Source: {source_name}")
+    print(f"Archive dir: {archive_dir}")
+    print(f"Temp extract root: {temp_extract_root}")
+    print(f"Output features dir: {output_features_dir}")
     print(f"Archives selected: {len(archives)}")
-    print(f"Feature dtype: {np.dtype(FEATURE_DTYPE)}")
-    print(f"HDF5 compression: {HDF5_COMPRESSION}")
-    print(f"Allowed slide kinds: {ALLOWED_SLIDE_KINDS if ALLOWED_SLIDE_KINDS else ['ALL']}")
-    print(f"Delete archives after processing: {DELETE_ARCHIVES_AFTER_PROCESSING}")
+    print(f"Feature dtype: {feature_dtype}")
+    print(f"HDF5 compression: {hdf5_compression}")
+    print(f"Allowed slide kinds: {allowed_slide_kinds if allowed_slide_kinds else ['ALL']}")
+    print(f"Registry source filter: {source_filter or 'ALL'}")
+    print(f"Match by patient_id when no WSI paths: {match_patient_id_when_no_wsi_paths}")
+    print(f"Delete archives after processing: {bool(uni_cfg.delete_archives_after_processing)}")
 
-    archive_loop = tqdm(archives, total=len(archives), desc="Preparing UNI TCGA archives", unit="archive")
+    archive_loop = tqdm(archives, total=len(archives), desc=f"Preparing UNI {source_name.upper()} archives", unit="archive")
     for archive_path in archive_loop:
         archive_loop.set_postfix_str(archive_path.name)
         if not archive_path.exists():
             raise FileNotFoundError(f"Archive not found: {archive_path}")
 
-        extract_dir = TEMP_EXTRACT_ROOT / _archive_label(archive_path)
+        extract_dir = temp_extract_root / _archive_label(archive_path)
         extracted_h5_paths = extract_archive(archive_path, extract_dir)
-        _convert_archive_h5s(extracted_h5_paths, archive_path)
+        _convert_archive_h5s(
+            extracted_h5_paths,
+            archive_path,
+            output_features_dir=output_features_dir,
+            feature_dtype=feature_dtype,
+            compression=hdf5_compression,
+            overwrite_existing=bool(uni_cfg.overwrite_existing_feature_files),
+            allowed_slide_kinds=allowed_slide_kinds,
+        )
 
-        if DELETE_EXTRACTED_FILES_AFTER_PROCESSING and extract_dir.exists():
+        if bool(uni_cfg.delete_extracted_files_after_processing) and extract_dir.exists():
             shutil.rmtree(extract_dir)
-        if DELETE_ARCHIVES_AFTER_PROCESSING and archive_path.exists():
+        if bool(uni_cfg.delete_archives_after_processing) and archive_path.exists():
             archive_path.unlink()
 
-    _register_output_features()
+    _register_output_features(
+        registry_path=Path(str(register_cfg.registry_path)),
+        output_features_dir=output_features_dir,
+        coords_root=Path(str(register_cfg.coords_root)),
+        save_format=str(feature_cfg.save_format),
+        patch_size=int(register_cfg.patch_size),
+        target_magnification=int(register_cfg.target_magnification),
+        source_filter=source_filter,
+        clear_existing=bool(register_cfg.clear_existing_pathology_patch_embeddings_before_register),
+        match_patient_id_when_no_wsi_paths=match_patient_id_when_no_wsi_paths,
+        register_enabled=bool(register_cfg.enabled),
+    )
     print("UNI archive preparation complete.")
 
 

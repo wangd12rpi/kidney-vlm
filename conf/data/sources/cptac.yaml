@@ -1,0 +1,105 @@
+data:
+  source:
+    name: cptac
+    download:
+      enabled: true
+      skip_existing: true
+      include:
+        rna_bulk: true
+        dna_methylation: true
+        mutation: false
+        radiology: false
+      max_rna_bulk_downloads:
+      max_dna_methylation_downloads:
+      max_mutation_downloads:
+      max_radiology_series_downloads:
+      max_series_per_study:
+    cptac:
+      split_name: cptac_external_test
+      cancer_groups:
+        - name: kidney
+          primary_sites:
+            - Kidney
+          tcia_collections:
+            - CPTAC-CCRCC
+        - name: lung
+          primary_sites:
+            - Bronchus and lung
+          tcia_collections:
+            - CPTAC-LUAD
+            - CPTAC-LSCC
+        - name: uterus
+          primary_sites:
+            - Uterus, NOS
+          tcia_collections:
+            - CPTAC-UCEC
+      gdc:
+        base_url: https://api.gdc.cancer.gov
+        timeout_seconds: 120
+        page_size: 1000
+        max_retries: 1
+        retry_backoff_seconds: 2.0
+        max_cases:
+        max_rna_bulk_files:
+        max_dna_methylation_files:
+        max_mutation_files:
+        max_report_files:
+        sample_types:
+          - Primary Tumor
+        access:
+          - open
+        rna_bulk:
+          data_categories:
+            - Transcriptome Profiling
+          data_types:
+            - Gene Expression Quantification
+          data_formats:
+            - TSV
+          experimental_strategies:
+            - RNA-Seq
+          workflow_types:
+            - STAR - Counts
+        dna_methylation:
+          data_categories:
+            - DNA Methylation
+          data_types:
+            - Methylation Beta Value
+          data_formats:
+            - TXT
+          experimental_strategies:
+            - Methylation Array
+          workflow_types:
+            - SeSAMe Methylation Beta Estimation
+        mutation:
+          data_categories:
+            - Simple Nucleotide Variation
+          data_types:
+            - Masked Somatic Mutation
+          data_formats:
+            - MAF
+          experimental_strategies:
+            - WXS
+          workflow_types:
+            - Aliquot Ensemble Somatic Variant Merging and Masking
+        reports:
+          data_categories:
+            - Clinical
+          data_types:
+            - Pathology Report
+            - Clinical Supplement
+          data_formats:
+            - PDF
+      tcia:
+        enabled: true
+        base_url: https://services.cancerimagingarchive.net/nbia-api/services
+        api_version: v1
+        timeout_seconds: 120
+        max_retries: 1
+        retry_backoff_seconds: 2.0
+        fetch_series_metadata: true
+        max_studies_per_collection:
+        max_series_per_study_metadata:
+        download_modalities:
+          - CT
+          - MR
+          - PT

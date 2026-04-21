@@ -99,7 +99,8 @@ Mutation panel provenance for TCGA:
 uv run python scripts/01_pathology_proj/02_gen_path_case_captions.py
 uv run python scripts/01_pathology_proj/03_build_path_proj_train_qa.py
 uv run python scripts/01_pathology_proj/04_train_path_projectors.py
-uv run python scripts/01_pathology_segmentation/01_run_pathology_segmentation.py
+uv run python scripts/01_pathology_png/02_import_uniform_tumor_rois.py
+uv run python scripts/01_pathology_png/01_extract_pathology_pngs.py pathology_png.max_slides=2
 uv run python scripts/02_radiology_features/02_prepare_radiology_series_manifest.py
 uv run python scripts/02_radiology_features/03_extract_radiology_pngs.py
 uv run python scripts/02_radiology_features/04_extract_radiology_features.py
@@ -115,8 +116,8 @@ uv run python scripts/vlm_train/01_train_vlm.py
 
 Stage-scoped configs now live under:
 - `conf/01_pathology_features/`
+- `conf/01_pathology_png/`
 - `conf/01_pathology_proj/`
-- `conf/01_pathology_segmentation/`
 - `conf/02_radiology_features/`
 - `conf/02_radiology_proj/`
 - `conf/02_radiology_segmentation/`

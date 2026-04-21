@@ -57,9 +57,18 @@ class _ProjectorTokenizer:
     def __call__(self, text, **_kwargs):
         return {"input_ids": [ord(char) for char in str(text)]}
 
-    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, chat_template_kwargs=None):
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize,
+        add_generation_prompt,
+        enable_thinking=None,
+        chat_template_kwargs=None,
+    ):
         assert tokenize is True
-        assert chat_template_kwargs == {"enable_thinking": False}
+        assert enable_thinking is False
+        assert chat_template_kwargs is None
         pieces = []
         for message in messages:
             role = str(message["role"]).upper()
@@ -113,11 +122,20 @@ def test_projector_collator_accepts_batch_encoding_like_chat_template(monkeypatc
     )
 
     class _BatchEncodingLikeTokenizer(_ProjectorTokenizer):
-        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, chat_template_kwargs=None):
+        def apply_chat_template(
+            self,
+            messages,
+            *,
+            tokenize,
+            add_generation_prompt,
+            enable_thinking=None,
+            chat_template_kwargs=None,
+        ):
             encoded = super().apply_chat_template(
                 messages,
                 tokenize=tokenize,
                 add_generation_prompt=add_generation_prompt,
+                enable_thinking=enable_thinking,
                 chat_template_kwargs=chat_template_kwargs,
             )
             return {"input_ids": torch.tensor([encoded], dtype=torch.long)}
@@ -151,11 +169,20 @@ def test_projector_collator_accepts_mapping_like_chat_template(monkeypatch: pyte
     )
 
     class _MappingLikeTokenizer(_ProjectorTokenizer):
-        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, chat_template_kwargs=None):
+        def apply_chat_template(
+            self,
+            messages,
+            *,
+            tokenize,
+            add_generation_prompt,
+            enable_thinking=None,
+            chat_template_kwargs=None,
+        ):
             encoded = super().apply_chat_template(
                 messages,
                 tokenize=tokenize,
                 add_generation_prompt=add_generation_prompt,
+                enable_thinking=enable_thinking,
                 chat_template_kwargs=chat_template_kwargs,
             )
             return UserDict({"input_ids": encoded})
@@ -211,7 +238,31 @@ def test_dnam_projector_collator_has_default_prompt_texts() -> None:
         root_dir=".",
     )
 
-    assert len(collator.prompt_texts) == 5
+    assert "what is this. caption:" in collator.prompt_texts
+    assert "Describe this sample. caption:" in collator.prompt_texts
+    assert "Describe the DNA methylation profile." in collator.prompt_texts
+    assert len(collator.prompt_texts) == 9
+
+
+def test_dnam_projector_collator_rotates_prompts_by_epoch() -> None:
+    collator = DNAMProjectorQACollator(
+        tokenizer=_ProjectorTokenizer(),
+        root_dir=".",
+        prompt_texts=("Prompt A.", "Prompt B.", "Prompt C."),
+    )
+    feature = {
+        "sample_id": "tcga-1",
+        "answer": "Example DNAm caption.",
+    }
+
+    decoded_inputs = []
+    for epoch in range(3):
+        collator.set_epoch(epoch)
+        input_ids, _labels = collator._build_text_pair(feature)
+        decoded_inputs.append("".join(chr(token_id) for token_id in input_ids))
+
+    assert len(set(decoded_inputs)) == 3
+    assert all(text.endswith("Example DNAm caption.") for text in decoded_inputs)
 
 
 def test_apply_patch_token_dropout_keeps_selected_tokens_in_order(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -34,6 +34,13 @@ wandb*.json
 external/SAMPath/model.ckpt
 external/SAMPath/weights/*.pth
 external/SAMPath/weights/*.ckpt
+external/CpGPT/
+data/external/cpgpt_files/
 
 **/wandb/run*
 **/wandb/latest-run
+
+data/pathology_png
+data/staging
+external/CpGPT
+data/external

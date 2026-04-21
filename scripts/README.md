@@ -4,8 +4,8 @@
 - Shared data / registry / import-export flows live under `scripts/data/` and `scripts/hf_integration/`.
 - Modality-owned processing and projector scripts use ordered modality-first folders:
   - `scripts/01_pathology_features/`
+  - `scripts/01_pathology_png/`
   - `scripts/01_pathology_proj/`
-  - `scripts/01_pathology_segmentation/`
   - `scripts/02_radiology_features/`
   - `scripts/02_radiology_proj/`
   - `scripts/02_radiology_segmentation/`
@@ -52,6 +52,18 @@
 - `scripts/01_pathology_features/04_prepare_uni_tcga_features.py`
   - Extracts UNI2 TCGA tar archives one at a time, converts them into the flatter CONCH-like H5 layout, writes them into `data/features/features_uni`, updates the unified registry, and deletes processed archives.
   - Uses fixed variables at the top of the script instead of CLI args.
+- `scripts/01_pathology_png/01_extract_pathology_pngs.py`
+  - Downloads one TCGA pathology SVS at a time from GDC, renders a whole-slide thumbnail, writes portable thumbnail paths into the unified registry, then deletes the staged SVS.
+  - Defaults to diagnostic `DX` slides only.
+  - Saves outputs under `data/pathology_png/<TCGA barcode>/`; no manifest JSON is written.
+  - Example quick smoke run:
+    - `uv run python scripts/01_pathology_png/01_extract_pathology_pngs.py pathology_png.max_slides=2`
+- `scripts/01_pathology_png/02_import_uniform_tumor_rois.py`
+  - Registers already-downloaded UniformTumor ROI PNGs from `data/pathology_png` into `pathology_png_roi_paths`.
+  - Does not download from Hugging Face or write new PNG files; the ROI folder is treated as the input artifact.
+  - Fails if ROI filenames cannot be matched back to unified registry slide IDs.
+  - Example:
+    - `uv run python scripts/01_pathology_png/02_import_uniform_tumor_rois.py`
 - `scripts/03_dnam_features/06_import_cpgpt_tcga_dnam_features.py`
   - Maps hashed CpGPT DNAm cache files from the external `hescapedna` repo back to TCGA methylation files using the original JSONL indexes, renames them into readable TCGA-linked feature filenames, copies them into `data/features/features_cpgpt_dnam`, and writes a manifest parquet/csv.
   - Uses fixed variables at the top of the script instead of CLI args.
@@ -90,11 +102,6 @@
 - `scripts/hf_integration/02_upload_unified_parquet_to_hf.py`
   - Uploads the unified registry parquet to HF Hub as a split-aware dataset so the viewer exposes split selection.
   - Uses its own config file at `conf/hf_integration/unified_registry_upload.yaml`.
-- `scripts/01_pathology_segmentation/01_run_pathology_segmentation.py`
-  - Pathology SAMPath segmentation runner for local or remote TCGA slides.
-  - Overlaps remote download with segmentation by prefetching the next pathology WSI while processing the current one.
-  - Saves three artifacts per slide at the configured magnification/resolution: the SAMPath label mask, the rendered raw slide image, and a colored overlay.
-  - Updates `pathology_mask_paths` in the unified registry incrementally after each completed slide.
 - `scripts/vlm_train/01_train_vlm.py`
   - Stage 2: VLM training scaffold entrypoint.
 
@@ -111,3 +118,4 @@
   - `rna`
 - External supervision corpora should be normalized through a source builder plus modality projector parquet steps before training; do not point projector trainers at raw JSONL files directly.
 - Radiology segmentation artifacts live under `data/segmentation/radiology/`.
+- Pathology thumbnail/ROI PNG artifacts live under `data/pathology_png/`.

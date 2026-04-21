@@ -1,0 +1,25 @@
+name: pathology_png
+registry_path: ${data.unified_registry_path}
+output_root: ${project.root_dir}/data/pathology_png
+staging_root: ${data.staging_root}/pathology_png_downloads
+source_filter: tcga
+project_ids: []
+max_cases:
+max_slides:
+overwrite: false
+write_registry_every: 1
+delete_downloaded_svs: true
+
+allowed_slide_kinds:
+  - DX
+
+thumbnail:
+  max_size_px: 2048
+
+download:
+  base_url: https://api.gdc.cancer.gov
+  timeout_seconds: 120
+  page_size: 200
+  max_retries: 3
+  retry_backoff_seconds: 2.0
+  file_metadata_chunk_size: 200

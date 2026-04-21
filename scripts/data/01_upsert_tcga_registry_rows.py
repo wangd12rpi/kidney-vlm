@@ -31,7 +31,11 @@ from kidney_vlm.data.sources.tcga_rna_metadata import (
     build_tcga_rna_metadata_by_patient_id,
     download_tcga_rna_metadata,
 )
-from kidney_vlm.data.unified_registry import replace_source_slice
+from kidney_vlm.data.unified_registry import (
+    expected_source_row_counts_after_replace,
+    replace_source_slice,
+    source_row_counts,
+)
 
 ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
@@ -636,7 +640,18 @@ def main() -> None:
     unified_path = Path(str(cfg.data.unified_registry_path))
     unified_df = read_parquet_or_empty(unified_path)
     merged_df = replace_source_slice(unified_df, source_df, source_name=source_name)
+    expected_source_counts = expected_source_row_counts_after_replace(
+        unified_df,
+        source_df,
+        source_name=source_name,
+    )
     write_registry_parquet(merged_df, unified_path, validate=False)
+    written_source_counts = source_row_counts(read_parquet_or_empty(unified_path))
+    if written_source_counts != expected_source_counts:
+        raise RuntimeError(
+            "Unified registry source counts changed unexpectedly after TCGA write. "
+            f"Expected {expected_source_counts}, found {written_source_counts}."
+        )
 
     manifest_path = write_run_manifest(
         manifests_root=Path(str(cfg.data.manifests_root)),

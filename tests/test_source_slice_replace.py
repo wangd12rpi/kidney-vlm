@@ -3,7 +3,11 @@ from __future__ import annotations
 import pandas as pd
 
 from kidney_vlm.data.registry_schema import CORE_COLUMNS
-from kidney_vlm.data.unified_registry import replace_source_slice
+from kidney_vlm.data.unified_registry import (
+    expected_source_row_counts_after_replace,
+    replace_source_slice,
+    source_row_counts,
+)
 
 
 def _row(sample_id: str, source: str) -> dict:
@@ -41,9 +45,6 @@ def _row(sample_id: str, source: str) -> dict:
         "radiology_report_uri_paths": [],
         "radiology_report_series_descriptions": [],
         "pathology_mask_paths": [],
-        "pathology_segmentation_slide_image_paths": [],
-        "pathology_segmentation_overlay_paths": [],
-        "pathology_segmentation_metadata_paths": [],
         "radiology_mask_paths": [],
         "radiology_mask_manifest_paths": [],
         "pathology_tile_embedding_paths": [],
@@ -91,3 +92,25 @@ def test_replace_source_slice_drops_stale_source_specific_columns() -> None:
 
     assert "mutation_vhl" in merged.columns
     assert "has_mutation_vhl" not in merged.columns
+
+
+def test_expected_source_row_counts_after_replace_preserves_other_sources() -> None:
+    unified = pd.DataFrame([
+        _row("tcga-old", "tcga"),
+        _row("cptac-1", "cptac"),
+        _row("cptac-2", "cptac"),
+    ])
+    source = pd.DataFrame([
+        _row("tcga-new-1", "tcga"),
+        _row("tcga-new-2", "tcga"),
+    ])
+
+    expected = expected_source_row_counts_after_replace(
+        unified,
+        source,
+        source_name="tcga",
+    )
+    merged = replace_source_slice(unified, source, source_name="tcga")
+
+    assert expected == {"cptac": 2, "tcga": 2}
+    assert source_row_counts(merged) == expected

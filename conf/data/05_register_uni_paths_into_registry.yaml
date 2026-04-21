@@ -1,0 +1,9 @@
+uni_registration:
+  sources:
+    tcga:
+      enabled: true
+      features_dir: ${project.root_dir}/data/features/features_uni
+
+    cptac:
+      enabled: false
+      features_dir: ${project.root_dir}/data/features/features_uni_cptac

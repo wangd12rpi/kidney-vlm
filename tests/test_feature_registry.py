@@ -122,3 +122,62 @@ def test_register_existing_pathology_features_skips_invalid_files(tmp_path: Path
     assert row["pathology_tile_embedding_patch_counts"] == []
     assert stats.cases_with_matches == 0
     assert stats.invalid_feature_files == 1
+
+
+def test_register_existing_pathology_features_can_match_cptac_by_patient_id(tmp_path: Path) -> None:
+    root_dir = tmp_path / "repo"
+    patch_features_dir = root_dir / "data" / "features" / "features_uni_cptac"
+    coords_root = root_dir / "data" / "features" / "coords_uni_unused"
+
+    stem_a = "C3N-00001-21-001-feature"
+    stem_b = "prefix_C3N-00001_more-feature"
+    other_stem = "C3N-99999-21-001-feature"
+    _write_patch_features(patch_features_dir / f"{stem_a}.h5", rows=7)
+    _write_patch_features(patch_features_dir / f"{stem_b}.h5", rows=4)
+    _write_patch_features(patch_features_dir / f"{other_stem}.h5", rows=9)
+
+    registry_df = pd.DataFrame(
+        [
+            {
+                "sample_id": "cptac-case-1",
+                "source": "cptac",
+                "patient_id": "C3N-00001",
+                "study_id": "case-1",
+                "split": "cptac_external_test",
+                "pathology_wsi_paths": [],
+                "radiology_image_paths": [],
+                "pathology_mask_paths": [],
+                "radiology_mask_paths": [],
+                "pathology_tile_embedding_paths": [],
+                "pathology_slide_embedding_paths": [],
+                "radiology_embedding_paths": [],
+                "biomarkers_text": "",
+                "question": "",
+                "answer": "",
+            }
+        ]
+    )
+
+    updated_df, stats = register_existing_pathology_features(
+        registry_df,
+        patch_features_dir=patch_features_dir,
+        coords_root=coords_root,
+        save_format="h5",
+        patch_size=256,
+        target_mag=20,
+        root_dir=root_dir,
+        progress=False,
+        match_patient_id_when_no_wsi_paths=True,
+    )
+
+    row = updated_df.iloc[0]
+    assert row["pathology_tile_embedding_paths"] == [
+        f"data/features/features_uni_cptac/{stem_a}.h5",
+        f"data/features/features_uni_cptac/{stem_b}.h5",
+    ]
+    assert row["pathology_tile_embedding_patch_counts"] == [7, 4]
+    assert row["pathology_embedding_patch_size"] == 256
+    assert row["pathology_embedding_magnification"] == 20
+    assert stats.feature_files_indexed == 3
+    assert stats.cases_with_matches == 1
+    assert stats.matched_feature_paths == 2
