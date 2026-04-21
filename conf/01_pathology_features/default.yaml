@@ -23,3 +23,49 @@ temp_download_root:
 file_metadata_chunk_size: 200
 patch_encoder_kwargs: {}
 slide_encoder_kwargs: {}
+
+uni:
+  repo_id: MahmoodLab/UNI2-h-features
+  repo_type: dataset
+  source: tcga
+  force_download: false
+  dataset_subfolders: 
+    tcga: TCGA
+    cptac: CPTAC
+  archive_roots:
+    tcga: ${project.root_dir}/data/staging/uni2_tcga_archives
+    cptac: ${project.root_dir}/data/staging/uni2_cptac_archives
+  extract_roots:
+    tcga: ${project.root_dir}/data/staging/uni2_tcga_extracted
+    cptac: ${project.root_dir}/data/staging/uni2_cptac_extracted
+  output_feature_dirs:
+    tcga: ${project.root_dir}/data/features/features_uni
+    cptac: ${project.root_dir}/data/features/features_uni_cptac
+  selected_archives:
+    tcga: []
+    cptac:
+      - cptac_ccrcc.tar.gz
+      - cptac_lscc.tar.gz
+      - cptac_luad_part1.tar.gz
+      - cptac_luad_part2.tar.gz
+      - cptac_ucec.tar.gz
+  allowed_slide_kinds:
+    tcga:
+      - DX
+    cptac: []
+  feature_dtype: float16
+  hdf5_compression: none
+  overwrite_existing_feature_files: false
+  delete_archives_after_processing: true
+  delete_extracted_files_after_processing: true
+  register:
+    enabled: true
+    registry_path: ${data.unified_registry_path}
+    source_filter:
+    patch_size: 256
+    target_magnification: 20
+    coords_root: ${project.root_dir}/data/features/coords_uni_unused
+    clear_existing_pathology_patch_embeddings_before_register: true
+    match_patient_id_when_no_wsi_paths:
+      tcga: false
+      cptac: true

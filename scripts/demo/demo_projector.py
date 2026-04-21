@@ -96,13 +96,16 @@ def _build_chat_prompt_input_ids(tokenizer: Any, *, device: torch.device) -> tor
     messages = [{"role": "user", "content": DEMO_PROMPT}]
     kwargs = {"tokenize": True, "add_generation_prompt": True}
     try:
-        token_ids = tokenizer.apply_chat_template(
-            messages,
-            chat_template_kwargs={"enable_thinking": False},
-            **kwargs,
-        )
+        token_ids = tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
     except TypeError:
-        token_ids = tokenizer.apply_chat_template(messages, **kwargs)
+        try:
+            token_ids = tokenizer.apply_chat_template(
+                messages,
+                chat_template_kwargs={"enable_thinking": False},
+                **kwargs,
+            )
+        except TypeError:
+            token_ids = tokenizer.apply_chat_template(messages, **kwargs)
     return torch.tensor([_coerce_token_ids(token_ids)], dtype=torch.long, device=device)
 
 

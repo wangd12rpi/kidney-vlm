@@ -32,6 +32,9 @@ ALLOWED_PROJECT_IDS: list[str] = []
 # Registry behavior
 CLEAR_EXISTING_DNAM_FIELDS_BEFORE_REGISTER = False
 OVERWRITE_EXISTING_DNAM_FEATURE_PATH = True
+# Collaborator rebuilds may not include raw methylation beta text files. Keep the
+# model-ready feature path populated without writing stale raw paths by default.
+REGISTER_DNAM_RAW_PATHS = False
 
 
 def _normalized_string_list(values: list[str]) -> list[str]:
@@ -56,6 +59,96 @@ def _clear_dnam_fields(frame):
     return out
 
 
+def _is_blank(value) -> bool:
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip().lower() in {"", "nan", "none", "<na>"}
+
+
+def _as_path_list(value) -> list[str]:
+    if _is_blank(value):
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if hasattr(value, "tolist") and not isinstance(value, str):
+        converted = value.tolist()
+        if isinstance(converted, list):
+            return [str(item).strip() for item in converted if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _register_direct_manifest_schema(registry_df: pd.DataFrame, manifest_df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
+    required = {"sample_id", "feature_path"}
+    if not required.issubset(manifest_df.columns):
+        return registry_df, False
+
+    working_registry_df = registry_df.copy()
+    if CLEAR_EXISTING_DNAM_FIELDS_BEFORE_REGISTER:
+        selected_mask = working_registry_df["sample_id"].astype(str).isin(
+            manifest_df["sample_id"].fillna("").astype(str)
+        )
+        print("Clearing existing DNAm fields on direct-manifest registry rows before registration...")
+        working_registry_df.loc[selected_mask, "genomics_dna_methylation_paths"] = [
+            [] for _ in range(int(selected_mask.sum()))
+        ]
+        working_registry_df.loc[selected_mask, "genomics_dna_methylation_feature_path"] = ""
+
+    raw_path_column = "raw_beta_path" if "raw_beta_path" in manifest_df.columns else "raw_beta_path_value"
+    manifest_by_sample_id = {
+        str(row.sample_id).strip(): row
+        for row in manifest_df.itertuples(index=False)
+        if str(row.sample_id).strip()
+    }
+    matched_registry_rows = 0
+    skipped_existing_feature_rows = 0
+    updated_raw_path_rows = 0
+
+    loop = tqdm(
+        working_registry_df.index.tolist(),
+        total=len(working_registry_df),
+        desc="Registering direct CpGPT DNAm manifest into registry",
+        unit="row",
+    )
+    for row_index in loop:
+        sample_id = str(working_registry_df.at[row_index, "sample_id"]).strip()
+        assignment = manifest_by_sample_id.get(sample_id)
+        if assignment is None:
+            continue
+        matched_registry_rows += 1
+
+        if REGISTER_DNAM_RAW_PATHS and raw_path_column in manifest_df.columns:
+            raw_paths = _as_path_list(getattr(assignment, raw_path_column, ""))
+            current_raw_paths = _as_path_list(working_registry_df.at[row_index, "genomics_dna_methylation_paths"])
+            if raw_paths and current_raw_paths != raw_paths:
+                working_registry_df.at[row_index, "genomics_dna_methylation_paths"] = raw_paths
+                updated_raw_path_rows += 1
+
+        current_feature_path = (
+            ""
+            if _is_blank(working_registry_df.at[row_index, "genomics_dna_methylation_feature_path"])
+            else str(working_registry_df.at[row_index, "genomics_dna_methylation_feature_path"]).strip()
+        )
+        new_feature_path = str(getattr(assignment, "feature_path") or "").strip()
+        if current_feature_path and not OVERWRITE_EXISTING_DNAM_FEATURE_PATH:
+            skipped_existing_feature_rows += 1
+            continue
+        if current_feature_path != new_feature_path:
+            working_registry_df.at[row_index, "genomics_dna_methylation_feature_path"] = new_feature_path
+
+    print("DNAm direct-manifest registry insertion complete.")
+    print(f"Matched registry rows updated: {matched_registry_rows}")
+    print(f"Raw-path rows updated: {updated_raw_path_rows}")
+    print(f"Existing feature rows skipped: {skipped_existing_feature_rows}")
+    print(f"Rows with DNAm feature path after: {_count_cases_with_dnam_feature_path(working_registry_df)}")
+    return working_registry_df, True
+
+
 def main() -> None:
     if not REGISTRY_PATH.exists():
         raise FileNotFoundError(f"Unified registry not found: {REGISTRY_PATH}")
@@ -69,6 +162,11 @@ def main() -> None:
     manifest_df = pd.read_parquet(DNAM_MANIFEST_PATH)
     if manifest_df.empty:
         raise RuntimeError(f"Dnam manifest is empty: {DNAM_MANIFEST_PATH}")
+
+    direct_registry_df, handled_direct_schema = _register_direct_manifest_schema(registry_df, manifest_df)
+    if handled_direct_schema:
+        write_registry_parquet(direct_registry_df, REGISTRY_PATH, validate=True)
+        return
 
     allowed_project_ids = _normalized_string_list(ALLOWED_PROJECT_IDS)
     selected_manifest_df = manifest_df.copy()
@@ -134,13 +232,18 @@ def main() -> None:
         matched_registry_rows += 1
         matched_cases.add((project_id, patient_id))
 
-        raw_paths = list(getattr(assignment, "genomics_dna_methylation_paths"))
-        current_raw_paths = working_registry_df.at[row_index, "genomics_dna_methylation_paths"]
-        if current_raw_paths != raw_paths:
-            working_registry_df.at[row_index, "genomics_dna_methylation_paths"] = raw_paths
-            updated_raw_path_rows += 1
+        if REGISTER_DNAM_RAW_PATHS:
+            raw_paths = list(getattr(assignment, "genomics_dna_methylation_paths"))
+            current_raw_paths = working_registry_df.at[row_index, "genomics_dna_methylation_paths"]
+            if current_raw_paths != raw_paths:
+                working_registry_df.at[row_index, "genomics_dna_methylation_paths"] = raw_paths
+                updated_raw_path_rows += 1
 
-        current_feature_path = str(working_registry_df.at[row_index, "genomics_dna_methylation_feature_path"] or "").strip()
+        current_feature_path = (
+            ""
+            if _is_blank(working_registry_df.at[row_index, "genomics_dna_methylation_feature_path"])
+            else str(working_registry_df.at[row_index, "genomics_dna_methylation_feature_path"]).strip()
+        )
         new_feature_path = str(getattr(assignment, "genomics_dna_methylation_feature_path") or "").strip()
         if current_feature_path and not OVERWRITE_EXISTING_DNAM_FEATURE_PATH:
             skipped_existing_feature_rows += 1

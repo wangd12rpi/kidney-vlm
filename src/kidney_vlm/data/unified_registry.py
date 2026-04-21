@@ -42,6 +42,24 @@ def replace_source_slice(unified_df: pd.DataFrame, source_df: pd.DataFrame, sour
     return pd.concat([kept, source_rows], ignore_index=True, sort=False)
 
 
+def source_row_counts(df: pd.DataFrame) -> dict[str, int]:
+    if df.empty or "source" not in df.columns:
+        return {}
+    counts = df["source"].astype(str).value_counts(dropna=False)
+    return {str(source): int(count) for source, count in counts.items()}
+
+
+def expected_source_row_counts_after_replace(
+    unified_df: pd.DataFrame,
+    source_df: pd.DataFrame,
+    *,
+    source_name: str,
+) -> dict[str, int]:
+    counts = source_row_counts(unified_df)
+    counts[str(source_name)] = int(len(source_df))
+    return counts
+
+
 def initialize_if_missing(unified_df: pd.DataFrame | None) -> pd.DataFrame:
     if unified_df is None:
         return empty_registry_frame()

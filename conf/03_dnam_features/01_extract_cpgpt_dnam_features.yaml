@@ -1,0 +1,43 @@
+name: cpgpt_dnam_features
+
+registry_path: ${data.unified_registry_path}
+sources:
+  - tcga
+project_ids: []
+splits: []
+max_rows:
+overwrite_existing_registry_paths: false
+skip_existing_feature_files: true
+update_registry: true
+write_manifest: true
+
+input:
+  raw_paths_column: genomics_dna_methylation_paths
+  feature_path_column: genomics_dna_methylation_feature_path
+  fail_on_missing_raw_file: true
+  selected_raw_path_index: 0
+
+output:
+  features_root: ${project.root_dir}/data/features/features_cpgpt_dnam
+  manifest_path: ${project.root_dir}/data/features/features_cpgpt_dnam_manifest.parquet
+  csv_manifest_path: ${project.root_dir}/data/features/features_cpgpt_dnam_manifest.csv
+  write_csv_manifest: true
+
+cpgpt:
+  package_root: ${project.root_dir}/external/CpGPT
+  root_dir: ${project.root_dir}/data/external/cpgpt_files
+  model_name: large
+  device: cuda:0
+  batch_size: 2
+  preprocess_chunk_size: 16
+  max_length: 10000
+  sorting_strategy: original
+  dna_context_len: 2001
+  dna_llm: nucleotide-transformer-v2-500m-multi-species
+  seed: 42
+  dropna: true
+  normalize_output: false
+  save_dtype: float16
+  processed_root: ${project.root_dir}/data/staging/cpgpt_dnam/processed
+  feather_root: ${project.root_dir}/data/staging/cpgpt_dnam/feather
+  force_reprocess: false

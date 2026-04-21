@@ -90,6 +90,23 @@ def _is_normal_tcga_slide(slide_stem: str) -> bool:
     return sample_type_code.startswith("11")
 
 
+def _patient_id_matches_feature_stem(patient_id: str, feature_stem: str) -> bool:
+    normalized_patient_id = str(patient_id).strip().upper()
+    if not normalized_patient_id:
+        return False
+    pattern = re.compile(rf"(?<![A-Z0-9]){re.escape(normalized_patient_id)}(?![A-Z0-9])")
+    return pattern.search(str(feature_stem).upper()) is not None
+
+
+def _feature_paths_for_patient_id(patient_id: str, feature_by_stem: dict[str, Path]) -> list[str]:
+    matches = [
+        str(feature_path.with_suffix(".svs"))
+        for feature_stem, feature_path in feature_by_stem.items()
+        if _patient_id_matches_feature_stem(patient_id, feature_stem)
+    ]
+    return sorted(matches)
+
+
 def _slide_kind_rank(slide_stem: str) -> int:
     upper_stem = str(slide_stem).upper()
     if "-DX" in upper_stem:
@@ -201,6 +218,7 @@ def register_existing_pathology_features(
     target_mag: int,
     root_dir: Path,
     progress: bool = False,
+    match_patient_id_when_no_wsi_paths: bool = False,
 ) -> tuple[pd.DataFrame, ExistingFeatureRegistrationStats]:
     if save_format not in {"h5", "pt"}:
         raise ValueError("save_format must be one of: h5, pt")
@@ -225,6 +243,8 @@ def register_existing_pathology_features(
 
     for row_idx in row_iter:
         case_wsi_paths = _local_wsi_paths(root_dir, out.at[row_idx, "pathology_wsi_paths"])
+        if not case_wsi_paths and match_patient_id_when_no_wsi_paths and "patient_id" in out.columns:
+            case_wsi_paths = _feature_paths_for_patient_id(out.at[row_idx, "patient_id"], feature_by_stem)
         if case_wsi_paths:
             cases_with_slide_paths += 1
 

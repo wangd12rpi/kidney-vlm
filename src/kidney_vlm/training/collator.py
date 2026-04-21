@@ -22,6 +22,10 @@ DEFAULT_PATHOLOGY_PROJECTOR_PROMPT_TEXTS = (
 )
 
 DEFAULT_DNAM_PROJECTOR_PROMPT_TEXTS = (
+    "what is this. caption:",
+    "Describe this sample. caption:",
+    "Summarize the provided profile. caption:",
+    "Describe the molecular profile. caption:",
     "Describe the DNA methylation profile.",
     "Summarize the DNAm case.",
     "Write a DNAm caption.",
@@ -103,13 +107,16 @@ def _apply_chat_template_tokens(
         "add_generation_prompt": add_generation_prompt,
     }
     try:
-        token_ids = tokenizer.apply_chat_template(
-            messages,
-            chat_template_kwargs={"enable_thinking": False},
-            **kwargs,
-        )
+        token_ids = tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
     except TypeError:
-        token_ids = tokenizer.apply_chat_template(messages, **kwargs)
+        try:
+            token_ids = tokenizer.apply_chat_template(
+                messages,
+                chat_template_kwargs={"enable_thinking": False},
+                **kwargs,
+            )
+        except TypeError:
+            token_ids = tokenizer.apply_chat_template(messages, **kwargs)
     return _coerce_token_ids(token_ids)
 
 
@@ -708,16 +715,35 @@ class DNAMProjectorQACollator:
         self.prompt_texts = tuple(str(prompt).strip() for prompt in self.prompt_texts if str(prompt).strip())
         if not self.prompt_texts:
             raise ValueError("DNAMProjectorQACollator requires at least one prompt text.")
+        self._prompt_epoch = 0
+        self._prompt_cursor = 0
 
-    def _select_prompt_text(self) -> str:
-        return random.choice(self.prompt_texts)
+    def set_epoch(self, epoch: int) -> None:
+        self._prompt_epoch = max(0, int(epoch))
+        self._prompt_cursor = 0
+
+    @staticmethod
+    def _stable_prompt_base(feature: dict[str, Any]) -> int | None:
+        for key in ("dnam_caption_row_id", "question_id", "sample_id", "patient_id"):
+            value = str(feature.get(key, "")).strip()
+            if value:
+                return sum((index + 1) * ord(character) for index, character in enumerate(value))
+        return None
+
+    def _select_prompt_text(self, feature: dict[str, Any]) -> str:
+        base_index = self._stable_prompt_base(feature)
+        if base_index is None:
+            base_index = self._prompt_cursor
+            self._prompt_cursor += 1
+        prompt_index = (base_index + self._prompt_epoch) % len(self.prompt_texts)
+        return self.prompt_texts[prompt_index]
 
     def _build_text_pair(self, feature: dict[str, Any]) -> tuple[list[int], list[int]]:
         answer = str(feature.get(self.answer_field, "")).strip()
         if not answer:
             raise ValueError("Empty answer/caption encountered in DNAm projector batch.")
 
-        prompt_text = self._select_prompt_text()
+        prompt_text = self._select_prompt_text(feature)
         if hasattr(self.tokenizer, "apply_chat_template"):
             return _build_chat_text_pair(
                 tokenizer=self.tokenizer,

@@ -98,7 +98,8 @@ def test_build_chat_prompt_input_ids_uses_fixed_demo_prompt() -> None:
             assert messages == [{"role": "user", "content": "what is this. caption: "}]
             assert kwargs["tokenize"] is True
             assert kwargs["add_generation_prompt"] is True
-            assert kwargs["chat_template_kwargs"] == {"enable_thinking": False}
+            assert kwargs["enable_thinking"] is False
+            assert "chat_template_kwargs" not in kwargs
             return [11, 12, 13]
 
     input_ids = module._build_chat_prompt_input_ids(DummyTokenizer(), device=torch.device("cpu"))

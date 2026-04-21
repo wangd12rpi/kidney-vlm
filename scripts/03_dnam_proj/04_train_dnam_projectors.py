@@ -528,6 +528,9 @@ def main() -> None:
     print(f"Scheduler: {scheduler_type}")
     print(f"Warmup steps: {warmup_steps}")
     print(f"Total optimizer steps: {total_optimizer_steps}")
+    print("Training prompt variants:")
+    for prompt_text in collator.prompt_texts:
+        print(f"  - {prompt_text}")
     print("Split policy: train from unified train rows, validate on unified val rows, never fit on unified test rows.")
 
     global_step = 0
@@ -538,6 +541,7 @@ def main() -> None:
     optimizer.zero_grad(set_to_none=True)
 
     for epoch in range(num_epochs):
+        collator.set_epoch(epoch)
         running_loss = 0.0
         loop = tqdm(train_loader, total=len(train_loader), desc=f"Epoch {epoch + 1}/{num_epochs}")
         for step, batch in enumerate(loop, start=1):
