@@ -265,6 +265,66 @@ def _resolve_mixed_precision_dtype(raw_value: Any, *, default: torch.dtype) -> t
     return mapping.get(normalized, default)
 
 
+def _resolve_feature_path(path_value: Any) -> Path:
+    values = path_value if isinstance(path_value, list) else [path_value]
+    for raw_value in values:
+        text = str(raw_value or "").strip()
+        if not text:
+            continue
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            candidate = ROOT / candidate
+        candidate = candidate.resolve()
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"No existing RNA feature path found in value: {path_value}")
+
+
+def _load_feature_width(path: Path) -> int:
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    if isinstance(payload, dict):
+        tensor_candidates = [value for value in payload.values() if torch.is_tensor(value)]
+        if len(tensor_candidates) != 1:
+            raise ValueError(f"Unable to resolve RNA tensor from {path}; found {len(tensor_candidates)} tensor candidates.")
+        payload = tensor_candidates[0]
+    if not torch.is_tensor(payload):
+        raise TypeError(f"Unsupported RNA feature payload type from {path}: {type(payload).__name__}")
+    if payload.ndim == 1:
+        return int(payload.shape[0])
+    if payload.ndim == 2:
+        return int(payload.shape[1])
+    if payload.ndim == 3 and payload.shape[0] == 1:
+        return int(payload.shape[2])
+    raise ValueError(f"Unsupported RNA feature tensor shape from {path}: {tuple(payload.shape)}")
+
+
+def _resolve_rna_embedding_dim(stage_cfg: Any, frame: pd.DataFrame) -> int:
+    if "genomics_rna_bulk_feature_path" not in frame.columns:
+        raise RuntimeError("RNA projector training parquet must include genomics_rna_bulk_feature_path.")
+    first_feature_value = next(
+        (value for value in frame["genomics_rna_bulk_feature_path"].tolist() if str(value or "").strip()),
+        None,
+    )
+    if first_feature_value is None:
+        raise RuntimeError("RNA projector training parquet does not contain any RNA feature paths.")
+
+    feature_path = _resolve_feature_path(first_feature_value)
+    inferred_dim = _load_feature_width(feature_path)
+    configured_value = stage_cfg.get("rna_embedding_dim")
+    if configured_value in (None, "", "null", "auto"):
+        print(f"Inferred RNA embedding dim from {feature_path}: {inferred_dim}")
+        return inferred_dim
+
+    configured_dim = int(configured_value)
+    if configured_dim != inferred_dim:
+        print(
+            "Configured rna_embedding_dim does not match loaded RNA features; "
+            f"using inferred dim {inferred_dim} instead of {configured_dim}. "
+            f"First feature path: {feature_path}"
+        )
+    return inferred_dim
+
+
 def _save_artifacts(
     *,
     run_output_dir: Path,
@@ -283,7 +343,7 @@ def _save_artifacts(
         {
             "rna_projector_state_dict": model.projectors.state_dict(),
             "model_name_or_path": str(cfg.rna_proj.model_name_or_path),
-            "rna_embedding_dim": int(cfg.rna_proj.rna_embedding_dim),
+            "rna_embedding_dim": int(model.rna_in_dim),
             "projector_type": projector_type,
             "projector_num_latents": int(cfg.rna_proj.get("projector_num_latents", 64)),
             "projector_depth": int(cfg.rna_proj.get("projector_depth", 2)),
@@ -331,6 +391,7 @@ def _write_run_metadata(
         "trainable_parameters": int(model.trainable_parameter_count()),
         "total_parameters": int(model.total_parameter_count()),
         "model_name_or_path": str(cfg.rna_proj.model_name_or_path),
+        "rna_embedding_dim": int(model.rna_in_dim),
         "rna_prefix_tokens": int(cfg.rna_proj.get("rna_prefix_tokens", 0)),
         "rna_prefix_expander_mlp_ratio": float(cfg.rna_proj.get("rna_prefix_expander_mlp_ratio", 1.0)),
         "run_output_dir": _portable_path(run_output_dir),
@@ -398,6 +459,7 @@ def main() -> None:
 
     train_dataset = RNAProjectorQADataset(train_frame)
     validation_dataset = RNAProjectorQADataset(validation_frame)
+    rna_embedding_dim = _resolve_rna_embedding_dim(stage_cfg, train_frame)
 
     device = _resolve_device(stage_cfg.device)
     load_in_8bit = bool(stage_cfg.get("load_in_8bit", False))
@@ -422,7 +484,7 @@ def main() -> None:
 
     model = RnaQwenProjectorLM.from_pretrained(
         str(stage_cfg.model_name_or_path),
-        rna_in_dim=int(stage_cfg.rna_embedding_dim),
+        rna_in_dim=rna_embedding_dim,
         projector_type=str(stage_cfg.get("projector_type", "mlp")),
         projector_num_latents=int(stage_cfg.get("projector_num_latents", 64)),
         projector_depth=int(stage_cfg.get("projector_depth", 2)),
@@ -523,6 +585,7 @@ def main() -> None:
     print(f"Run output dir: {run_output_dir}")
     print(f"Trainable parameters: {model.trainable_parameter_count():,}")
     print(f"Total parameters: {model.total_parameter_count():,}")
+    print(f"RNA embedding dim: {rna_embedding_dim}")
     print(f"Max RNA tokens: {int(stage_cfg.max_rna_tokens)}")
     print(f"Max text length: {int(stage_cfg.max_text_length)}")
     print(f"Scheduler: {scheduler_type}")

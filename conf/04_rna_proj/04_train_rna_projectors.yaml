@@ -4,7 +4,9 @@ modality_dir_name: rna
 model_name_or_path: Qwen/Qwen3.5-9B
 trust_remote_code: true
 qa_parquet_path: ${project.root_dir}/data/proj_train/rna/rna_proj_train_qa.parquet
-rna_embedding_dim: 512
+# BulkFormer sample embeddings are hidden_dim + 3 global summary scalars.
+# The 93M variant is 512 + 3 = 515.
+rna_embedding_dim: 515
 
 # RNA projector. BulkFormer gives one compact case embedding, so the MLP
 # maps it into LLM space and a nonlinear expander turns it into soft prompt slots.
