@@ -1338,6 +1338,22 @@ def _write_tcia_qc_report(entries: list[dict[str, Any]], output_path: str | Path
     return destination
 
 
+def _write_tcia_download_failure_report(entries: list[dict[str, Any]], output_path: str | Path) -> Path:
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", encoding="utf-8") as handle:
+        for entry in sorted(
+            entries,
+            key=lambda item: (
+                str(item.get("patient_id", "")),
+                str(item.get("study_instance_uid", "")),
+                str(item.get("series_instance_uid", "")),
+            ),
+        ):
+            handle.write(json.dumps(entry, sort_keys=True) + "\n")
+    return destination
+
+
 def _is_genomics_payload_enabled(genomics_cfg: DictConfig, payload_key: str) -> bool:
     raw_payloads_cfg = genomics_cfg.get("raw_payloads")
     if raw_payloads_cfg is None:
@@ -1833,6 +1849,7 @@ def _download_tcia_series(
     downloaded_by_patient: dict[str, list[dict[str, Any]]] = {}
     candidate_series: list[dict[str, str]] = []
     qc_detail_entries: list[dict[str, Any]] = []
+    download_failure_entries: list[dict[str, Any]] = []
     accepted_series_count = 0
     qc_settings = tcga_cfg.tcia.get("qc")
     qc_enabled = bool(qc_settings.get("enabled", True)) if qc_settings is not None else True
@@ -1842,6 +1859,9 @@ def _download_tcia_series(
     radiology_root = raw_root / source_name / "radiology"
     cleanup_stats = {
         "enabled": bool(cleanup_settings.get("enabled", False)),
+        "candidate_series": 0,
+        "download_failed_series": 0,
+        "download_failure_report_path": "",
         "accepted_series_cleaned": 0,
         "rejected_series_cleaned": 0,
         "skipped_series": 0,
@@ -1870,6 +1890,7 @@ def _download_tcia_series(
 
     if max_series_total is not None:
         candidate_series = candidate_series[:max_series_total]
+    cleanup_stats["candidate_series"] = len(candidate_series)
 
     candidate_series_by_patient: dict[str, list[dict[str, str]]] = {}
     for entry in candidate_series:
@@ -1902,11 +1923,30 @@ def _download_tcia_series(
                 / study_uid
                 / f"{series_uid}.zip"
             )
-            resolved = tcia_client.download_series_zip(
-                series_instance_uid=series_uid,
-                output_path=output_path,
-                skip_existing=skip_existing,
-            )
+            try:
+                resolved = tcia_client.download_series_zip(
+                    series_instance_uid=series_uid,
+                    output_path=output_path,
+                    skip_existing=skip_existing,
+                )
+            except APIQueryError as exc:
+                progress.update(1)
+                failure_entry = {
+                    "collection": collection,
+                    "patient_id": patient_id,
+                    "study_instance_uid": study_uid,
+                    "series_instance_uid": series_uid,
+                    "modality": modality,
+                    "output_path": str(output_path),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+                download_failure_entries.append(failure_entry)
+                progress.write(
+                    "Skipping TCIA series after download failure: "
+                    f"{series_uid} ({type(exc).__name__}: {exc})"
+                )
+                continue
             total_downloaded += 1
             progress.update(1)
 
@@ -2103,6 +2143,13 @@ def _download_tcia_series(
             downloaded_by_patient.setdefault(patient_id, []).append(downloaded_entry)
 
     progress.close()
+    if download_failure_entries:
+        failure_report_path = _write_tcia_download_failure_report(
+            download_failure_entries,
+            detail_root / "download_failures.jsonl",
+        )
+        cleanup_stats["download_failed_series"] = len(download_failure_entries)
+        cleanup_stats["download_failure_report_path"] = str(failure_report_path)
     for extractor in (segmentation_extractor, feature_extractor, png_extractor):
         if extractor is not None:
             del extractor
@@ -2197,6 +2244,9 @@ def main() -> None:
     radiology_qc_report_path: Path | None = None
     radiology_cleanup_stats: dict[str, Any] = {
         "enabled": False,
+        "candidate_series": 0,
+        "download_failed_series": 0,
+        "download_failure_report_path": "",
         "accepted_series_cleaned": 0,
         "rejected_series_cleaned": 0,
         "skipped_series": 0,
@@ -2315,12 +2365,18 @@ def main() -> None:
             )
             radiology_mask_manifest_count = radiology_segmented_series_count
             print(f"Radiology series zip files downloaded/resolved: {radiology_download_count}")
+            print(
+                "Radiology series download failures skipped: "
+                f"{int(radiology_cleanup_stats.get('download_failed_series', 0))}"
+            )
             print(f"Radiology series accepted after QC: {radiology_qc_accepted_count}")
             print(f"Radiology series segmented with Medical-SAM3: {radiology_segmented_series_count}")
             print(f"Radiology mask PNG files saved/reused: {radiology_mask_file_count}")
             if bool(radiology_cleanup_stats.get("enabled", False)):
                 print(f"Radiology source ZIP files deleted: {int(radiology_cleanup_stats.get('deleted_zip_files', 0))}")
                 print(f"Radiology source files deleted: {int(radiology_cleanup_stats.get('deleted_source_files', 0))}")
+            if str(radiology_cleanup_stats.get("download_failure_report_path", "")).strip():
+                print(f"Radiology download failure JSONL: {radiology_cleanup_stats['download_failure_report_path']}")
             if radiology_qc_entries:
                 qc_settings = tcga_cfg.tcia.get("qc")
                 report_jsonl_path = (
@@ -2533,7 +2589,11 @@ def main() -> None:
                 "download_counts": {
                     "pathology_files": pathology_download_count,
                     "report_files": report_download_count,
+                    "radiology_candidate_series": int(radiology_cleanup_stats.get("candidate_series", 0)),
                     "radiology_series": radiology_download_count,
+                    "radiology_series_download_failed": int(
+                        radiology_cleanup_stats.get("download_failed_series", 0)
+                    ),
                     "radiology_series_qc_accepted": radiology_qc_accepted_count,
                     "radiology_series_qc_rejected": max(radiology_download_count - radiology_qc_accepted_count, 0),
                     "radiology_segmented_series": radiology_segmented_series_count,
@@ -2545,6 +2605,9 @@ def main() -> None:
                 },
                 "radiology_qc": {
                     "report_jsonl_path": str(radiology_qc_report_path) if radiology_qc_report_path is not None else "",
+                    "download_failure_jsonl_path": str(
+                        radiology_cleanup_stats.get("download_failure_report_path", "")
+                    ),
                     "detail_record_count": len(radiology_qc_entries),
                     "qualifying_modalities": _normalized_tcia_modalities(tcga_cfg.tcia.get("qualifying_modalities", [])),
                 },
@@ -2650,7 +2713,11 @@ def main() -> None:
             "download_counts": {
                 "pathology_files": pathology_download_count,
                 "report_files": report_download_count,
+                "radiology_candidate_series": int(radiology_cleanup_stats.get("candidate_series", 0)),
                 "radiology_series": radiology_download_count,
+                "radiology_series_download_failed": int(
+                    radiology_cleanup_stats.get("download_failed_series", 0)
+                ),
                 "radiology_series_qc_accepted": radiology_qc_accepted_count,
                 "radiology_series_qc_rejected": max(radiology_download_count - radiology_qc_accepted_count, 0),
                 "radiology_segmented_series": radiology_segmented_series_count,
@@ -2662,6 +2729,9 @@ def main() -> None:
             },
             "radiology_qc": {
                 "report_jsonl_path": str(radiology_qc_report_path) if radiology_qc_report_path is not None else "",
+                "download_failure_jsonl_path": str(
+                    radiology_cleanup_stats.get("download_failure_report_path", "")
+                ),
                 "detail_record_count": len(radiology_qc_entries),
                 "qualifying_modalities": _normalized_tcia_modalities(tcga_cfg.tcia.get("qualifying_modalities", [])),
             },
@@ -2715,6 +2785,9 @@ def main() -> None:
     print(f"Report PDF files pulled: {len(report_files)}")
     print(f"Radiology patients pulled: {len(tcia_studies_by_patient)}")
     print(f"TCIA series metadata records pulled: {sum(len(entries) for entries in tcia_series_by_patient.values())}")
+    print(f"Radiology series download failures skipped: {int(radiology_cleanup_stats.get('download_failed_series', 0))}")
+    if str(radiology_cleanup_stats.get("download_failure_report_path", "")).strip():
+        print(f"Radiology download failure JSONL: {radiology_cleanup_stats['download_failure_report_path']}")
     print(f"Radiology series accepted after QC: {radiology_qc_accepted_count}")
     print(f"Radiology series segmented with Medical-SAM3: {radiology_segmented_series_count}")
     print(f"Radiology mask PNG files saved/reused: {radiology_mask_file_count}")
