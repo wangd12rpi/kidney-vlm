@@ -132,7 +132,7 @@ def _move_batch_to_device(
     return output
 
 
-def _maybe_init_wandb(cfg: Any):
+def _maybe_init_wandb(cfg: Any, *, run_name: str):
     wandb_cfg = cfg.pathology_proj.get("wandb")
     if wandb_cfg is None or not bool(wandb_cfg.get("enabled", False)):
         return None
@@ -145,9 +145,9 @@ def _maybe_init_wandb(cfg: Any):
     tags = [str(tag).strip() for tag in wandb_cfg.get("tags", []) if str(tag).strip()]
     run = wandb.init(
         project=str(wandb_cfg.get("project", "kidney-vlm")),
-        # entity=str(wandb_cfg.get("entity", "")).strip() or None,
-        # name=str(wandb_cfg.get("run_name", "")).strip() or None,
-        # mode=str(wandb_cfg.get("mode", "online")),
+        entity=str(wandb_cfg.get("entity", "")).strip() or None,
+        name=run_name,
+        mode=str(wandb_cfg.get("mode", "online")),
         tags=tags,
         config=OmegaConf.to_container(cfg.pathology_proj, resolve=True),
     )
@@ -602,7 +602,8 @@ def main() -> None:
     if validation_loader is None or len(validation_loader) == 0:
         print("Validation is unavailable; epoch checkpoints will still be saved, but best.ckpt will not be created.")
 
-    wandb_run = _maybe_init_wandb(cfg)
+    wandb_run_name = f"{llm_tag}_{modality_dir_name}_{run_output_dir.name}"
+    wandb_run = _maybe_init_wandb(cfg, run_name=wandb_run_name)
     global_step = 0
     best_validation_loss = None
     best_epoch = None

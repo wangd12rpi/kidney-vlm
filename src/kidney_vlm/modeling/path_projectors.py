@@ -1,7 +1,185 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+
 import torch
 from torch import nn
+
+
+def resolve_language_model_hidden_size(language_model: nn.Module) -> int:
+    """Resolve LM embedding width across common HF config layouts."""
+    config = getattr(language_model, "config", None)
+    config_candidates: list[Any] = []
+    if config is not None:
+        config_candidates.append(config)
+        for attr_name in ("text_config", "llm_config", "language_config", "decoder", "model_config"):
+            try:
+                nested_config = getattr(config, attr_name)
+            except AttributeError:
+                continue
+            if nested_config is not None:
+                config_candidates.append(nested_config)
+        get_text_config = getattr(config, "get_text_config", None)
+        if callable(get_text_config):
+            for kwargs in ({}, {"decoder": True}):
+                try:
+                    text_config = get_text_config(**kwargs)
+                except TypeError:
+                    continue
+                if text_config is not None:
+                    config_candidates.append(text_config)
+
+    for candidate in config_candidates:
+        for attr_name in ("hidden_size", "d_model", "n_embd", "embed_dim", "embedding_dim"):
+            try:
+                value = getattr(candidate, attr_name)
+            except AttributeError:
+                continue
+            if value is not None:
+                return int(value)
+
+    get_input_embeddings = getattr(language_model, "get_input_embeddings", None)
+    if callable(get_input_embeddings):
+        embeddings = get_input_embeddings()
+        for attr_name in ("embedding_dim", "num_features", "out_features"):
+            value = getattr(embeddings, attr_name, None)
+            if value is not None:
+                return int(value)
+        weight = getattr(embeddings, "weight", None)
+        if weight is not None and getattr(weight, "ndim", 0) >= 2:
+            return int(weight.shape[1])
+
+    config_type = type(config).__name__ if config is not None else "None"
+    raise ValueError(f"Could not resolve language model hidden size from config type {config_type}.")
+
+
+def _resolve_per_layer_text_model(language_model: nn.Module) -> nn.Module:
+    model = getattr(language_model, "model", language_model)
+    return getattr(model, "language_model", model)
+
+
+def build_soft_prefix_per_layer_inputs(
+    language_model: nn.Module,
+    *,
+    input_ids: torch.Tensor,
+    prefix_length: int,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor | None:
+    """Build Gemma4-style per-layer inputs for soft-prefix + text embeddings."""
+    if prefix_length <= 0:
+        return None
+
+    text_model = _resolve_per_layer_text_model(language_model)
+    hidden_size_per_layer_input = int(getattr(text_model, "hidden_size_per_layer_input", 0) or 0)
+    if hidden_size_per_layer_input <= 0:
+        config = getattr(text_model, "config", None)
+        hidden_size_per_layer_input = int(getattr(config, "hidden_size_per_layer_input", 0) or 0)
+    if hidden_size_per_layer_input <= 0:
+        return None
+
+    get_per_layer_inputs = getattr(text_model, "get_per_layer_inputs", None)
+    if not callable(get_per_layer_inputs):
+        return None
+
+    with torch.no_grad():
+        text_per_layer_inputs = get_per_layer_inputs(input_ids, None)
+    text_per_layer_inputs = text_per_layer_inputs.to(device=device, dtype=dtype)
+    prefix_per_layer_inputs = torch.zeros(
+        (
+            input_ids.shape[0],
+            prefix_length,
+            text_per_layer_inputs.shape[2],
+            text_per_layer_inputs.shape[3],
+        ),
+        device=device,
+        dtype=dtype,
+    )
+    return torch.cat([prefix_per_layer_inputs, text_per_layer_inputs], dim=1)
+
+
+def _text_config(language_model: nn.Module) -> Any:
+    config = getattr(language_model, "config", None)
+    get_text_config = getattr(config, "get_text_config", None)
+    if callable(get_text_config):
+        return get_text_config()
+    return getattr(config, "text_config", config)
+
+
+def _conditional_lm_inner_modules(language_model: nn.Module) -> tuple[nn.Module, nn.Module] | None:
+    outer_model = getattr(language_model, "model", None)
+    text_model = getattr(outer_model, "language_model", None)
+    lm_head = getattr(language_model, "lm_head", None)
+    if text_model is None or lm_head is None:
+        return None
+    return text_model, lm_head
+
+
+def forward_language_model_with_soft_prefix(
+    language_model: nn.Module,
+    *,
+    input_ids: torch.Tensor,
+    inputs_embeds: torch.Tensor,
+    attention_mask: torch.Tensor,
+    position_ids: torch.Tensor,
+    labels: torch.Tensor | None,
+    prefix_length: int,
+) -> Any:
+    per_layer_inputs = build_soft_prefix_per_layer_inputs(
+        language_model,
+        input_ids=input_ids,
+        prefix_length=prefix_length,
+        device=inputs_embeds.device,
+        dtype=inputs_embeds.dtype,
+    )
+    conditional_modules = _conditional_lm_inner_modules(language_model)
+    if per_layer_inputs is None or conditional_modules is None:
+        model_kwargs = {"per_layer_inputs": per_layer_inputs} if per_layer_inputs is not None else {}
+        return language_model(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            labels=labels,
+            **model_kwargs,
+        )
+
+    text_model, lm_head = conditional_modules
+    outputs = text_model(
+        per_layer_inputs=per_layer_inputs,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        inputs_embeds=inputs_embeds,
+        use_cache=False,
+        return_dict=True,
+    )
+    hidden_states = outputs.last_hidden_state
+    logits = lm_head(hidden_states)
+    config = _text_config(language_model)
+    final_logit_softcapping = getattr(config, "final_logit_softcapping", None)
+    if final_logit_softcapping is not None:
+        logits = logits / final_logit_softcapping
+        logits = torch.tanh(logits)
+        logits = logits * final_logit_softcapping
+
+    loss = None
+    if labels is not None:
+        logits_for_loss = logits.float()
+        shift_logits = logits_for_loss[..., :-1, :]
+        shift_labels = labels[..., 1:]
+        shift_attention_mask = attention_mask[:, -shift_logits.shape[1] :].to(logits_for_loss.device)
+        shift_logits = shift_logits[shift_attention_mask != 0].contiguous()
+        shift_labels = shift_labels[shift_attention_mask.to(shift_labels.device) != 0].contiguous()
+        vocab_size = int(getattr(config, "vocab_size", logits.shape[-1]))
+        loss = nn.CrossEntropyLoss()(shift_logits.view(-1, vocab_size), shift_labels.view(-1).to(shift_logits.device))
+
+    return SimpleNamespace(
+        loss=loss,
+        logits=logits,
+        past_key_values=getattr(outputs, "past_key_values", None),
+        hidden_states=getattr(outputs, "hidden_states", None),
+        attentions=getattr(outputs, "attentions", None),
+    )
 
 
 class MLPProjector(nn.Module):

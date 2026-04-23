@@ -1,0 +1,249 @@
+name: vqa_question_generation_gt_mcq
+source_registry_path: ${data.unified_registry_path}
+output_parquet_path: ${project.root_dir}/data/vqa/gt_mcq_questions.parquet
+print_first_n: 5
+first_n:
+allowed_project_ids: []
+allowed_splits: []
+choice_count: 4
+min_semantic_questions_per_project_task: 20
+require_enabled_modality_features: true
+require_test_pathology_roi_png_dir: true
+populate_test_genomics_text_summaries: true
+require_test_genomics_text_summaries: true
+dnam_text_summary_max_beta_values: 50000
+rna_text_summary_max_top_genes: 8
+show_progress: true
+skip_values:
+  - ""
+  - None
+  - nan
+  - Not Reported
+  - Unknown
+  - Not Available
+
+default_modality_variants:
+  - use_pathology: true
+    use_radiology: false
+    use_dnam: true
+    use_rna: true
+
+categorical_tasks:
+  - enabled: true
+    task_category: stage
+    task_id: pathologic_stage
+    source_column: task_stage_label
+    ground_truth_source: task_stage_label
+    question_template: What is the AJCC pathologic stage for this case?
+    options:
+      - Stage I
+      - Stage II
+      - Stage III
+      - Stage IV
+    value_map:
+      Stage I: Stage I
+      Stage IA: Stage I
+      Stage IB: Stage I
+      Stage IB1: Stage I
+      Stage IC: Stage I
+      Stage IS: Stage I
+      Stage II: Stage II
+      Stage IIA: Stage II
+      Stage IIB: Stage II
+      Stage IIC: Stage II
+      Stage III: Stage III
+      Stage IIIA: Stage III
+      Stage IIIB: Stage III
+      Stage IIIC: Stage III
+      Stage IV: Stage IV
+      Stage IVA: Stage IV
+      Stage IVB: Stage IV
+      Stage IVC: Stage IV
+    skip_values:
+      - Stage 0
+      - Stage 0a
+      - Stage 0is
+      - Stage X
+    modality_variants:
+      - use_pathology: true
+        use_radiology: false
+        use_dnam: false
+        use_rna: false
+      - use_pathology: true
+        use_radiology: false
+        use_dnam: true
+        use_rna: true
+
+  - enabled: true
+    task_category: grade
+    task_id: tumor_grade
+    source_column: task_grade_label
+    ground_truth_source: task_grade_label
+    question_template: What is the tumor grade label for this case?
+    options:
+      - G1
+      - G2
+      - G3
+      - G4
+    value_map:
+      G1: G1
+      G2: G2
+      G3: G3
+      G4: G4
+    skip_values:
+      - High Grade
+      - Low Grade
+      - GX
+      - GB
+    modality_variants:
+      - use_pathology: true
+        use_radiology: false
+        use_dnam: false
+        use_rna: false
+      - use_pathology: true
+        use_radiology: false
+        use_dnam: true
+        use_rna: true
+
+  - enabled: true
+    task_category: stage_component
+    task_id: pathologic_t
+    source_column: ajcc_pathologic_t
+    ground_truth_source: ajcc_pathologic_t
+    question_template: What is the AJCC pathologic T category for this case?
+    options:
+      - T1
+      - T2
+      - T3
+      - T4
+    value_map:
+      T1: T1
+      T1a: T1
+      T1b: T1
+      T1b1: T1
+      T1b2: T1
+      T1c: T1
+      T2: T2
+      T2a: T2
+      T2a1: T2
+      T2a2: T2
+      T2b: T2
+      T2c: T2
+      T3: T3
+      T3a: T3
+      T3b: T3
+      T3c: T3
+      T4: T4
+      T4a: T4
+      T4b: T4
+      T4c: T4
+      T4d: T4
+    skip_values:
+      - T0
+      - Ta
+      - Tis
+      - Tis (DCIS)
+      - Tis (LCIS)
+      - TX
+    modality_variants:
+      - use_pathology: true
+        use_radiology: false
+        use_dnam: false
+        use_rna: false
+      - use_pathology: true
+        use_radiology: false
+        use_dnam: true
+        use_rna: true
+
+  - enabled: true
+    task_category: stage_component
+    task_id: pathologic_n
+    source_column: ajcc_pathologic_n
+    ground_truth_source: ajcc_pathologic_n
+    question_template: What is the AJCC pathologic N category for this case?
+    options:
+      - N0
+      - N1
+      - N2
+      - N3
+    value_map:
+      N0: N0
+      N0 (i-): N0
+      N0 (i+): N0
+      N0 (mol+): N0
+      N1: N1
+      N1a: N1
+      N1b: N1
+      N1c: N1
+      N1mi: N1
+      N2: N2
+      N2a: N2
+      N2b: N2
+      N2c: N2
+      N3: N3
+      N3a: N3
+      N3b: N3
+    skip_values:
+      - NX
+    modality_variants:
+      - use_pathology: true
+        use_radiology: false
+        use_dnam: false
+        use_rna: false
+      - use_pathology: true
+        use_radiology: false
+        use_dnam: true
+        use_rna: true
+
+boolean_tasks:
+  - enabled: true
+    task_category: mutation
+    task_id_template: "{source_column}"
+    gene_panel_by_project:
+      TCGA-ACC: [ATRX, TP53]
+      TCGA-BLCA: [ARID1A, CDKN2A, EP300, FBXW7, FGFR3, KDM6A, PTEN, RB1, RBM10, RXRA, STAG2, TP53, TSC1]
+      TCGA-BRCA: [CDH1, FOXA1, MAP2K4, MAP3K1, NCOR1, NF1, PIK3CA, PTEN, RB1, RUNX1, TP53]
+      TCGA-CESC: [ARID1A, EP300, FBXW7, LATS1, PTEN, RB1, SMAD4, TP53]
+      TCGA-CHOL: [PBRM1]
+      TCGA-COAD: [APC, KRAS, PTEN, SMAD4, TP53]
+      TCGA-DLBC: [ARID1A, CD79B, HLA-B, KMT2D, MYD88, PIM1]
+      TCGA-ESCA: [CDKN2A, TP53]
+      TCGA-GBM: [ATRX, IDH1, NF1, PIK3R1, PTEN, RB1, STAG2, TP53]
+      TCGA-HNSC: [AJUBA, CASP8, CDKN2A, FBXW7, FGFR3, FLNA, HRAS, KDM6A, NOTCH1, NSD1, PTEN, TP53]
+      TCGA-KICH: [TP53]
+      TCGA-KIRC: [ATM, BAP1, KDM5C, KIF1A, MTOR, PBRM1, PTEN, SETD2, VHL]
+      TCGA-KIRP: [CUL3, KDM6A]
+      TCGA-LAML: [IDH2, RUNX1, SMC1A]
+      TCGA-LGG: [ATRX, CIC, FUBP1, IDH1, IDH2, MAX, NF1, PTEN, TP53]
+      TCGA-LIHC: [CTNNB1, RPS6KA3, TP53]
+      TCGA-LUAD: [ATM, EGFR, KRAS, NF1, RB1, RBM10, STK11, TP53]
+      TCGA-LUSC: [CDKN2A, FBXW7, KDM6A, NF1, NOTCH1, PTEN, RB1, TP53]
+      TCGA-MESO: [BAP1, NF2, TP53]
+      TCGA-OV: [NF1, RB1, TP53]
+      TCGA-PAAD: [CDKN2A, GNAS, KRAS, SMAD4, TP53]
+      TCGA-PCPG: [EPAS1, HRAS, RET]
+      TCGA-PRAD: [APC, PTEN, SPOP, TP53]
+      TCGA-READ: [APC, FBXW7, KRAS, TP53]
+      TCGA-SARC: [ATRX, RB1, TP53]
+      TCGA-SKCM: [ARID2, BRAF, CDKN2A, CFTR, COL5A1, IDH1, KCNQ5, MAP2K1, NF1, PTEN, TP53]
+      TCGA-STAD: [APC, ARID1A, BCOR, CNBD1, SMAD4, TP53]
+      TCGA-TGCT: [KIT, KRAS, NRAS, PIK3CA]
+      TCGA-THCA: [BRAF, EIF1AX, HRAS, NRAS, NUP93]
+      TCGA-THYM: [GTF2I, HRAS]
+      TCGA-UCEC: [AKT1, APC, ARID1A, ATM, CTCF, CTNNB1, CTNND1, DYRK1A, ERBB2, KANSL1, KMT2B, KMT2C, KRAS, MAP3K1, MAX, NDUFS1, NRAS, PDS5B, PIK3CA, PTEN, RB1, RRAS2, SCAF4]
+      TCGA-UCS: [PTEN, TP53]
+      TCGA-UVM: [EIF1AX, GNA11, GNAQ, SF3B1]
+    question_template: What is the {gene} mutation status for this case?
+    true_answer_template: "{gene} mutation present"
+    false_answer_template: "{gene} mutation absent"
+    choice_count: 2
+    max_false_per_true: 1.0
+    modality_variants:
+      - use_pathology: false
+        use_radiology: false
+        use_dnam: true
+        use_rna: true
+      - use_pathology: true
+        use_radiology: false
+        use_dnam: true
+        use_rna: true

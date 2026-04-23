@@ -5,7 +5,11 @@ from typing import Any
 import torch
 from torch import nn
 
-from kidney_vlm.modeling.path_projectors import ModalityProjector
+from kidney_vlm.modeling.path_projectors import (
+    ModalityProjector,
+    forward_language_model_with_soft_prefix,
+    resolve_language_model_hidden_size,
+)
 
 
 class PathologyQwenProjectorLM(nn.Module):
@@ -26,7 +30,7 @@ class PathologyQwenProjectorLM(nn.Module):
         self.language_model = language_model
         self.language_model_is_quantized = bool(language_model_is_quantized)
         self.pathology_in_dim = int(pathology_in_dim)
-        self.hidden_size = int(getattr(language_model.config, "hidden_size"))
+        self.hidden_size = resolve_language_model_hidden_size(language_model)
         self.path_projector_config = {
             "projector_type": str(projector_type).strip().lower() or "mlp",
             "projector_num_latents": int(projector_num_latents),
@@ -165,12 +169,14 @@ class PathologyQwenProjectorLM(nn.Module):
         position_ids = combined_attention.long().cumsum(dim=1) - 1
         position_ids = position_ids.clamp_min(0)
         position_ids = position_ids.masked_fill(combined_attention == 0, 0)
-
-        return self.language_model(
+        return forward_language_model_with_soft_prefix(
+            self.language_model,
+            input_ids=input_ids,
             inputs_embeds=combined_embeddings,
             attention_mask=combined_attention,
             position_ids=position_ids,
             labels=combined_labels,
+            prefix_length=pathology_projected.shape[1],
         )
 
     def trainable_parameter_count(self) -> int:
