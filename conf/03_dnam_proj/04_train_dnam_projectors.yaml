@@ -1,7 +1,9 @@
 instantiate_model: true
 modality_tag: dnam
 modality_dir_name: dnam
-model_name_or_path: Qwen/Qwen3.5-9B
+# Previous backbone:
+# model_name_or_path: Qwen/Qwen3.5-9B
+model_name_or_path: google/gemma-4-E4B-it
 trust_remote_code: true
 qa_parquet_path: ${project.root_dir}/data/proj_train/dnam/dnam_proj_train_qa.parquet
 dnam_embedding_dim: 512
@@ -50,11 +52,10 @@ output_dir: ${project.root_dir}/outputs/projectors
 save_tokenizer_snapshot: false
 wandb:
   enabled: false
-  project: kidney-vlm
-  entity:
-  run_name: dnam_projector_stage1_qwen3_9b
+  project: oncovlm
+  entity: d0nnw0n9-rensselaer-polytechnic-institute
   mode: online
   tags:
     - dnam_projector
     - dnam
-    - qwen
+    - gemma

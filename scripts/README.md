@@ -11,6 +11,8 @@
   - `scripts/02_radiology_segmentation/`
   - `scripts/03_dnam_features/`
   - `scripts/03_dnam_proj/`
+  - `scripts/05_vqa_question_generation/`
+  - `scripts/06_vqa_evaluation/`
 
 ## Runnable Scripts
 - `scripts/data/01_upsert_tcga_registry_rows.py`
@@ -96,6 +98,18 @@
   - Preserves the unified registry split as the source of truth even if imported caption metadata uses a different split label.
 - `scripts/02_radiology_proj/03_train_radiology_projectors.py`
   - Stage 1: radiology projector training entrypoint that follows the unified registry train/val/test split.
+- `scripts/05_vqa_question_generation/generate_gt_mcq.py`
+  - Generates procedural ground-truth MCQ rows from `unified.parquet` into the shared VQA schema.
+  - Writes `data/vqa/gt_mcq_questions.parquet`; caption-derived questions are generated into a separate file.
+  - Task definitions live in `conf/05_vqa_question_generation/generate_gt_mcq.yaml`.
+  - Example:
+    - `uv run python scripts/05_vqa_question_generation/generate_gt_mcq.py`
+- `scripts/06_vqa_evaluation/evaluate_vqa.py`
+  - Single-entry VQA evaluation script. The current backend evaluates MCQ rows with Azure GPT using semantic option-text answers.
+  - Defaults to a small TCGA-BRCA mutation smoke subset from `data/vqa/gt_mcq_questions.parquet`.
+  - Evaluation config lives in `conf/06_vqa_evaluation/evaluate_vqa_gpt.yaml`.
+  - Example:
+    - `uv run python scripts/06_vqa_evaluation/evaluate_vqa.py`
 - `scripts/hf_integration/01_upload_projector_train_to_hf.py`
   - Uploads projector-train parquet datasets to HF Hub using split-aware `DatasetDict` payloads.
   - Uses its own config file at `conf/hf_integration/projector_train_upload.yaml`.

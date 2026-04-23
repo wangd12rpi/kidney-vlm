@@ -1,0 +1,170 @@
+{
+  "accuracy": 0.5662650602409639,
+  "api_error_count": 3,
+  "api_errors": [
+    {
+      "case_id": "TCGA-A2-A0CV",
+      "error": "RuntimeError: GPT evaluation call failed after 3 attempts: GPT returned an empty response.",
+      "project_id": "TCGA-BRCA",
+      "question_id": 4023132783449507313,
+      "task_id": "pathologic_t"
+    },
+    {
+      "case_id": "TCGA-BH-A0AY",
+      "error": "RuntimeError: GPT evaluation call failed after 3 attempts: GPT returned an empty response.",
+      "project_id": "TCGA-BRCA",
+      "question_id": 5949050465571584766,
+      "task_id": "pathologic_t"
+    },
+    {
+      "case_id": "TCGA-D8-A1J8",
+      "error": "RuntimeError: GPT evaluation call failed after 3 attempts: GPT returned an empty response.",
+      "project_id": "TCGA-BRCA",
+      "question_id": 2624199875412634993,
+      "task_id": "pathologic_n"
+    }
+  ],
+  "backend": "azure_openai_gpt",
+  "by_project_id": {
+    "TCGA-BRCA": {
+      "accuracy": 0.5662650602409639,
+      "correct": 517,
+      "n": 913
+    }
+  },
+  "by_task_id": {
+    "mutation_cdh1": {
+      "accuracy": 0.8113207547169812,
+      "correct": 43,
+      "n": 53
+    },
+    "mutation_foxa1": {
+      "accuracy": 0.9622641509433962,
+      "correct": 51,
+      "n": 53
+    },
+    "mutation_map2k4": {
+      "accuracy": 0.9622641509433962,
+      "correct": 51,
+      "n": 53
+    },
+    "mutation_map3k1": {
+      "accuracy": 0.6792452830188679,
+      "correct": 36,
+      "n": 53
+    },
+    "mutation_ncor1": {
+      "accuracy": 0.9245283018867925,
+      "correct": 49,
+      "n": 53
+    },
+    "mutation_nf1": {
+      "accuracy": 0.49056603773584906,
+      "correct": 26,
+      "n": 53
+    },
+    "mutation_pik3ca": {
+      "accuracy": 0.49056603773584906,
+      "correct": 26,
+      "n": 53
+    },
+    "mutation_pten": {
+      "accuracy": 0.660377358490566,
+      "correct": 35,
+      "n": 53
+    },
+    "mutation_rb1": {
+      "accuracy": 0.7358490566037735,
+      "correct": 39,
+      "n": 53
+    },
+    "mutation_runx1": {
+      "accuracy": 0.9433962264150944,
+      "correct": 50,
+      "n": 53
+    },
+    "mutation_tp53": {
+      "accuracy": 0.5283018867924528,
+      "correct": 28,
+      "n": 53
+    },
+    "pathologic_n": {
+      "accuracy": 0.20909090909090908,
+      "correct": 23,
+      "n": 110
+    },
+    "pathologic_stage": {
+      "accuracy": 0.4144144144144144,
+      "correct": 46,
+      "n": 111
+    },
+    "pathologic_t": {
+      "accuracy": 0.12844036697247707,
+      "correct": 14,
+      "n": 109
+    }
+  },
+  "correct": 517,
+  "evaluated_at": "2026-04-23T08:18:37.487423+00:00",
+  "filters": {
+    "allowed_modality_combo": {
+      "enabled": true,
+      "values": [
+        {
+          "dnam": true,
+          "path": true,
+          "rad": false,
+          "rna": true
+        },
+        {
+          "dnam": false,
+          "path": true,
+          "rad": false,
+          "rna": false
+        }
+      ]
+    },
+    "nonempty_enabled_genomics_text": {
+      "enabled": true
+    },
+    "project_ids": {
+      "enabled": true,
+      "values": [
+        "TCGA-BRCA"
+      ]
+    },
+    "question_types": {
+      "enabled": true,
+      "values": [
+        "mcq"
+      ]
+    },
+    "row_limit": {
+      "enabled": false,
+      "max_rows": 20,
+      "sample": true,
+      "sample_seed": 17
+    },
+    "split": {
+      "enabled": true,
+      "value": "test"
+    },
+    "task_categories": {
+      "enabled": false,
+      "values": []
+    },
+    "task_ids": {
+      "enabled": false,
+      "values": [
+        "mutation_tp53",
+        "mutation_pik3ca",
+        "pathologic_stage"
+      ]
+    }
+  },
+  "model": "gpt-5.1",
+  "n": 913,
+  "parse_failed": 0,
+  "predictions_path": "/media/volume/patho_meth/kidney-vlm/output/vqa_eval/gpt_mcq_brca_smoke/predictions.parquet",
+  "vqa_parquet_path": "/media/volume/patho_meth/kidney-vlm/data/vqa/gt_mcq_questions.parquet"
+}

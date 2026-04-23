@@ -1,7 +1,9 @@
 instantiate_model: true
 modality_tag: path
 modality_dir_name: pathology
-model_name_or_path: Qwen/Qwen3.5-9B
+# Previous backbone:
+# model_name_or_path: Qwen/Qwen3.5-9B
+model_name_or_path: google/gemma-4-E4B-it
 trust_remote_code: true
 qa_parquet_path: ${project.root_dir}/data/proj_train/pathology/path_proj_train_qa.parquet
 # UNI2 patch embeddings are 1536-dim after conversion to the CONCH-like H5 layout.
@@ -21,8 +23,8 @@ projector_dropout: 0.1
 allowed_slide_kinds:
   - DX
 batch_size: 1
-num_epochs: 10
-learning_rate: 5e-5
+num_epochs: 16
+learning_rate: 1e-4
 weight_decay: 0.01
 gradient_accumulation_steps: 32
 grad_clip_norm: 1.0
@@ -62,11 +64,10 @@ output_dir: ${project.root_dir}/outputs/projectors
 save_tokenizer_snapshot: false
 wandb:
   enabled: true
-  project: kidney-vlm
-  entity:
-  run_name: path_projector_stage1_qwen3_9b
+  project: oncovlm
+  entity: d0nnw0n9-rensselaer-polytechnic-institute
   mode: online
   tags:
     - path_projector
     - pathology
-    - qwen
+    - gemma
