@@ -95,7 +95,7 @@ def _selected_specs(extra_cfg: DictConfig) -> list[Any]:
     return [EXTRA_GENOMICS_SPEC_BY_KEY[key] for key in requested]
 
 
-def _case_subset_patient_filter(extra_cfg: DictConfig) -> list[str]:
+def _case_subset_patient_filter(extra_cfg: DictConfig) -> tuple[list[str], Path | None]:
     case_subset = str(extra_cfg.get("case_subset", "") or "").strip().lower()
     case_cfg = extra_cfg.get("pathology_cases", {})
 
@@ -105,7 +105,7 @@ def _case_subset_patient_filter(extra_cfg: DictConfig) -> list[str]:
     case_subset = case_subset or "all"
 
     if case_subset == "all":
-        return []
+        return [], None
     if case_subset != "pathology_cases":
         raise ValueError(
             "data.source.extra_genomics.case_subset must be one of "
@@ -117,8 +117,8 @@ def _case_subset_patient_filter(extra_cfg: DictConfig) -> list[str]:
         json_path = ROOT / json_path
     patient_ids = load_patient_ids_from_json(json_path)
     if not patient_ids:
-        raise RuntimeError(f"No patient IDs found in pathology cases JSON: {json_path}")
-    return patient_ids
+        raise RuntimeError(f"No patient IDs found in case subset JSON: {json_path}")
+    return patient_ids, json_path
 
 
 def main() -> None:
@@ -137,11 +137,14 @@ def main() -> None:
     )
 
     project_ids = _resolve_project_ids(tcga_cfg, gdc_client)
-    patient_submitter_ids = _case_subset_patient_filter(extra_cfg)
+    patient_submitter_ids, patient_subset_path = _case_subset_patient_filter(extra_cfg)
     selected_specs = _selected_specs(extra_cfg)
     print(f"[extra-genomics] Projects: {project_ids}")
     if patient_submitter_ids:
-        print(f"[extra-genomics] Case subset: pathology_cases ({len(patient_submitter_ids)} patients)")
+        print(
+            "[extra-genomics] Case subset: "
+            f"{patient_subset_path or 'pathology_cases'} ({len(patient_submitter_ids)} patients)"
+        )
     else:
         print("[extra-genomics] Case subset: all")
     print(f"[extra-genomics] Modalities: {[spec.key for spec in selected_specs]}")

@@ -467,7 +467,7 @@ def _filter_source_frame(frame: pd.DataFrame, source_name: str) -> pd.DataFrame:
     return frame.copy()
 
 
-def _case_subset_patient_filter(text_cfg: Any, *, root_dir: Path = ROOT) -> list[str]:
+def _case_subset_patient_filter(text_cfg: Any, *, root_dir: Path = ROOT) -> tuple[list[str], Path | None]:
     case_subset = str(text_cfg.get("case_subset", "") or "").strip().lower()
     case_cfg = text_cfg.get("pathology_cases", {})
 
@@ -477,7 +477,7 @@ def _case_subset_patient_filter(text_cfg: Any, *, root_dir: Path = ROOT) -> list
     case_subset = case_subset or "all"
 
     if case_subset == "all":
-        return []
+        return [], None
     if case_subset != "pathology_cases":
         raise ValueError(
             "data.source.text_genomics.case_subset must be one of "
@@ -489,8 +489,8 @@ def _case_subset_patient_filter(text_cfg: Any, *, root_dir: Path = ROOT) -> list
         json_path = root_dir / json_path
     patient_ids = load_patient_ids_from_json(json_path)
     if not patient_ids:
-        raise RuntimeError(f"No patient IDs found in pathology cases JSON: {json_path}")
-    return patient_ids
+        raise RuntimeError(f"No patient IDs found in case subset JSON: {json_path}")
+    return patient_ids, json_path
 
 
 def main() -> None:
@@ -507,12 +507,15 @@ def main() -> None:
             "Run scripts/data/01_upsert_tcga_registry_rows.py first."
         )
     source_df = _filter_source_frame(unified_df, source_name)
-    patient_subset_ids = _case_subset_patient_filter(text_cfg)
+    patient_subset_ids, patient_subset_path = _case_subset_patient_filter(text_cfg)
     if patient_subset_ids:
         source_df = source_df[
             source_df["patient_id"].fillna("").astype(str).isin(set(patient_subset_ids))
         ].copy()
-        print(f"[text-genomics] Case subset: pathology_cases ({len(patient_subset_ids)} patients)")
+        print(
+            "[text-genomics] Case subset: "
+            f"{patient_subset_path or 'pathology_cases'} ({len(patient_subset_ids)} patients)"
+        )
     else:
         print("[text-genomics] Case subset: all")
 

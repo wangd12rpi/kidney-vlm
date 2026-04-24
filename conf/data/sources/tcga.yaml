@@ -20,7 +20,7 @@ data:
       case_subset: pathology_cases  # pathology_cases | all
       modalities: []
       pathology_cases:
-        path: pathology_cases.json
+        path: stats/all.json
       registry_update:
         enabled: true
         clear_existing: false
@@ -30,7 +30,7 @@ data:
       extra_genomics_manifest_path:
       output_root:
       pathology_cases:
-        path: pathology_cases.json
+        path: stats/all.json
       skip_cases_without_any_modality: true
       registry_update:
         enabled: true

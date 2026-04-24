@@ -49,3 +49,9 @@ data/external
 external/BulkFormer/checkpoints/*.pt
 external/BulkFormer/data/esm2_feature_concat.pt
 external/BulkFormer/data/*.pt
+
+
+external/Medical-SAM3/checkpoints/
+external/Medical-SAM3/**/*.pt
+external/Medical-SAM3/**/__pycache__/
+external/Medical-SAM3/**/*.pyc
