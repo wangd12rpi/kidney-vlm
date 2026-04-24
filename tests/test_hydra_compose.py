@@ -25,3 +25,20 @@ def test_hydra_compose_root_config() -> None:
     assert str(cfg.vlm_train.name) == "medgemma_hf"
     assert str(cfg.dnam_proj.modality_tag) == "dnam"
     assert str(cfg.rna_proj.modality_tag) == "rna"
+
+
+def test_radiology_projector_cfg_accepts_gemma4_override() -> None:
+    pytest.importorskip("hydra")
+
+    from kidney_vlm.script_config import load_script_cfg
+
+    repo_root = Path(__file__).resolve().parents[1]
+    os.environ["KIDNEY_VLM_ROOT"] = str(repo_root)
+
+    cfg = load_script_cfg(
+        repo_root=repo_root,
+        config_relative_path="02_radiology_proj/03_train_radiology_projectors.yaml",
+        overrides=["radiology_proj.model_name_or_path=google/gemma-4-E4B-it"],
+    )
+
+    assert str(cfg.radiology_proj.model_name_or_path) == "google/gemma-4-E4B-it"
