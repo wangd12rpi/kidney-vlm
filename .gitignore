@@ -44,3 +44,8 @@ data/pathology_png
 data/staging
 external/CpGPT
 data/external
+
+# BulkFormer large model artifacts
+external/BulkFormer/checkpoints/*.pt
+external/BulkFormer/data/esm2_feature_concat.pt
+external/BulkFormer/data/*.pt
