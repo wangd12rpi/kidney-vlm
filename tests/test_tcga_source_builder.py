@@ -4,7 +4,47 @@ from pathlib import Path
 
 import pandas as pd
 
-from kidney_vlm.data.sources.tcga import APIQueryError, TCIAClient, assign_split, build_tcga_registry_rows
+from kidney_vlm.data.sources.tcga import (
+    APIQueryError,
+    GDCClient,
+    TCIAClient,
+    assign_split,
+    build_tcga_registry_rows,
+)
+
+
+def test_gdc_client_fetch_files_accepts_generic_filter_and_string_fields(monkeypatch) -> None:
+    client = GDCClient()
+    calls = []
+
+    def fake_post_hits(endpoint, payload, max_records=None):
+        calls.append((endpoint, payload, max_records))
+        return [{"file_id": "file-1"}]
+
+    monkeypatch.setattr(client, "_post_hits", fake_post_hits)
+
+    rows = client.fetch_files(
+        filters={"op": "=", "content": {"field": "data_type", "value": "Masked Somatic Mutation"}},
+        fields="file_id,file_name",
+        max_files=5,
+        sort="file_id:asc",
+    )
+
+    assert rows == [{"file_id": "file-1"}]
+    assert calls == [
+        (
+            "files",
+            {
+                "fields": "file_id,file_name",
+                "sort": "file_id:asc",
+                "filters": {
+                    "op": "=",
+                    "content": {"field": "data_type", "value": "Masked Somatic Mutation"},
+                },
+            },
+            5,
+        )
+    ]
 
 
 def test_build_tcga_registry_rows_multimodal_lists() -> None:

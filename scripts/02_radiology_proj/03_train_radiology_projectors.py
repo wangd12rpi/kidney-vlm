@@ -319,6 +319,11 @@ def _apply_radiology_projector_training_stage(
         else:
             parameter.requires_grad = False
 
+    # This script only trains the radiology projector. Keep the configurable
+    # prefix rules above, but do not depend on them to find the owned module.
+    for parameter in model.radiology_projectors.parameters():
+        parameter.requires_grad = True
+
 
 def _save_artifacts(
     *,
@@ -529,7 +534,14 @@ def main() -> None:
 
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     if not trainable_parameters:
-        raise RuntimeError("No trainable parameters found for radiology projector stage.")
+        sample_parameter_names = [name for name, _ in list(model.named_parameters())[:20]]
+        raise RuntimeError(
+            "No trainable parameters found for radiology projector stage. "
+            f"projector_prefixes={list(_resolve_prefixes(stage_cfg.get('projector_prefixes', [])))}, "
+            f"always_frozen_prefixes={list(_resolve_prefixes(stage_cfg.get('always_frozen_prefixes', [])))}, "
+            f"sample_parameter_names={sample_parameter_names}"
+        )
+    print(f"Trainable radiology projector parameters: {sum(parameter.numel() for parameter in trainable_parameters):,}")
 
     optimizer = torch.optim.AdamW(
         trainable_parameters,

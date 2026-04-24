@@ -11,6 +11,9 @@
   - `scripts/02_radiology_segmentation/`
   - `scripts/03_dnam_features/`
   - `scripts/03_dnam_proj/`
+  - `scripts/04_rna_features/`
+  - `scripts/04_rna_proj/`
+  - `scripts/05_text_genomics/`
   - `scripts/05_vqa_question_generation/`
   - `scripts/06_vqa_evaluation/`
 
@@ -98,6 +101,18 @@
   - Preserves the unified registry split as the source of truth even if imported caption metadata uses a different split label.
 - `scripts/02_radiology_proj/03_train_radiology_projectors.py`
   - Stage 1: radiology projector training entrypoint that follows the unified registry train/val/test split.
+- `scripts/05_text_genomics/01_download_tcga_extra_genomics.py`
+  - Queries GDC for TCGA extra genomics files such as masked MAFs and gene/segment CNA tables, optionally downloads them, writes a manifest, and updates the unified registry.
+  - Example metadata-only run:
+    - `uv run python scripts/05_text_genomics/01_download_tcga_extra_genomics.py data.source.download.enabled=false`
+- `scripts/05_text_genomics/02_build_genomics_text_blocks.py`
+  - Builds per-case teacher/student genomics blocks from registered DNAm, RNA, mutation, and CNA artifacts. Teacher blocks include encoder-derivable DNAm/RNA summaries; student blocks keep only the discrete text-channel genomics.
+  - Example:
+    - `uv run python scripts/05_text_genomics/02_build_genomics_text_blocks.py`
+- `scripts/05_text_genomics/02_build_llm_input_contexts.py`
+  - Builds per-case clinical plus discrete-genomics text context files from registry MAF/CNA paths; DNAm and RNA remain embedding-backed and are not serialized into this prompt.
+  - Example:
+    - `uv run python scripts/05_text_genomics/02_build_llm_input_contexts.py --require-text-genomics`
 - `scripts/05_vqa_question_generation/generate_gt_mcq.py`
   - Generates procedural ground-truth MCQ rows from `unified.parquet` into the shared VQA schema.
   - Writes `data/vqa/gt_mcq_questions.parquet`; caption-derived questions are generated into a separate file.

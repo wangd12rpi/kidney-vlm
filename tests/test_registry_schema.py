@@ -18,6 +18,11 @@ def test_normalize_fills_core_columns() -> None:
     normalized = normalize_registry_df(frame)
     assert all(column in normalized.columns for column in CORE_COLUMNS)
     validate_registry_df(normalized)
+    assert normalized.at[0, "genomics_cnv_gene_paths"] == []
+    assert normalized.at[0, "genomics_cnv_segment_paths"] == []
+    assert normalized.at[0, "genomics_available_modalities"] == []
+    assert normalized.at[0, "genomics_json_path"] == ""
+    assert normalized.at[0, "genomics_llm_input_text_path"] == ""
 
 
 def test_normalize_recovers_numpy_backed_and_stringified_list_columns() -> None:
@@ -52,3 +57,30 @@ def test_normalize_recovers_numpy_backed_and_stringified_list_columns() -> None:
     assert normalized.at[1, "radiology_image_paths"] == []
     assert normalized.at[1, "radiology_image_modalities"] == ["CT|MR"]
     assert normalized.at[1, "radiology_series_slice_counts"] == [7, 9]
+
+
+def test_normalize_recovers_extra_genomics_optional_columns() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "sample_id": "a",
+                "source": "tcga",
+                "genomics_cnv_gene_paths": "['gene.tsv']",
+                "genomics_cnv_segment_paths": ["segment.tsv"],
+                "genomics_mirna_paths": np.array(["mirna.tsv"], dtype=object),
+                "genomics_available_modalities": "['copy_number_gene', 'mutation_maf']",
+                "genomics_json_path": None,
+            }
+        ]
+    )
+
+    normalized = normalize_registry_df(frame)
+
+    assert normalized.at[0, "genomics_cnv_gene_paths"] == ["gene.tsv"]
+    assert normalized.at[0, "genomics_cnv_segment_paths"] == ["segment.tsv"]
+    assert normalized.at[0, "genomics_mirna_paths"] == ["mirna.tsv"]
+    assert normalized.at[0, "genomics_available_modalities"] == [
+        "copy_number_gene",
+        "mutation_maf",
+    ]
+    assert normalized.at[0, "genomics_json_path"] == ""

@@ -84,11 +84,29 @@ OPTIONAL_LIST_COLUMNS = [
     "genomics_dna_methylation_file_names",
     "genomics_dna_methylation_sample_types",
     "genomics_dna_methylation_workflow_types",
+    "genomics_dna_methylation_sample_submitter_ids",
     "genomics_mutation_paths",
     "genomics_mutation_file_ids",
     "genomics_mutation_file_names",
     "genomics_mutation_sample_types",
     "genomics_mutation_workflow_types",
+    "genomics_mutation_sample_submitter_ids",
+    "genomics_cnv_gene_paths",
+    "genomics_cnv_gene_file_ids",
+    "genomics_cnv_gene_file_names",
+    "genomics_cnv_gene_sample_submitter_ids",
+    "genomics_cnv_gene_workflow_types",
+    "genomics_cnv_segment_paths",
+    "genomics_cnv_segment_file_ids",
+    "genomics_cnv_segment_file_names",
+    "genomics_cnv_segment_sample_submitter_ids",
+    "genomics_cnv_segment_workflow_types",
+    "genomics_mirna_paths",
+    "genomics_mirna_file_ids",
+    "genomics_mirna_file_names",
+    "genomics_mirna_sample_submitter_ids",
+    "genomics_mirna_workflow_types",
+    "genomics_available_modalities",
 ]
 
 OPTIONAL_INT_LIST_COLUMNS = [
@@ -113,6 +131,15 @@ TEXT_COLUMNS = [
     "genomics_hrd_score",
     "genomics_dna_methylation_feature_path",
     "genomics_cnv_feature_path",
+    "genomics_json_path",
+    "genomics_teacher_text_path",
+    "genomics_student_text_path",
+    "genomics_json_errors",
+    "genomics_clinical_text_path",
+    "genomics_gdisc_text_path",
+    "genomics_llm_input_text_path",
+    "genomics_llm_input_json_path",
+    "genomics_llm_input_errors",
     "biomarkers_text",
     "question",
     "answer",
@@ -239,17 +266,31 @@ def ensure_core_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out[ordered]
 
 
+def _ensure_column(out: pd.DataFrame, column: str) -> None:
+    if column in out.columns:
+        return
+    default_value = _default_for_column(column)
+    if isinstance(default_value, list):
+        out[column] = [list(default_value) for _ in range(len(out))]
+    else:
+        out[column] = default_value
+
+
 def normalize_registry_df(df: pd.DataFrame) -> pd.DataFrame:
     out = ensure_core_columns(df)
     for column in LIST_COLUMNS:
+        _ensure_column(out, column)
         out[column] = out[column].map(_normalize_list_value)
     for column in OPTIONAL_LIST_COLUMNS:
+        _ensure_column(out, column)
         if column in out.columns:
             out[column] = out[column].map(_normalize_list_value)
     for column in OPTIONAL_INT_LIST_COLUMNS:
+        _ensure_column(out, column)
         if column in out.columns:
             out[column] = out[column].map(_normalize_int_list_value)
     for column in TEXT_COLUMNS:
+        _ensure_column(out, column)
         out[column] = out[column].fillna("").map(str)
     return out
 

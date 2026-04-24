@@ -330,6 +330,27 @@ class GDCClient:
         }
         return self._post_hits("files", payload, max_records=len(normalized_file_ids))
 
+    def fetch_files(
+        self,
+        *,
+        filters: dict[str, Any] | None = None,
+        fields: str | list[str] | None = None,
+        max_files: int | None = None,
+        sort: str = "file_name:asc",
+    ) -> list[dict[str, Any]]:
+        if isinstance(fields, str):
+            fields_value = fields
+        else:
+            fields_value = ",".join(fields or DEFAULT_PATHOLOGY_FILE_FIELDS)
+
+        payload: dict[str, Any] = {
+            "fields": fields_value,
+            "sort": sort,
+        }
+        if filters:
+            payload["filters"] = filters
+        return self._post_hits("files", payload, max_records=max_files)
+
     def fetch_report_files(
         self,
         *,
@@ -564,27 +585,31 @@ class GDCClient:
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         url = f"{self.base_url.rstrip('/')}/data/{str(file_id).strip()}"
-        response = None
         last_exc: Exception | None = None
+        partial_path = output_path.with_name(f"{output_path.name}.part")
         for attempt in range(1, self.max_retries + 1):
+            response = None
             try:
                 response = requests.get(url, timeout=self.timeout_seconds, stream=True)
                 response.raise_for_status()
+                with partial_path.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            handle.write(chunk)
+                partial_path.replace(output_path)
                 last_exc = None
-                break
+                return output_path
             except requests.RequestException as exc:
                 last_exc = exc
+                if partial_path.exists():
+                    partial_path.unlink()
                 if attempt < self.max_retries:
                     time.sleep(self.retry_backoff_seconds * attempt)
+            finally:
+                if response is not None:
+                    response.close()
 
-        if response is None or last_exc is not None:
-            raise APIQueryError(f"GDC download failed for file_id '{file_id}': {last_exc}") from last_exc
-
-        with output_path.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    handle.write(chunk)
-        return output_path
+        raise APIQueryError(f"GDC download failed for file_id '{file_id}': {last_exc}") from last_exc
 
 
 @dataclass
