@@ -18,6 +18,7 @@ def _row(question_id: int, *, answer: str = "Stage II", question: str = "What is
         "generation_type": "from_ground_truth",
         "task_category": "stage",
         "task_id": "pathologic_stage",
+        "modality_combination_name": "path_only",
         "use_pathology": True,
         "use_radiology": False,
         "use_dnam": False,

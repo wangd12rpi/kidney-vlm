@@ -34,6 +34,16 @@ DEFAULT_SKIP_VALUES = {
     "not available",
 }
 
+MODALITY_MUST_HAVE = "must_have"
+MODALITY_USE_IF_AVAIL = "use_if_avail"
+MODALITY_NOT_INCLUDE = "not_include"
+MODALITY_REQUIREMENTS = {
+    MODALITY_MUST_HAVE,
+    MODALITY_USE_IF_AVAIL,
+    MODALITY_NOT_INCLUDE,
+}
+MODALITY_KEYS = ("pathology", "radiology", "dnam", "rna")
+
 TCGA_PATIENT_BARCODE_PATTERN = re.compile(
     r"^TCGA-[A-Z0-9]{2}-[A-Z0-9]{4}$", re.IGNORECASE
 )
@@ -213,26 +223,85 @@ def _first_parent_dir(row: Mapping[str, Any], column: str) -> str:
     return Path(path_value).parent.as_posix()
 
 
-def _modality_variants(
-    global_cfg: Mapping[str, Any], task_cfg: Mapping[str, Any]
-) -> list[dict[str, bool]]:
-    raw_variants = _config_list(task_cfg, "modality_variants") or _config_list(
-        global_cfg, "default_modality_variants"
+def _normalize_modality_requirement(value: Any, *, key: str) -> str:
+    text = str(value).strip()
+    if text in MODALITY_REQUIREMENTS:
+        return text
+    raise ValueError(
+        f"Unsupported modality requirement for {key}: {value!r}. "
+        f"Expected one of: {sorted(MODALITY_REQUIREMENTS)}."
     )
-    variants: list[dict[str, bool]] = []
-    for raw_variant in raw_variants:
-        variant = dict(raw_variant or {})
-        variants.append(
+
+
+def _resolve_modality_combinations(
+    global_cfg: Mapping[str, Any], task_cfg: Mapping[str, Any]
+) -> list[dict[str, str]]:
+    raw_combinations = _config_list(
+        task_cfg, "modality_combination_overrides"
+    ) or _config_list(
+        global_cfg,
+        "default_modality_combinations",
+    )
+    combinations: list[dict[str, str]] = []
+    for raw_combination in raw_combinations:
+        combination = dict(raw_combination or {})
+        name = _clean_text(combination.get("name"))
+        if not name:
+            raise ValueError("Each modality combination must define a non-empty name.")
+        normalized_combination = {"name": name}
+        normalized_combination.update(
             {
-                "use_pathology": bool(variant.get("use_pathology", False)),
-                "use_radiology": bool(variant.get("use_radiology", False)),
-                "use_dnam": bool(variant.get("use_dnam", False)),
-                "use_rna": bool(variant.get("use_rna", False)),
+                key: _normalize_modality_requirement(
+                    combination.get(f"use_{key}"), key=key
+                )
+                for key in MODALITY_KEYS
             }
         )
-    if not variants:
-        raise ValueError("At least one modality variant must be configured.")
-    return variants
+        combinations.append(normalized_combination)
+    if not combinations:
+        raise ValueError("At least one modality combination must be configured.")
+    names = [combination["name"] for combination in combinations]
+    if len(names) != len(set(names)):
+        raise ValueError(f"Modality combination names must be unique: {names}")
+    return combinations
+
+
+def _candidate_variant_for_combination(combination: Mapping[str, str]) -> dict[str, bool]:
+    return {
+        f"use_{key}": str(combination.get(key, MODALITY_NOT_INCLUDE))
+        != MODALITY_NOT_INCLUDE
+        for key in MODALITY_KEYS
+    }
+
+
+def _paths_present(paths: Mapping[str, object], key: str) -> bool:
+    value = (
+        paths[f"{key}_feature_paths"]
+        if key in {"pathology", "radiology"}
+        else paths[f"{key}_feature_path"]
+    )
+    return bool(value)
+
+
+def _effective_variant_for_combination(
+    *,
+    combination: Mapping[str, str],
+    paths: Mapping[str, object],
+) -> dict[str, bool] | None:
+    variant: dict[str, bool] = {}
+    for key in MODALITY_KEYS:
+        requirement = str(combination.get(key, MODALITY_NOT_INCLUDE))
+        present = _paths_present(paths, key)
+        if requirement == MODALITY_NOT_INCLUDE:
+            variant[f"use_{key}"] = False
+            continue
+        if requirement == MODALITY_MUST_HAVE and not present:
+            return None
+        variant[f"use_{key}"] = present
+
+    if not any(variant.values()):
+        return None
+    return variant
 
 
 def _feature_paths_for_variant(
@@ -264,17 +333,6 @@ def _feature_paths_for_variant(
             else ""
         ),
     }
-
-
-def _enabled_feature_paths_are_present(
-    paths: Mapping[str, object], variant: Mapping[str, bool]
-) -> bool:
-    return (
-        (not variant["use_pathology"] or bool(paths["pathology_feature_paths"]))
-        and (not variant["use_radiology"] or bool(paths["radiology_feature_paths"]))
-        and (not variant["use_dnam"] or bool(paths["dnam_feature_path"]))
-        and (not variant["use_rna"] or bool(paths["rna_feature_path"]))
-    )
 
 
 def _artifact_paths_for_variant(
@@ -396,14 +454,19 @@ def _build_vqa_rows_for_semantic_question(
         return []
 
     base_question_id = stable_int_id("base_question", *base_id_seed_parts)
-    require_features = bool(global_cfg.get("require_enabled_modality_features", False))
     output_rows: list[dict[str, Any]] = []
-    for variant in _modality_variants(global_cfg, task_cfg):
-        feature_paths = _feature_paths_for_variant(row, variant)
-        if require_features and not _enabled_feature_paths_are_present(
-            feature_paths, variant
-        ):
+    seen_question_ids: set[int] = set()
+    for combination in _resolve_modality_combinations(global_cfg, task_cfg):
+        combination_name = combination["name"]
+        candidate_variant = _candidate_variant_for_combination(combination)
+        candidate_feature_paths = _feature_paths_for_variant(row, candidate_variant)
+        variant = _effective_variant_for_combination(
+            combination=combination,
+            paths=candidate_feature_paths,
+        )
+        if variant is None:
             continue
+        feature_paths = _feature_paths_for_variant(row, variant)
         artifacts = _artifact_paths_for_variant(row, variant, global_cfg)
         if not _required_test_artifacts_are_present(
             row=row,
@@ -416,11 +479,15 @@ def _build_vqa_rows_for_semantic_question(
         question_id = stable_int_id(
             "question",
             base_question_id,
+            combination_name,
             variant["use_pathology"],
             variant["use_radiology"],
             variant["use_dnam"],
             variant["use_rna"],
         )
+        if question_id in seen_question_ids:
+            continue
+        seen_question_ids.add(question_id)
         output_rows.append(
             {
                 "case_id": case_id,
@@ -432,6 +499,7 @@ def _build_vqa_rows_for_semantic_question(
                 "generation_type": "from_ground_truth",
                 "task_category": str(task_cfg.get("task_category", "")).strip(),
                 "task_id": str(task_cfg.get("task_id", "")).strip(),
+                "modality_combination_name": combination_name,
                 "use_pathology": variant["use_pathology"],
                 "use_radiology": variant["use_radiology"],
                 "use_dnam": variant["use_dnam"],

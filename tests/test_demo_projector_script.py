@@ -90,12 +90,30 @@ def test_resolve_feature_path_supports_dnam_parquet_mapping(tmp_path: Path) -> N
     assert resolved == feature_path.resolve()
 
 
+def test_resolve_feature_path_supports_rna_parquet_mapping(tmp_path: Path) -> None:
+    module = _load_script_module()
+
+    feature_path = tmp_path / "data" / "features" / "features_bulkformer_rna" / "case-a.pt"
+    feature_path.parent.mkdir(parents=True)
+    torch.save({"embedding": torch.randn(1, 515)}, feature_path)
+
+    resolved = module._resolve_feature_path(
+        module.OmegaConf.create({}),
+        "rna",
+        module.OmegaConf.create({"feature_path_field": "genomics_rna_bulk_feature_path"}),
+        "case-a",
+        feature_paths_by_sample_key={"case-a": str(feature_path)},
+    )
+
+    assert resolved == feature_path.resolve()
+
+
 def test_build_chat_prompt_input_ids_uses_fixed_demo_prompt() -> None:
     module = _load_script_module()
 
     class DummyTokenizer:
         def apply_chat_template(self, messages, **kwargs):
-            assert messages == [{"role": "user", "content": "what is this. caption: "}]
+            assert messages == [{"role": "user", "content": "what is this?"}]
             assert kwargs["tokenize"] is True
             assert kwargs["add_generation_prompt"] is True
             assert kwargs["enable_thinking"] is False

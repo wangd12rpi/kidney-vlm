@@ -34,7 +34,6 @@ def test_build_ground_truth_mcq_frame_creates_paired_modality_rows() -> None:
     )
     cfg = {
         "choice_count": 4,
-        "require_enabled_modality_features": True,
         "categorical_tasks": [
             {
                 "task_category": "stage",
@@ -43,24 +42,27 @@ def test_build_ground_truth_mcq_frame_creates_paired_modality_rows() -> None:
                 "ground_truth_source": "task_stage_label",
                 "question_template": "What is the AJCC pathologic stage for this case?",
                 "options": ["Stage I", "Stage II", "Stage III", "Stage IV"],
-                "modality_variants": [
+                "modality_combination_overrides": [
                     {
-                        "use_pathology": True,
-                        "use_radiology": False,
-                        "use_dnam": False,
-                        "use_rna": False,
+                        "name": "path_only",
+                        "use_pathology": "must_have",
+                        "use_radiology": "not_include",
+                        "use_dnam": "not_include",
+                        "use_rna": "not_include",
                     },
                     {
-                        "use_pathology": True,
-                        "use_radiology": False,
-                        "use_dnam": True,
-                        "use_rna": True,
+                        "name": "path_dnam_rna",
+                        "use_pathology": "must_have",
+                        "use_radiology": "not_include",
+                        "use_dnam": "must_have",
+                        "use_rna": "must_have",
                     },
                     {
-                        "use_pathology": False,
-                        "use_radiology": True,
-                        "use_dnam": False,
-                        "use_rna": False,
+                        "name": "radiology_only",
+                        "use_pathology": "not_include",
+                        "use_radiology": "must_have",
+                        "use_dnam": "not_include",
+                        "use_rna": "not_include",
                     },
                 ],
             }
@@ -118,6 +120,165 @@ def test_build_ground_truth_mcq_frame_creates_paired_modality_rows() -> None:
         ]
 
 
+def test_build_ground_truth_mcq_frame_applies_modality_requirement_states() -> None:
+    registry = pd.DataFrame(
+        [
+            {
+                "sample_id": "TCGA-AA-0001",
+                "project_id": "TCGA-TEST",
+                "split": "train",
+                "task_stage_label": "Stage I",
+                "pathology_tile_embedding_paths": ["features/path-a.h5"],
+            },
+            {
+                "sample_id": "TCGA-AA-0002",
+                "project_id": "TCGA-TEST",
+                "split": "train",
+                "task_stage_label": "Stage II",
+                "pathology_tile_embedding_paths": ["features/path-b.h5"],
+                "radiology_embedding_paths": ["features/rad-b.h5"],
+            },
+            {
+                "sample_id": "TCGA-AA-0003",
+                "project_id": "TCGA-TEST",
+                "split": "train",
+                "task_stage_label": "Stage III",
+                "radiology_embedding_paths": ["features/rad-c.h5"],
+            },
+        ]
+    )
+    cfg = {
+        "categorical_tasks": [
+            {
+                "task_category": "stage",
+                "task_id": "pathologic_stage",
+                "source_column": "task_stage_label",
+                "question_template": "What is the AJCC pathologic stage for this case?",
+                "options": ["Stage I", "Stage II", "Stage III", "Stage IV"],
+                "modality_combination_overrides": [
+                    {
+                        "name": "path_rad_if_available",
+                        "use_pathology": "must_have",
+                        "use_radiology": "use_if_avail",
+                        "use_dnam": "not_include",
+                        "use_rna": "not_include",
+                    },
+                    {
+                        "name": "radiology_only",
+                        "use_pathology": "not_include",
+                        "use_radiology": "must_have",
+                        "use_dnam": "not_include",
+                        "use_rna": "not_include",
+                    },
+                    {
+                        "name": "any_available",
+                        "use_pathology": "use_if_avail",
+                        "use_radiology": "use_if_avail",
+                        "use_dnam": "not_include",
+                        "use_rna": "not_include",
+                    },
+                ],
+            }
+        ],
+        "boolean_tasks": [],
+    }
+
+    frame, _ = build_ground_truth_mcq_frame(registry, cfg)
+
+    assert sorted(
+        zip(
+            frame["case_id"],
+            frame["modality_combination_name"],
+            frame["use_pathology"],
+            frame["use_radiology"],
+        )
+    ) == [
+        ("TCGA-AA-0001", "any_available", True, False),
+        ("TCGA-AA-0001", "path_rad_if_available", True, False),
+        ("TCGA-AA-0002", "any_available", True, True),
+        ("TCGA-AA-0002", "path_rad_if_available", True, True),
+        ("TCGA-AA-0002", "radiology_only", False, True),
+        ("TCGA-AA-0003", "any_available", False, True),
+        ("TCGA-AA-0003", "radiology_only", False, True),
+    ]
+    assert frame["question_id"].is_unique
+
+
+def test_build_ground_truth_mcq_frame_requires_modality_combination_names() -> None:
+    registry = pd.DataFrame(
+        [
+            {
+                "sample_id": "TCGA-AA-0001",
+                "project_id": "TCGA-TEST",
+                "split": "train",
+                "task_stage_label": "Stage I",
+                "pathology_tile_embedding_paths": ["features/path-a.h5"],
+            }
+        ]
+    )
+    cfg = {
+        "default_modality_combinations": [
+            {
+                "use_pathology": "must_have",
+                "use_radiology": "not_include",
+                "use_dnam": "not_include",
+                "use_rna": "not_include",
+            }
+        ],
+        "categorical_tasks": [
+            {
+                "task_category": "stage",
+                "task_id": "pathologic_stage",
+                "source_column": "task_stage_label",
+                "question_template": "What is the AJCC pathologic stage for this case?",
+                "options": ["Stage I", "Stage II", "Stage III", "Stage IV"],
+            }
+        ],
+        "boolean_tasks": [],
+    }
+
+    with pytest.raises(ValueError, match="must define a non-empty name"):
+        build_ground_truth_mcq_frame(registry, cfg)
+
+
+def test_build_ground_truth_mcq_frame_rejects_legacy_modality_booleans() -> None:
+    registry = pd.DataFrame(
+        [
+            {
+                "sample_id": "TCGA-AA-0001",
+                "project_id": "TCGA-TEST",
+                "split": "train",
+                "task_stage_label": "Stage I",
+                "pathology_tile_embedding_paths": ["features/path-a.h5"],
+            }
+        ]
+    )
+    cfg = {
+        "default_modality_combinations": [
+            {
+                "name": "legacy_bool",
+                "use_pathology": True,
+                "use_radiology": False,
+                "use_dnam": False,
+                "use_rna": False,
+            }
+        ],
+        "categorical_tasks": [
+            {
+                "task_category": "stage",
+                "task_id": "pathologic_stage",
+                "source_column": "task_stage_label",
+                "question_template": "What is the AJCC pathologic stage for this case?",
+                "options": ["Stage I", "Stage II", "Stage III", "Stage IV"],
+            }
+        ],
+        "boolean_tasks": [],
+    }
+
+    with pytest.raises(ValueError, match="Unsupported modality requirement"):
+        build_ground_truth_mcq_frame(registry, cfg)
+
+
 def test_build_ground_truth_mcq_frame_supports_binary_mutation_tasks() -> None:
     registry = pd.DataFrame(
         [
@@ -126,24 +287,28 @@ def test_build_ground_truth_mcq_frame_supports_binary_mutation_tasks() -> None:
                 "project_id": "TCGA-TEST",
                 "split": "train",
                 "mutation_tp53": True,
+                "genomics_dna_methylation_feature_path": "features/dnam-a.pt",
+                "genomics_rna_bulk_feature_path": "features/rna-a.pt",
             },
             {
                 "sample_id": "TCGA-AA-0002",
                 "project_id": "TCGA-TEST",
                 "split": "train",
                 "mutation_tp53": False,
+                "genomics_dna_methylation_feature_path": "features/dnam-b.pt",
+                "genomics_rna_bulk_feature_path": "features/rna-b.pt",
             },
         ]
     )
     cfg = {
         "choice_count": 4,
-        "require_enabled_modality_features": False,
-        "default_modality_variants": [
+        "default_modality_combinations": [
             {
-                "use_pathology": False,
-                "use_radiology": False,
-                "use_dnam": True,
-                "use_rna": True,
+                "name": "dnam_rna",
+                "use_pathology": "not_include",
+                "use_radiology": "not_include",
+                "use_dnam": "must_have",
+                "use_rna": "must_have",
             }
         ],
         "categorical_tasks": [],
@@ -181,12 +346,14 @@ def test_build_ground_truth_mcq_frame_merges_and_skips_categorical_answers() -> 
                 "project_id": "TCGA-TEST",
                 "split": "train",
                 "task_stage_label": "Stage IA",
+                "genomics_dna_methylation_feature_path": "features/dnam-a.pt",
             },
             {
                 "sample_id": "TCGA-AA-0002",
                 "project_id": "TCGA-TEST",
                 "split": "train",
                 "task_stage_label": "Stage IVB",
+                "genomics_dna_methylation_feature_path": "features/dnam-b.pt",
             },
             {
                 "sample_id": "TCGA-AA-0003",
@@ -203,12 +370,13 @@ def test_build_ground_truth_mcq_frame_merges_and_skips_categorical_answers() -> 
         ]
     )
     cfg = {
-        "default_modality_variants": [
+        "default_modality_combinations": [
             {
-                "use_pathology": False,
-                "use_radiology": False,
-                "use_dnam": True,
-                "use_rna": True,
+                "name": "dnam_rna_if_available",
+                "use_pathology": "not_include",
+                "use_radiology": "not_include",
+                "use_dnam": "use_if_avail",
+                "use_rna": "use_if_avail",
             }
         ],
         "categorical_tasks": [
@@ -259,18 +427,27 @@ def test_build_ground_truth_mcq_frame_applies_minimum_before_modality_expansion(
                 "project_id": "TCGA-KEEP",
                 "split": "train",
                 "task_stage_label": "Stage I",
+                "pathology_tile_embedding_paths": ["features/path-keep-a.h5"],
+                "genomics_dna_methylation_feature_path": "features/dnam-keep-a.pt",
+                "genomics_rna_bulk_feature_path": "features/rna-keep-a.pt",
             },
             {
                 "sample_id": "TCGA-BB-0002",
                 "project_id": "TCGA-KEEP",
                 "split": "train",
                 "task_stage_label": "Stage II",
+                "pathology_tile_embedding_paths": ["features/path-keep-b.h5"],
+                "genomics_dna_methylation_feature_path": "features/dnam-keep-b.pt",
+                "genomics_rna_bulk_feature_path": "features/rna-keep-b.pt",
             },
             {
                 "sample_id": "TCGA-BB-0003",
                 "project_id": "TCGA-KEEP",
                 "split": "train",
                 "task_stage_label": "Stage III",
+                "pathology_tile_embedding_paths": ["features/path-keep-c.h5"],
+                "genomics_dna_methylation_feature_path": "features/dnam-keep-c.pt",
+                "genomics_rna_bulk_feature_path": "features/rna-keep-c.pt",
             },
         ]
     )
@@ -283,18 +460,20 @@ def test_build_ground_truth_mcq_frame_applies_minimum_before_modality_expansion(
                 "source_column": "task_stage_label",
                 "question_template": "What is the AJCC pathologic stage for this case?",
                 "options": ["Stage I", "Stage II", "Stage III", "Stage IV"],
-                "modality_variants": [
+                "modality_combination_overrides": [
                     {
-                        "use_pathology": True,
-                        "use_radiology": False,
-                        "use_dnam": False,
-                        "use_rna": False,
+                        "name": "path_only",
+                        "use_pathology": "must_have",
+                        "use_radiology": "not_include",
+                        "use_dnam": "not_include",
+                        "use_rna": "not_include",
                     },
                     {
-                        "use_pathology": True,
-                        "use_radiology": False,
-                        "use_dnam": True,
-                        "use_rna": True,
+                        "name": "path_genomics_if_available",
+                        "use_pathology": "must_have",
+                        "use_radiology": "not_include",
+                        "use_dnam": "use_if_avail",
+                        "use_rna": "use_if_avail",
                     },
                 ],
             }
@@ -338,7 +517,6 @@ def test_build_ground_truth_mcq_frame_can_require_test_pathology_roi_only_for_te
         ]
     )
     cfg = {
-        "require_enabled_modality_features": True,
         "require_test_pathology_roi_png_dir": True,
         "categorical_tasks": [
             {
@@ -347,18 +525,20 @@ def test_build_ground_truth_mcq_frame_can_require_test_pathology_roi_only_for_te
                 "source_column": "task_stage_label",
                 "question_template": "What is the AJCC pathologic stage for this case?",
                 "options": ["Stage I", "Stage II", "Stage III", "Stage IV"],
-                "modality_variants": [
+                "modality_combination_overrides": [
                     {
-                        "use_pathology": True,
-                        "use_radiology": False,
-                        "use_dnam": False,
-                        "use_rna": False,
+                        "name": "path_only",
+                        "use_pathology": "must_have",
+                        "use_radiology": "not_include",
+                        "use_dnam": "not_include",
+                        "use_rna": "not_include",
                     },
                     {
-                        "use_pathology": False,
-                        "use_radiology": False,
-                        "use_dnam": True,
-                        "use_rna": True,
+                        "name": "dnam_rna",
+                        "use_pathology": "not_include",
+                        "use_radiology": "not_include",
+                        "use_dnam": "must_have",
+                        "use_rna": "must_have",
                     },
                 ],
             }
@@ -444,15 +624,15 @@ def test_build_ground_truth_mcq_frame_populates_test_genomics_text_from_raw_file
         ]
     )
     cfg = {
-        "require_enabled_modality_features": True,
         "populate_test_genomics_text_summaries": True,
         "require_test_genomics_text_summaries": True,
-        "default_modality_variants": [
+        "default_modality_combinations": [
             {
-                "use_pathology": False,
-                "use_radiology": False,
-                "use_dnam": True,
-                "use_rna": True,
+                "name": "dnam_rna",
+                "use_pathology": "not_include",
+                "use_radiology": "not_include",
+                "use_dnam": "must_have",
+                "use_rna": "must_have",
             }
         ],
         "categorical_tasks": [
@@ -497,15 +677,15 @@ def test_build_ground_truth_mcq_frame_can_skip_test_genomics_text_summaries(
         ]
     )
     cfg = {
-        "require_enabled_modality_features": True,
         "populate_test_genomics_text_summaries": False,
         "require_test_genomics_text_summaries": True,
-        "default_modality_variants": [
+        "default_modality_combinations": [
             {
-                "use_pathology": False,
-                "use_radiology": False,
-                "use_dnam": True,
-                "use_rna": False,
+                "name": "dnam_only",
+                "use_pathology": "not_include",
+                "use_radiology": "not_include",
+                "use_dnam": "must_have",
+                "use_rna": "not_include",
             }
         ],
         "categorical_tasks": [
@@ -563,6 +743,8 @@ def test_build_ground_truth_mcq_frame_uses_project_specific_gene_panels() -> Non
                 "split": "train",
                 "mutation_tp53": True,
                 "mutation_hla-b": True,
+                "genomics_dna_methylation_feature_path": "features/dnam-a.pt",
+                "genomics_rna_bulk_feature_path": "features/rna-a.pt",
             },
             {
                 "sample_id": "TCGA-AA-0002",
@@ -570,6 +752,8 @@ def test_build_ground_truth_mcq_frame_uses_project_specific_gene_panels() -> Non
                 "split": "train",
                 "mutation_tp53": False,
                 "mutation_hla-b": True,
+                "genomics_dna_methylation_feature_path": "features/dnam-b.pt",
+                "genomics_rna_bulk_feature_path": "features/rna-b.pt",
             },
             {
                 "sample_id": "TCGA-BB-0001",
@@ -577,6 +761,8 @@ def test_build_ground_truth_mcq_frame_uses_project_specific_gene_panels() -> Non
                 "split": "train",
                 "mutation_tp53": True,
                 "mutation_hla-b": True,
+                "genomics_dna_methylation_feature_path": "features/dnam-c.pt",
+                "genomics_rna_bulk_feature_path": "features/rna-c.pt",
             },
             {
                 "sample_id": "TCGA-BB-0002",
@@ -584,16 +770,19 @@ def test_build_ground_truth_mcq_frame_uses_project_specific_gene_panels() -> Non
                 "split": "train",
                 "mutation_tp53": True,
                 "mutation_hla-b": False,
+                "genomics_dna_methylation_feature_path": "features/dnam-d.pt",
+                "genomics_rna_bulk_feature_path": "features/rna-d.pt",
             },
         ]
     )
     cfg = {
-        "default_modality_variants": [
+        "default_modality_combinations": [
             {
-                "use_pathology": False,
-                "use_radiology": False,
-                "use_dnam": True,
-                "use_rna": True,
+                "name": "dnam_rna",
+                "use_pathology": "not_include",
+                "use_radiology": "not_include",
+                "use_dnam": "must_have",
+                "use_rna": "must_have",
             }
         ],
         "categorical_tasks": [],
@@ -685,16 +874,19 @@ def test_build_ground_truth_mcq_frame_does_not_downsample_val_or_test_mutation_f
                     "project_id": "TCGA-ONE",
                     "split": split,
                     "mutation_tp53": index < positives,
+                    "genomics_dna_methylation_feature_path": f"features/dnam-{len(records)}.pt",
+                    "genomics_rna_bulk_feature_path": f"features/rna-{len(records)}.pt",
                 }
             )
     registry = pd.DataFrame(records)
     cfg = {
-        "default_modality_variants": [
+        "default_modality_combinations": [
             {
-                "use_pathology": False,
-                "use_radiology": False,
-                "use_dnam": True,
-                "use_rna": True,
+                "name": "dnam_rna",
+                "use_pathology": "not_include",
+                "use_radiology": "not_include",
+                "use_dnam": "must_have",
+                "use_rna": "must_have",
             }
         ],
         "categorical_tasks": [],
