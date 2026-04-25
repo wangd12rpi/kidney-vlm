@@ -118,3 +118,28 @@ def test_run_artifacts_are_saved_inside_timestamped_run_dir() -> None:
         assert metadata["config_path"] == (run_output_dir / "config.yaml").resolve().relative_to(repo_root).as_posix()
     finally:
         shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def test_radiology_projector_training_stage_uses_configured_prefixes() -> None:
+    import torch
+
+    module = _load_script_module()
+
+    class DummyModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.language_model = torch.nn.Linear(4, 4)
+            self.radiology_projectors = torch.nn.ModuleDict({"radiology": torch.nn.Linear(4, 4)})
+            self.pathology_adapter = torch.nn.Linear(4, 4)
+
+    model = DummyModel()
+    module._apply_radiology_projector_training_stage(
+        model,
+        always_frozen_prefixes=["pathology", "radiology", "segmentation"],
+        projector_prefixes=["projector", "projectors"],
+    )
+
+    trainable_names = {name for name, parameter in model.named_parameters() if parameter.requires_grad}
+    assert trainable_names
+    assert all(name.startswith("radiology_projectors.") for name in trainable_names)
+    assert all(not parameter.requires_grad for _, parameter in model.language_model.named_parameters())

@@ -24,7 +24,7 @@ This repository provides a clean starting point for kidney multimodal research w
 - Use the split already stored in `unified.parquet` as the source of truth; do not create a second train/val/test split inside projector scripts.
 - Normalize external supervision corpora (for example PMC-OA radiology captions) into a proper source slice plus projector parquet artifacts before training; do not wire raw JSONL files directly into trainer scripts.
 - Projector checkpoints should be written under:
-  `outputs/projectors/<llm>/<modality>/<run>/`
+  `output/projectors/<llm>/<modality>/<run>/`
 
 ## Script Naming Convention
 - Runnable scripts always use a leading verb (`build`, `extract`, `run`, `train`).

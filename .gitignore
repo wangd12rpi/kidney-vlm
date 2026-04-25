@@ -11,7 +11,7 @@ data/raw/
 data/cache/
 data/tmp/
 data/registry/manifests/*.json
-outputs/
+output/
 *.parquet
 
 # IDE
@@ -44,3 +44,14 @@ data/pathology_png
 data/staging
 external/CpGPT
 data/external
+
+# BulkFormer large model artifacts
+external/BulkFormer/checkpoints/*.pt
+external/BulkFormer/data/esm2_feature_concat.pt
+external/BulkFormer/data/*.pt
+
+
+external/Medical-SAM3/checkpoints/
+external/Medical-SAM3/**/*.pt
+external/Medical-SAM3/**/__pycache__/
+external/Medical-SAM3/**/*.pyc

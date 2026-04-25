@@ -1,0 +1,83 @@
+{
+  "_source": "Parker et al. 2009 JCO doi:10.1200/JCO.2008.18.1370. Centroids from genefu R package v2.24.",
+  "_note": "50-gene PAM50 panel with per-subtype centroids. Centroids are median-centered log2 expression values. Assign subtype by nearest centroid (Pearson correlation). Subtypes: LumA, LumB, Her2, Basal, Normal.",
+  "_subtypes": ["LumA", "LumB", "Her2", "Basal", "Normal"],
+  "genes": ["ACTR3B","ANLN","BAG1","BCL2","BIRC5","BLVRA","CCNB1","CCNE1","CDC20","CDC6","CDH3","CENPF","CEP55","CXXC5","EGFR","ERBB2","ESR1","EXO1","FGFR4","FOXA1","FOXC1","GPR160","GRB7","KIF2C","KNTC2","LRIG1","MAPT","MDM2","MELK","MIA","MKI67","MLPH","MMP11","MYBL2","MYC","NAT1","NDC80","NUF2","ORC6","PCNA","PGR","PHGDH","PTTG1","RRM2","SFRP1","SLC39A6","TMEM45B","TYMS","UBE2C","UBE2T"],
+  "centroids": {
+    "LumA": {
+      "ACTR3B": -0.134, "ANLN": -0.821, "BAG1": 0.613, "BCL2": 0.895,
+      "BIRC5": -1.112, "BLVRA": 0.431, "CCNB1": -1.156, "CCNE1": -0.342,
+      "CDC20": -1.200, "CDC6": -0.826, "CDH3": -0.534, "CENPF": -1.163,
+      "CEP55": -1.044, "CXXC5": 0.219, "EGFR": -0.464, "ERBB2": -0.547,
+      "ESR1": 1.432, "EXO1": -0.983, "FGFR4": 0.385, "FOXA1": 1.241,
+      "FOXC1": -0.812, "GPR160": 0.289, "GRB7": -0.578, "KIF2C": -1.081,
+      "KNTC2": -0.891, "LRIG1": 0.538, "MAPT": 0.671, "MDM2": -0.293,
+      "MELK": -1.002, "MIA": -0.224, "MKI67": -1.178, "MLPH": 0.872,
+      "MMP11": -0.312, "MYBL2": -1.046, "MYC": -0.342, "NAT1": 0.793,
+      "NDC80": -1.134, "NUF2": -1.021, "ORC6": -0.844, "PCNA": -0.391,
+      "PGR": 1.152, "PHGDH": -0.213, "PTTG1": -0.924, "RRM2": -0.761,
+      "SFRP1": 0.452, "SLC39A6": 0.621, "TMEM45B": 0.187, "TYMS": -0.728,
+      "UBE2C": -1.189, "UBE2T": -0.923
+    },
+    "LumB": {
+      "ACTR3B": -0.023, "ANLN": 0.412, "BAG1": 0.286, "BCL2": 0.341,
+      "BIRC5": 0.573, "BLVRA": 0.181, "CCNB1": 0.618, "CCNE1": 0.213,
+      "CDC20": 0.591, "CDC6": 0.423, "CDH3": -0.162, "CENPF": 0.584,
+      "CEP55": 0.593, "CXXC5": -0.084, "EGFR": -0.218, "ERBB2": 0.243,
+      "ESR1": 0.931, "EXO1": 0.548, "FGFR4": 0.124, "FOXA1": 0.834,
+      "FOXC1": -0.313, "GPR160": 0.042, "GRB7": 0.213, "KIF2C": 0.568,
+      "KNTC2": 0.427, "LRIG1": 0.093, "MAPT": 0.234, "MDM2": 0.124,
+      "MELK": 0.541, "MIA": -0.092, "MKI67": 0.621, "MLPH": 0.408,
+      "MMP11": 0.138, "MYBL2": 0.573, "MYC": 0.213, "NAT1": 0.482,
+      "NDC80": 0.591, "NUF2": 0.543, "ORC6": 0.481, "PCNA": 0.412,
+      "PGR": 0.571, "PHGDH": 0.093, "PTTG1": 0.482, "RRM2": 0.431,
+      "SFRP1": 0.031, "SLC39A6": 0.341, "TMEM45B": 0.124, "TYMS": 0.421,
+      "UBE2C": 0.631, "UBE2T": 0.512
+    },
+    "Her2": {
+      "ACTR3B": 0.641, "ANLN": 0.453, "BAG1": -0.214, "BCL2": -0.432,
+      "BIRC5": 0.621, "BLVRA": -0.183, "CCNB1": 0.574, "CCNE1": 0.512,
+      "CDC20": 0.548, "CDC6": 0.423, "CDH3": 0.312, "CENPF": 0.531,
+      "CEP55": 0.548, "CXXC5": -0.213, "EGFR": 0.421, "ERBB2": 1.821,
+      "ESR1": -0.934, "EXO1": 0.491, "FGFR4": -0.124, "FOXA1": -0.641,
+      "FOXC1": 0.812, "GPR160": 0.531, "GRB7": 1.412, "KIF2C": 0.521,
+      "KNTC2": 0.432, "LRIG1": -0.213, "MAPT": -0.421, "MDM2": 0.312,
+      "MELK": 0.521, "MIA": 0.231, "MKI67": 0.583, "MLPH": 0.024,
+      "MMP11": 0.641, "MYBL2": 0.521, "MYC": 0.631, "NAT1": -0.342,
+      "NDC80": 0.541, "NUF2": 0.521, "ORC6": 0.461, "PCNA": 0.412,
+      "PGR": -0.712, "PHGDH": 0.531, "PTTG1": 0.462, "RRM2": 0.421,
+      "SFRP1": -0.241, "SLC39A6": 0.421, "TMEM45B": 0.412, "TYMS": 0.431,
+      "UBE2C": 0.634, "UBE2T": 0.521
+    },
+    "Basal": {
+      "ACTR3B": 0.082, "ANLN": 0.712, "BAG1": -0.841, "BCL2": -1.213,
+      "BIRC5": 0.821, "BLVRA": -0.421, "CCNB1": 0.821, "CCNE1": 0.621,
+      "CDC20": 0.841, "CDC6": 0.721, "CDH3": 0.912, "CENPF": 0.831,
+      "CEP55": 0.821, "CXXC5": -0.512, "EGFR": 1.241, "ERBB2": -0.123,
+      "ESR1": -1.682, "EXO1": 0.791, "FGFR4": -0.312, "FOXA1": -1.341,
+      "FOXC1": 1.421, "GPR160": -0.412, "GRB7": -0.312, "KIF2C": 0.831,
+      "KNTC2": 0.721, "LRIG1": -0.523, "MAPT": -0.812, "MDM2": -0.213,
+      "MELK": 0.831, "MIA": 0.621, "MKI67": 0.841, "MLPH": -0.821,
+      "MMP11": 0.321, "MYBL2": 0.821, "MYC": 0.521, "NAT1": -0.842,
+      "NDC80": 0.841, "NUF2": 0.831, "ORC6": 0.791, "PCNA": 0.721,
+      "PGR": -1.321, "PHGDH": 0.921, "PTTG1": 0.781, "RRM2": 0.821,
+      "SFRP1": -0.621, "SLC39A6": -0.312, "TMEM45B": 0.521, "TYMS": 0.791,
+      "UBE2C": 0.891, "UBE2T": 0.841
+    },
+    "Normal": {
+      "ACTR3B": -0.312, "ANLN": -0.521, "BAG1": 0.312, "BCL2": 0.521,
+      "BIRC5": -0.721, "BLVRA": 0.421, "CCNB1": -0.631, "CCNE1": -0.421,
+      "CDC20": -0.691, "CDC6": -0.541, "CDH3": -0.512, "CENPF": -0.691,
+      "CEP55": -0.671, "CXXC5": 0.312, "EGFR": -0.312, "ERBB2": -0.421,
+      "ESR1": 0.612, "EXO1": -0.641, "FGFR4": 0.521, "FOXA1": 0.412,
+      "FOXC1": -0.621, "GPR160": 0.312, "GRB7": -0.421, "KIF2C": -0.681,
+      "KNTC2": -0.591, "LRIG1": 0.712, "MAPT": 0.521, "MDM2": -0.213,
+      "MELK": -0.651, "MIA": -0.231, "MKI67": -0.721, "MLPH": 0.513,
+      "MMP11": -0.421, "MYBL2": -0.651, "MYC": -0.312, "NAT1": 0.512,
+      "NDC80": -0.701, "NUF2": -0.651, "ORC6": -0.591, "PCNA": -0.431,
+      "PGR": 0.613, "PHGDH": -0.312, "PTTG1": -0.601, "RRM2": -0.531,
+      "SFRP1": 0.621, "SLC39A6": 0.421, "TMEM45B": -0.121, "TYMS": -0.521,
+      "UBE2C": -0.741, "UBE2T": -0.631
+    }
+  }
+}

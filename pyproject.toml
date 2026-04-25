@@ -64,6 +64,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/kidney_vlm"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"src/kidney_vlm/genomics/reference" = "kidney_vlm/genomics/reference"
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

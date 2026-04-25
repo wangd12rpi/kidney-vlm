@@ -19,3 +19,7 @@ def test_tcga_project_defaults_exclude_none_and_keep_bulk_fetch_defaults() -> No
     assert bool(cfg.data.source.tcga.gdc.fetch_ssm_mutations) is True
     assert str(cfg.data.source.tcga.gdc.mutation_panel_version) == "pancanatlas_driver_union_v1"
     assert "VHL" in list(cfg.data.source.tcga.gdc.mutation_gene_panel)
+    assert str(cfg.data.source.extra_genomics.case_subset) == "pathology_cases"
+    assert bool(cfg.data.source.extra_genomics.registry_update.enabled) is True
+    assert str(cfg.data.source.text_genomics.case_subset) == "pathology_cases"
+    assert bool(cfg.data.source.text_genomics.registry_update.enabled) is True

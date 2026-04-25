@@ -22,7 +22,7 @@ SRC = BOOTSTRAP_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from kidney_vlm.modeling.radiology_qwen_projector import RadiologyQwenProjectorLM
+from kidney_vlm.modeling.radiology_qwen_projector import RadiologyProjectorLM
 from kidney_vlm.repo_root import find_repo_root
 from kidney_vlm.training.collator import RadiologyProjectorQACollator
 
@@ -185,7 +185,7 @@ def _build_lr_scheduler(
 
 def _run_validation(
     *,
-    model: RadiologyQwenProjectorLM,
+    model: RadiologyProjectorLM,
     val_loader: DataLoader,
     device: torch.device,
     autocast_dtype: torch.dtype,
@@ -265,12 +265,72 @@ def _resolve_mixed_precision_dtype(raw_value: Any, *, default: torch.dtype) -> t
     return mapping.get(normalized, default)
 
 
+def _matches_trainability_prefix(name: str, prefix: str) -> bool:
+    normalized_name = str(name).strip()
+    normalized_prefix = str(prefix).strip()
+    if not normalized_name or not normalized_prefix:
+        return False
+    if normalized_name == normalized_prefix:
+        return True
+
+    for segment in normalized_name.split("."):
+        if (
+            segment == normalized_prefix
+            or segment.startswith(f"{normalized_prefix}_")
+            or segment.endswith(f"_{normalized_prefix}")
+        ):
+            return True
+    return False
+
+
+def _resolve_prefixes(values: Any) -> tuple[str, ...]:
+    if values in (None, "", "null"):
+        return ()
+    if isinstance(values, (list, tuple)):
+        return tuple(str(value).strip() for value in values if str(value).strip())
+    if hasattr(values, "tolist") and not isinstance(values, str):
+        converted = values.tolist()
+        if isinstance(converted, list):
+            return tuple(str(value).strip() for value in converted if str(value).strip())
+    text = str(values).strip()
+    return (text,) if text else ()
+
+
+def _apply_radiology_projector_training_stage(
+    model: RadiologyProjectorLM,
+    *,
+    always_frozen_prefixes: Any,
+    projector_prefixes: Any,
+) -> None:
+    frozen_prefixes = _resolve_prefixes(always_frozen_prefixes)
+    trainable_projector_prefixes = _resolve_prefixes(projector_prefixes)
+    for name, parameter in model.named_parameters():
+        is_projector_param = any(
+            _matches_trainability_prefix(name, prefix) for prefix in trainable_projector_prefixes
+        )
+        is_always_frozen = any(_matches_trainability_prefix(name, prefix) for prefix in frozen_prefixes)
+
+        # Projector prefixes take precedence so defaults like "radiology" + "projectors"
+        # still train the radiology projector wrapper used by this script.
+        if is_projector_param:
+            parameter.requires_grad = True
+        elif is_always_frozen:
+            parameter.requires_grad = False
+        else:
+            parameter.requires_grad = False
+
+    # This script only trains the radiology projector. Keep the configurable
+    # prefix rules above, but do not depend on them to find the owned module.
+    for parameter in model.radiology_projectors.parameters():
+        parameter.requires_grad = True
+
+
 def _save_artifacts(
     *,
     run_output_dir: Path,
     checkpoint_name: str,
     cfg: Any,
-    model: RadiologyQwenProjectorLM,
+    model: RadiologyProjectorLM,
     tokenizer: Any,
     global_step: int,
     epoch: int | None = None,
@@ -313,7 +373,7 @@ def _write_run_metadata(
     *,
     run_output_dir: Path,
     cfg: Any,
-    model: RadiologyQwenProjectorLM,
+    model: RadiologyProjectorLM,
     global_step: int,
     epoch_checkpoint_paths: list[str],
     best_checkpoint_path: Path | None,
@@ -420,7 +480,7 @@ def main() -> None:
         slice_token_dropout_prob=0.0,
     )
 
-    model = RadiologyQwenProjectorLM.from_pretrained(
+    model = RadiologyProjectorLM.from_pretrained(
         str(stage_cfg.model_name_or_path),
         radiology_in_dim=int(stage_cfg.radiology_embedding_dim),
         projector_type=str(stage_cfg.get("projector_type", "mlp")),
@@ -446,6 +506,11 @@ def main() -> None:
         model.move_trainable_modules_to(device, dtype=projector_dtype)
     else:
         model.to(device=device, dtype=projector_dtype)
+    _apply_radiology_projector_training_stage(
+        model,
+        always_frozen_prefixes=stage_cfg.get("always_frozen_prefixes", []),
+        projector_prefixes=stage_cfg.get("projector_prefixes", []),
+    )
     model.train()
 
     train_loader = DataLoader(
@@ -469,7 +534,14 @@ def main() -> None:
 
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     if not trainable_parameters:
-        raise RuntimeError("No trainable parameters found for radiology projector stage.")
+        sample_parameter_names = [name for name, _ in list(model.named_parameters())[:20]]
+        raise RuntimeError(
+            "No trainable parameters found for radiology projector stage. "
+            f"projector_prefixes={list(_resolve_prefixes(stage_cfg.get('projector_prefixes', [])))}, "
+            f"always_frozen_prefixes={list(_resolve_prefixes(stage_cfg.get('always_frozen_prefixes', [])))}, "
+            f"sample_parameter_names={sample_parameter_names}"
+        )
+    print(f"Trainable radiology projector parameters: {sum(parameter.numel() for parameter in trainable_parameters):,}")
 
     optimizer = torch.optim.AdamW(
         trainable_parameters,

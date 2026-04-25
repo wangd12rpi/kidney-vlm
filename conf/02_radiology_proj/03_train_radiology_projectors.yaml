@@ -1,6 +1,8 @@
 instantiate_model: true
 modality_tag: radiology
 modality_dir_name: radiology
+# Alternate backbone example:
+# model_name_or_path: google/gemma-4-E4B-it
 model_name_or_path: Qwen/Qwen3.5-9B
 trust_remote_code: true
 qa_parquet_path: ${project.root_dir}/data/proj_train/radiology/radiology_proj_train_qa.parquet
@@ -14,7 +16,7 @@ projector_num_heads: 8
 projector_mlp_ratio: 4.0
 projector_dropout: 0.05
 
-batch_size: 8
+batch_size: 2
 num_epochs: 10
 learning_rate: 5e-5
 weight_decay: 0.01
@@ -44,5 +46,5 @@ always_frozen_prefixes:
 projector_prefixes:
   - projector
   - projectors
-output_dir: ${project.root_dir}/outputs/projectors
+output_dir: ${project.root_dir}/output/projectors
 save_tokenizer_snapshot: false

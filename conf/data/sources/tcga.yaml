@@ -16,6 +16,25 @@ data:
       max_radiology_series_downloads:
       max_radiology_report_downloads:
       max_series_per_study:
+    extra_genomics:
+      case_subset: pathology_cases  # pathology_cases | all
+      modalities: []
+      pathology_cases:
+        path: stats/all.json
+      registry_update:
+        enabled: true
+        clear_existing: false
+    text_genomics:
+      case_subset: pathology_cases  # pathology_cases | all
+      max_cases:
+      extra_genomics_manifest_path:
+      output_root:
+      pathology_cases:
+        path: stats/all.json
+      skip_cases_without_any_modality: true
+      registry_update:
+        enabled: true
+        overwrite_existing: true
     tcga:
       exclude_project_ids: []
       split_ratios:

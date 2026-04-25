@@ -201,3 +201,7 @@ def _resolve_torch_dtype(value: str | torch.dtype | None) -> torch.dtype | None:
     if normalized not in mapping:
         raise ValueError(f"Unsupported torch dtype: {value}")
     return mapping[normalized]
+
+
+# Backward-compatible alias for the now backbone-agnostic radiology projector.
+RadiologyProjectorLM = RadiologyQwenProjectorLM

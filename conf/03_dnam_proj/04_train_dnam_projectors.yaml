@@ -48,7 +48,7 @@ always_frozen_prefixes:
 projector_prefixes:
   - projector
   - projectors
-output_dir: ${project.root_dir}/outputs/projectors
+output_dir: ${project.root_dir}/output/projectors
 save_tokenizer_snapshot: false
 wandb:
   enabled: false

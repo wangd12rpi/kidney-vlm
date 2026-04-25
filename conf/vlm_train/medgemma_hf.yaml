@@ -12,5 +12,5 @@ projector_prefixes:
 batch_size: 2
 num_epochs: 1
 learning_rate: 2e-5
-output_dir: ${project.root_dir}/outputs/train/vlm
+output_dir: ${project.root_dir}/output/train/vlm
 freeze_projectors: false
