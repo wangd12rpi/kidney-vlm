@@ -12,6 +12,7 @@ data/cache/
 data/tmp/
 data/registry/manifests/*.json
 output/
+outputs/
 *.parquet
 
 # IDE
