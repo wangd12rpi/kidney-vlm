@@ -19,6 +19,7 @@ if str(SRC) not in sys.path:
 
 from kidney_vlm.modeling.dnam_qwen_projector import DnamQwenProjectorLM
 from kidney_vlm.modeling.pathology_qwen_projector import PathologyQwenProjectorLM
+from kidney_vlm.modeling.rna_qwen_projector import RnaQwenProjectorLM
 from kidney_vlm.repo_root import find_repo_root
 from kidney_vlm.training.collator import (
     _coerce_token_ids,
@@ -29,13 +30,13 @@ from kidney_vlm.training.collator import (
 ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 
-DEMO_PROMPT = "what is this. caption: "
-SUPPORTED_MODALITIES = {"pathology", "dnam"}
+DEMO_PROMPT = "what is this?"
+SUPPORTED_MODALITIES = {"pathology", "dnam", "rna"}
 
 
 def load_cfg():
     with initialize_config_dir(version_base=None, config_dir=str(ROOT / "conf")):
-        cfg = compose(config_name="config")
+        cfg = compose(config_name="config", overrides=sys.argv[1:])
     OmegaConf.set_struct(cfg, False)
     return cfg
 
@@ -60,6 +61,8 @@ def _projector_cfg(cfg: Any, modality: str) -> Any:
         return cfg.pathology_proj
     if modality == "dnam":
         return cfg.dnam_proj
+    if modality == "rna":
+        return cfg.rna_proj
     raise ValueError(f"Unsupported demo modality: {modality}")
 
 
@@ -185,7 +188,7 @@ def _load_feature_tensor(modality: str, modality_cfg: Any, feature_path: Path) -
             compression_method=str(modality_cfg.get("patch_compression_method", "none")),
             compression_kernel_size=int(modality_cfg.get("patch_compression_kernel_size", 1)),
         )
-    if modality == "dnam":
+    if modality in {"dnam", "rna"}:
         return _load_pt_feature_tensor_shared(feature_path, max_tokens=max_feature_tokens)
     raise ValueError(f"Unsupported demo modality: {modality}")
 
@@ -242,7 +245,7 @@ def _load_projector_model(
     modality: str,
     state: dict[str, Any],
     device: torch.device,
-) -> PathologyQwenProjectorLM | DnamQwenProjectorLM:
+) -> PathologyQwenProjectorLM | DnamQwenProjectorLM | RnaQwenProjectorLM:
     stage_cfg = _projector_cfg(cfg, modality)
     model_name_or_path = str(state.get("model_name_or_path") or stage_cfg.model_name_or_path)
     load_in_8bit = bool(stage_cfg.get("load_in_8bit", False))
@@ -286,6 +289,21 @@ def _load_projector_model(
         if state_dict is None:
             raise KeyError("DNAm checkpoint is missing 'dnam_projector_state_dict'.")
         model.projectors.load_state_dict(state_dict)
+    elif modality == "rna":
+        embedding_dim = int(state.get("rna_embedding_dim") or stage_cfg.rna_embedding_dim)
+        model = RnaQwenProjectorLM.from_pretrained(
+            model_name_or_path,
+            rna_in_dim=embedding_dim,
+            rna_prefix_tokens=int(state.get("rna_prefix_tokens") or stage_cfg.get("rna_prefix_tokens", 0)),
+            rna_prefix_expander_mlp_ratio=float(
+                state.get("rna_prefix_expander_mlp_ratio") or stage_cfg.get("rna_prefix_expander_mlp_ratio", 1.0)
+            ),
+            **common_kwargs,
+        )
+        state_dict = state.get("rna_projector_state_dict")
+        if state_dict is None:
+            raise KeyError("RNA checkpoint is missing 'rna_projector_state_dict'.")
+        model.projectors.load_state_dict(state_dict)
     else:
         raise ValueError(f"Unsupported demo modality: {modality}")
 
@@ -321,6 +339,9 @@ def _resolve_demo_sample_keys(demo_cfg: Any, modality_cfg: Any) -> list[str]:
         key_field = str(modality_cfg.sample_key_field)
         split_filter = str(demo_cfg.get("split_filter", "")).strip().lower()
         columns = [key_field]
+        feature_path_field = str(modality_cfg.get("feature_path_field", "")).strip()
+        if feature_path_field and feature_path_field not in columns:
+            columns.append(feature_path_field)
         if split_filter:
             columns.append("split")
         frame = _read_projector_frame(modality_cfg, columns=columns)
@@ -330,6 +351,8 @@ def _resolve_demo_sample_keys(demo_cfg: Any, modality_cfg: Any) -> list[str]:
                     f"demo.split_filter='{split_filter}' was requested, but the parquet is missing 'split'."
                 )
             frame = frame.loc[frame["split"].fillna("train").astype(str).str.lower() == split_filter].copy()
+        if feature_path_field:
+            frame = frame.loc[frame[feature_path_field].map(lambda value: bool(_as_list(value)))].copy()
         sample_keys = (
             frame[key_field]
             .fillna("")
@@ -368,17 +391,17 @@ def _load_feature_paths_by_sample_key(modality_cfg: Any) -> dict[str, str]:
     feature_path_field = str(modality_cfg.feature_path_field)
     frame = _read_projector_frame(modality_cfg, columns=[key_field, feature_path_field])
     mapping: dict[str, str] = {}
-    for row in frame.drop_duplicates(key_field).itertuples(index=False):
+    for row in frame.itertuples(index=False):
         sample_key = str(getattr(row, key_field)).strip()
         feature_paths = _as_list(getattr(row, feature_path_field))
-        if sample_key and feature_paths:
+        if sample_key and feature_paths and sample_key not in mapping:
             mapping[sample_key] = feature_paths[0]
     return mapping
 
 
 def _project_modality_tokens(
     *,
-    model: PathologyQwenProjectorLM | DnamQwenProjectorLM,
+    model: PathologyQwenProjectorLM | DnamQwenProjectorLM | RnaQwenProjectorLM,
     modality: str,
     features: torch.Tensor,
     text_embeddings: torch.Tensor,
@@ -396,24 +419,25 @@ def _project_modality_tokens(
             device=attention_mask.device,
             dtype=attention_mask.dtype,
         )
-    elif modality == "dnam":
-        projected, _ = model.projectors["dnam"](features, feature_mask)
-        projected_mask = model.projectors["dnam"].build_output_mask(
+    elif modality in {"dnam", "rna"}:
+        projected, _ = model.projectors[modality](features, feature_mask)
+        projected_mask = model.projectors[modality].build_output_mask(
             feature_mask,
             batch_size=projected.shape[0],
             output_length=projected.shape[1],
             device=projected.device,
             dtype=projected.dtype,
         )
-        if "dnam_prefix_expander" in model.projectors:
-            projected = model.projectors["dnam_prefix_expander"](projected, mask=projected_mask)
+        prefix_expander_key = f"{modality}_prefix_expander"
+        if prefix_expander_key in model.projectors:
+            projected = model.projectors[prefix_expander_key](projected, mask=projected_mask)
             prefix_attention = torch.ones(
                 (projected.shape[0], projected.shape[1]),
                 device=attention_mask.device,
                 dtype=attention_mask.dtype,
             )
         else:
-            prefix_attention = model.projectors["dnam"].build_output_mask(
+            prefix_attention = model.projectors[modality].build_output_mask(
                 feature_mask,
                 batch_size=projected.shape[0],
                 output_length=projected.shape[1],
@@ -428,7 +452,7 @@ def _project_modality_tokens(
 
 def _generate_response(
     *,
-    model: PathologyQwenProjectorLM | DnamQwenProjectorLM,
+    model: PathologyQwenProjectorLM | DnamQwenProjectorLM | RnaQwenProjectorLM,
     modality: str,
     tokenizer: Any,
     features: torch.Tensor,

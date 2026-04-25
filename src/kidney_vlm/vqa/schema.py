@@ -17,6 +17,7 @@ VQA_COLUMNS = [
     "generation_type",
     "task_category",
     "task_id",
+    "modality_combination_name",
     "use_pathology",
     "use_radiology",
     "use_dnam",
@@ -173,7 +174,16 @@ def validate_vqa_df(df: pd.DataFrame, required_columns: Iterable[str] = VQA_COLU
     if duplicated_question_ids:
         raise ValueError(f"question_id must be unique. Duplicates: {duplicated_question_ids[:10]}")
 
-    for column in ["case_id", "project_id", "split", "task_category", "task_id", "question", "answer"]:
+    for column in [
+        "case_id",
+        "project_id",
+        "split",
+        "task_category",
+        "task_id",
+        "modality_combination_name",
+        "question",
+        "answer",
+    ]:
         empty_indices = df.index[df[column].astype(str).str.strip().eq("")].tolist()
         if empty_indices:
             raise ValueError(f"Column '{column}' must be populated. Invalid row indices: {empty_indices[:10]}")

@@ -1,11 +1,11 @@
-modality: pathology
+modality: rna
 sample_key: ""
 sample_keys: []
-max_samples: 100
+max_samples: 5
 sample_seed: 42
 split_filter: test
 checkpoint_name: best.ckpt
-max_new_tokens: 192
+max_new_tokens: 96
 do_sample: false
 temperature: 1.0
 top_p: 1.0
@@ -27,3 +27,10 @@ modalities:
     feature_path_field: genomics_dna_methylation_feature_path
     label_field: project_id
     max_feature_tokens: ${dnam_proj.max_dnam_tokens}
+  rna:
+    projector_ckpt_path: ${project.root_dir}/outputs/projectors/qwen3_5_9b/rna
+    qa_parquet_path: ${data.unified_registry_path}
+    sample_key_field: sample_id
+    feature_path_field: genomics_rna_bulk_feature_path
+    label_field: project_id
+    max_feature_tokens: ${rna_proj.max_rna_tokens}

@@ -7,7 +7,6 @@ allowed_project_ids: []
 allowed_splits: []
 choice_count: 4
 min_semantic_questions_per_project_task: 20
-require_enabled_modality_features: true
 require_test_pathology_roi_png_dir: true
 populate_test_genomics_text_summaries: true
 require_test_genomics_text_summaries: true
@@ -22,11 +21,28 @@ skip_values:
   - Unknown
   - Not Available
 
-default_modality_variants:
-  - use_pathology: true
-    use_radiology: false
-    use_dnam: true
-    use_rna: true
+default_modality_combinations:
+  - name: all_available
+    use_pathology: must_have             # path must have, other use if avail
+    use_radiology: use_if_avail
+    use_dnam: use_if_avail
+    use_rna: use_if_avail
+
+  - name: path_only
+    use_pathology: must_have             # path must have
+    use_radiology: not_include
+    use_dnam: not_include
+    use_rna: not_include
+
+
+  - name: radiology_only
+    use_pathology: not_include           # rad must have
+    use_radiology: must_have
+    use_dnam: not_include
+    use_rna: not_include
+
+
+
 
 categorical_tasks:
   - enabled: true
@@ -64,15 +80,7 @@ categorical_tasks:
       - Stage 0a
       - Stage 0is
       - Stage X
-    modality_variants:
-      - use_pathology: true
-        use_radiology: false
-        use_dnam: false
-        use_rna: false
-      - use_pathology: true
-        use_radiology: false
-        use_dnam: true
-        use_rna: true
+
 
   - enabled: true
     task_category: grade
@@ -95,15 +103,7 @@ categorical_tasks:
       - Low Grade
       - GX
       - GB
-    modality_variants:
-      - use_pathology: true
-        use_radiology: false
-        use_dnam: false
-        use_rna: false
-      - use_pathology: true
-        use_radiology: false
-        use_dnam: true
-        use_rna: true
+
 
   - enabled: true
     task_category: stage_component
@@ -145,15 +145,7 @@ categorical_tasks:
       - Tis (DCIS)
       - Tis (LCIS)
       - TX
-    modality_variants:
-      - use_pathology: true
-        use_radiology: false
-        use_dnam: false
-        use_rna: false
-      - use_pathology: true
-        use_radiology: false
-        use_dnam: true
-        use_rna: true
+
 
   - enabled: true
     task_category: stage_component
@@ -185,15 +177,6 @@ categorical_tasks:
       N3b: N3
     skip_values:
       - NX
-    modality_variants:
-      - use_pathology: true
-        use_radiology: false
-        use_dnam: false
-        use_rna: false
-      - use_pathology: true
-        use_radiology: false
-        use_dnam: true
-        use_rna: true
 
 boolean_tasks:
   - enabled: true
@@ -238,12 +221,15 @@ boolean_tasks:
     false_answer_template: "{gene} mutation absent"
     choice_count: 2
     max_false_per_true: 1.0
-    modality_variants:
-      - use_pathology: false
-        use_radiology: false
-        use_dnam: true
-        use_rna: true
-      - use_pathology: true
-        use_radiology: false
-        use_dnam: true
-        use_rna: true
+    modality_combination_overrides:
+      - name: all_available
+        use_pathology: must_have             # path must have, other use if avail
+        use_radiology: use_if_avail
+        use_dnam: use_if_avail
+        use_rna: use_if_avail
+
+      - name: path_only
+        use_pathology: must_have             # path must have
+        use_radiology: not_include
+        use_dnam: not_include
+        use_rna: not_include
