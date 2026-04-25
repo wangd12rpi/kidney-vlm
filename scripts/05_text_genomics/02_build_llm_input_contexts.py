@@ -1,27 +1,19 @@
 #!/usr/bin/env python3
 """
-Build final LLM-input context files from registry clinical metadata plus
-registered text-channel genomics.
+Build per-case clinical and genomics text contexts from the unified registry.
 
 This script is intentionally generation-free: it does not call an LLM and it
 does not download data. It formats the data already present in the unified
-registry into per-case files that can be concatenated into caption-generation
-prompts:
+registry into per-case files:
 
     <output_root>/<source>/<project_id>/<patient_id>/
         clinical.txt
-        gdisc.txt
-        llm_input.txt
-        llm_input.json
+        genomics.txt
 
-Only the currently registered text-channel genomics are used:
-    * masked somatic mutation MAF files
-    * gene-level copy-number files
-
-Segment-level copy-number files, DNAm beta files, RNA, miRNA, report PDFs, and
-TCIA metadata are not serialized into the LLM text prompt. Clinical/report/RNA
-annotation fields already summarized into the registry may appear in the
-clinical block or JSON provenance.
+`clinical.txt` is rendered from registry clinical metadata.
+`genomics.txt` uses the teacher-style genomics representation, combining
+DNAm, RNA, text-channel mutation/CNA features, and integrated surrogates when
+the corresponding inputs are registered for the case.
 """
 from __future__ import annotations
 
@@ -47,13 +39,17 @@ if str(SRC) not in sys.path:
 
 from kidney_vlm.data.registry_io import read_parquet_or_empty, write_registry_parquet
 from kidney_vlm.genomics import cohort_config as cohort_cfg
+from kidney_vlm.genomics import dnam_text_features as dnam_ext
 from kidney_vlm.genomics.mutation_cna_text_features import (
     NONSILENT_VARIANT_CLASSES,
     ONCOKB_HOTSPOTS,
 )
+from kidney_vlm.genomics import mutation_cna_text_features as mut_ext
+from kidney_vlm.genomics import rna_text_features as rna_ext
 from kidney_vlm.genomics.registry_integration import (
-    update_registry_with_llm_input_context_manifest,
+    update_registry_with_genomics_context_manifest,
 )
+from kidney_vlm.genomics import text_block
 from kidney_vlm.repo_root import find_repo_root
 
 ROOT = find_repo_root(Path(__file__))
@@ -198,6 +194,73 @@ def _choose_preferred_path(paths: list[str], *, prefer_patterns: list[str]) -> s
             if pattern_lower in lowered:
                 return path
     return sorted(resolved)[0]
+
+
+def _pick_first_existing(paths: list[str], *, root_dir: Path = ROOT) -> str | None:
+    for path_value in paths:
+        path = _resolve_path(path_value, root_dir=root_dir)
+        if path is not None:
+            return str(path)
+    return None
+
+
+def _pick_registry_path(
+    case_row: dict[str, Any],
+    columns: list[str],
+    *,
+    root_dir: Path = ROOT,
+) -> str | None:
+    for column in columns:
+        resolved = _pick_first_existing(_as_list(case_row.get(column)), root_dir=root_dir)
+        if resolved:
+            return resolved
+    return None
+
+
+def _select_rna_path(case_row: dict[str, Any], *, root_dir: Path = ROOT) -> str | None:
+    """Pick a case RNA STAR TSV, preferring tumor samples when metadata exists."""
+    paths = _as_list(case_row.get("genomics_rna_bulk_paths"))
+    sample_types = _as_list(case_row.get("genomics_rna_bulk_sample_types"))
+    if paths and sample_types and len(paths) == len(sample_types):
+        paired = list(zip(paths, sample_types, strict=False))
+        tumor_paths = [
+            path
+            for path, sample_type in paired
+            if "tumor" in sample_type.lower() or "metastatic" in sample_type.lower()
+        ]
+        resolved = _pick_first_existing(tumor_paths, root_dir=root_dir)
+        if resolved:
+            return resolved
+    resolved = _pick_first_existing(paths, root_dir=root_dir)
+    if resolved:
+        return resolved
+    return _pick_registry_path(
+        case_row,
+        ["rna_bulk_local_path", "rna_bulk_path"],
+        root_dir=root_dir,
+    )
+
+
+def _available_modalities(
+    *,
+    beta_path: str | None,
+    rna_path: str | None,
+    maf_path: str | None,
+    gene_cna_path: str | None,
+    segment_cna_path: str | None,
+) -> list[str]:
+    modalities: list[str] = []
+    if beta_path:
+        modalities.append("dna_methylation_beta")
+    if rna_path:
+        modalities.append("rna_bulk")
+    if maf_path:
+        modalities.append("mutation_maf")
+    if gene_cna_path:
+        modalities.append("copy_number_gene")
+    if segment_cna_path:
+        modalities.append("copy_number_segment")
+    return modalities
 
 
 def _case_paths(case_row: dict[str, Any]) -> CasePaths:
@@ -808,26 +871,6 @@ def _render_clinical_text(clinical: dict[str, Any], *, include_survival: bool) -
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _render_llm_input_text(
-    *,
-    clinical_text: str,
-    gdisc_text: str,
-    include_generation_instructions: bool,
-) -> str:
-    sections: list[str] = []
-    if include_generation_instructions:
-        sections.append(
-            "You are given structured case metadata and discrete genomics for a TCGA case. "
-            "Use these as conditioning context for caption dataset generation. "
-            "Do not mention missing fields, file paths, internal IDs, or data processing details in the final caption."
-        )
-        sections.append("")
-    sections.append(clinical_text.rstrip())
-    sections.append("")
-    sections.append(gdisc_text.rstrip())
-    return "\n".join(sections).rstrip() + "\n"
-
-
 def _json_default(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -860,104 +903,95 @@ def process_case(
     case_dir.mkdir(parents=True, exist_ok=True)
 
     paths = _case_paths(case_row)
-    project_genes = _project_specific_genes(project_id)
-    case_mutation_panel = _ordered_union(mutation_panel, project_genes)
-    cna_panel = _ordered_union(mutation_panel, cohort_cfg.FOCAL_CNA_PANEL.get(project_id, []), project_genes)
+    beta_path = _pick_registry_path(case_row, ["genomics_dna_methylation_paths"])
+    rna_path = _select_rna_path(case_row)
+    fusion_path = _pick_registry_path(
+        case_row,
+        ["genomics_rna_fusion_paths", "rna_fusion_local_path"],
+    )
 
-    hrd_score = _optional_float(case_row.get("genomics_hrd_score") or case_row.get("tcga_hrd_score"))
+    chronological_age = _age_years_from_registry(
+        case_row.get("age_at_diagnosis_years") or case_row.get("age_at_diagnosis")
+    )
+    methylation_subtype = (
+        _clean_text(case_row.get("genomics_dna_methylation_subtype"))
+        or _clean_text(case_row.get("tcga_methylation_subtype"))
+        or None
+    )
     msi_status = _clean_text(case_row.get("genomics_msi_status") or case_row.get("tcga_msi_status"))
+    hrd_score = _optional_float(case_row.get("genomics_hrd_score") or case_row.get("tcga_hrd_score"))
 
-    mutation_features = extract_mutation_features(
-        paths.maf_path,
-        mutation_panel=case_mutation_panel,
-        callable_mb=callable_mb,
-    )
-    cna_features = extract_cna_features(
-        paths.gene_cna_path,
+    dnam_features_dict: dict[str, Any] | None = None
+    rna_features_dict: dict[str, Any] | None = None
+    mut_cna_features_dict: dict[str, Any] | None = None
+    errors: list[str] = []
+
+    if beta_path:
+        try:
+            dnam_features = dnam_ext.extract_dnam_text_features(
+                beta_tsv_path=beta_path,
+                project_id=project_id,
+                chronological_age_years=chronological_age,
+                methylation_subtype_label=methylation_subtype,
+            )
+            dnam_features_dict = dnam_features.to_dict()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"dnam:{exc.__class__.__name__}: {exc}")
+
+    if rna_path:
+        try:
+            rna_features = rna_ext.extract_rna_text_features(
+                star_tsv_path=rna_path,
+                project_id=project_id,
+                fusion_tsv_path=fusion_path,
+            )
+            rna_features_dict = rna_features.to_dict()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"rna:{exc.__class__.__name__}: {exc}")
+
+    if paths.maf_path or paths.gene_cna_path or paths.segment_cna_path:
+        try:
+            mut_cna_features = mut_ext.extract_mutation_cna_text_features(
+                maf_path=paths.maf_path,
+                gene_cna_path=paths.gene_cna_path,
+                segment_cna_path=paths.segment_cna_path,
+                project_id=project_id,
+                msi_status=msi_status or None,
+                hrd_score=hrd_score,
+            )
+            mut_cna_features_dict = mut_cna_features.to_dict()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"mut_cna:{exc.__class__.__name__}: {exc}")
+
+    integrated = text_block.derive_integrated_surrogates(
+        dnam_features=dnam_features_dict,
+        rna_features=rna_features_dict,
+        mut_cna_features=mut_cna_features_dict,
         project_id=project_id,
-        cna_panel=cna_panel,
-        arm_event_threshold=arm_event_threshold,
     )
+
     clinical = _clinical_metadata(case_row)
     clinical_text = _render_clinical_text(clinical, include_survival=include_survival_in_text)
-    gdisc_text = _render_gdisc_text(
+    genomics_text = text_block.assemble_teacher_text_block(
+        dnam_features=dnam_features_dict,
+        rna_features=rna_features_dict,
+        mut_cna_features=mut_cna_features_dict,
+        integrated_surrogates=integrated,
         project_id=project_id,
-        mutation_panel=case_mutation_panel,
-        cna_panel=cna_panel,
-        mutation_features=mutation_features,
-        cna_features=cna_features,
-        msi_status=msi_status,
-        hrd_score=hrd_score,
-        emit_all_panel_wild_types=emit_all_panel_wild_types,
-    )
-    llm_input_text = _render_llm_input_text(
-        clinical_text=clinical_text,
-        gdisc_text=gdisc_text,
-        include_generation_instructions=include_generation_instructions,
     )
 
     clinical_path = case_dir / "clinical.txt"
-    gdisc_path = case_dir / "gdisc.txt"
-    llm_input_path = case_dir / "llm_input.txt"
-    json_path = case_dir / "llm_input.json"
+    genomics_path = case_dir / "genomics.txt"
     clinical_path.write_text(clinical_text, encoding="utf-8")
-    gdisc_path.write_text(gdisc_text, encoding="utf-8")
-    llm_input_path.write_text(llm_input_text, encoding="utf-8")
+    genomics_path.write_text(genomics_text, encoding="utf-8")
 
-    modalities = []
-    if paths.maf_path:
-        modalities.append("mutation_maf")
-    if paths.gene_cna_path:
-        modalities.append("copy_number_gene")
-    if paths.segment_cna_path:
-        modalities.append("copy_number_segment_available_not_serialized")
-
-    payload = {
-        "sample_id": sample_id,
-        "source": source_name,
-        "project_id": project_id,
-        "patient_id": patient_id,
-        "clinical": clinical,
-        "gdisc": {
-            "mutation_panel": case_mutation_panel,
-            "copy_number_panel": cna_panel,
-            "mutation_calls": {
-                gene: [call.__dict__ for call in calls]
-                for gene, calls in sorted(mutation_features.calls_by_gene.items())
-            },
-            "copy_number_calls": cna_features.calls_by_gene,
-            "arm_level_events": cna_features.arm_level_events,
-            "tmb_mutations_per_mb": mutation_features.tmb_mutations_per_mb,
-            "tmb_nonsilent_snv_count": mutation_features.total_nonsilent_snv_count,
-            "full_maf_variant_count": mutation_features.full_maf_variant_count,
-            "panel_nonsilent_variant_count": mutation_features.panel_nonsilent_variant_count,
-            "msi_status": msi_status,
-            "hrd_score": hrd_score,
-        },
-        "input_paths": {
-            "mutation_maf": _to_repo_relative(paths.maf_path),
-            "copy_number_gene": _to_repo_relative(paths.gene_cna_path),
-            "copy_number_segment": _to_repo_relative(paths.segment_cna_path),
-        },
-        "output_paths": {
-            "clinical_text_path": _to_repo_relative(clinical_path),
-            "gdisc_text_path": _to_repo_relative(gdisc_path),
-            "llm_input_text_path": _to_repo_relative(llm_input_path),
-            "llm_input_json_path": _to_repo_relative(json_path),
-        },
-        "available_modalities": modalities,
-        "errors": {
-            "mutation": mutation_features.error,
-            "copy_number": cna_features.error,
-        },
-        "notes": [
-            "DNAm, RNA, miRNA, report PDFs, and TCIA metadata are not serialized into this text prompt.",
-            "Segment-level CNA is recorded as available when registered, but arm events are derived from gene-level CNA by default.",
-        ],
-    }
-    json_path.write_text(json.dumps(payload, indent=2, default=_json_default), encoding="utf-8")
-
-    errors = [value for value in [mutation_features.error, cna_features.error] if value and value != "not_available"]
+    available_modalities = _available_modalities(
+        beta_path=beta_path,
+        rna_path=rna_path,
+        maf_path=paths.maf_path,
+        gene_cna_path=paths.gene_cna_path,
+        segment_cna_path=paths.segment_cna_path,
+    )
     return {
         "sample_id": sample_id,
         "source": source_name,
@@ -965,19 +999,18 @@ def process_case(
         "patient_id": patient_id,
         "split": _clean_text(case_row.get("split")),
         "clinical_text_path": _to_repo_relative(clinical_path),
-        "gdisc_text_path": _to_repo_relative(gdisc_path),
-        "llm_input_text_path": _to_repo_relative(llm_input_path),
-        "llm_input_json_path": _to_repo_relative(json_path),
+        "genomics_text_path": _to_repo_relative(genomics_path),
         "mutation_maf_path": _to_repo_relative(paths.maf_path),
         "copy_number_gene_path": _to_repo_relative(paths.gene_cna_path),
         "copy_number_segment_path": _to_repo_relative(paths.segment_cna_path),
+        "dna_methylation_path": _to_repo_relative(beta_path),
+        "rna_bulk_path": _to_repo_relative(rna_path),
         "mutation_available": bool(paths.maf_path),
         "copy_number_gene_available": bool(paths.gene_cna_path),
         "copy_number_segment_available": bool(paths.segment_cna_path),
-        "tmb_mutations_per_mb": mutation_features.tmb_mutations_per_mb,
-        "panel_nonsilent_variant_count": mutation_features.panel_nonsilent_variant_count,
-        "copy_number_non_neutral_count": sum(1 for value in cna_features.calls_by_gene.values() if int(value) != 0),
-        "arm_level_event_count": len(cna_features.arm_level_events),
+        "dna_methylation_available": dnam_features_dict is not None,
+        "rna_available": rna_features_dict is not None,
+        "available_modalities": available_modalities,
         "errors": "; ".join(errors),
     }
 
@@ -1005,7 +1038,17 @@ def _filter_registry(
 
     if require_text_genomics:
         def has_text_genomics(row: pd.Series) -> bool:
-            return bool(_as_list(row.get("genomics_mutation_paths")) or _as_list(row.get("genomics_cnv_gene_paths")))
+            return bool(
+                _as_list(row.get("genomics_dna_methylation_paths"))
+                or _as_list(row.get("genomics_rna_bulk_paths"))
+                or _as_list(row.get("genomics_rna_fusion_paths"))
+                or _as_list(row.get("rna_bulk_local_path"))
+                or _as_list(row.get("rna_bulk_path"))
+                or _as_list(row.get("rna_fusion_local_path"))
+                or _as_list(row.get("genomics_mutation_paths"))
+                or _as_list(row.get("genomics_cnv_gene_paths"))
+                or _as_list(row.get("genomics_cnv_segment_paths"))
+            )
 
         out = out[out.apply(has_text_genomics, axis=1)].copy()
 
@@ -1018,8 +1061,8 @@ def _filter_registry(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Build per-case LLM input context files from TCGA clinical metadata "
-            "and registered MAF/gene-CNA text genomics."
+            "Build per-case clinical and teacher-style genomics text files "
+            "from unified-registry metadata and registered genomics inputs."
         )
     )
     parser.add_argument("--registry-path", type=Path, default=DEFAULT_REGISTRY_PATH)
@@ -1048,26 +1091,20 @@ def parse_args() -> argparse.Namespace:
         "--include-survival-in-text",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Include survival labels in clinical.txt and llm_input.txt. JSON always records selected metadata.",
-    )
-    parser.add_argument(
-        "--include-generation-instructions",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Add a short caption-generation context instruction at the top of llm_input.txt.",
+        help="Include survival labels in clinical.txt.",
     )
     parser.add_argument(
         "--emit-all-panel-wild-types",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Emit wild-type lines for every mutation-panel gene.",
+        help="Legacy no-op retained for CLI compatibility during transition.",
     )
     parser.add_argument("--callable-mb", type=float, default=DEFAULT_CALLABLE_MB)
     parser.add_argument(
         "--arm-event-threshold",
         type=float,
         default=0.60,
-        help="Fraction of genes on a chromosome arm that must show gain/loss to call an arm event.",
+        help="Legacy no-op retained for CLI compatibility during transition.",
     )
     parser.add_argument(
         "--manifest-name",
@@ -1150,7 +1187,7 @@ def main() -> None:
                     mutation_panel=mutation_panel,
                     callable_mb=float(args.callable_mb),
                     include_survival_in_text=bool(args.include_survival_in_text),
-                    include_generation_instructions=bool(args.include_generation_instructions),
+                    include_generation_instructions=False,
                     emit_all_panel_wild_types=bool(args.emit_all_panel_wild_types),
                     arm_event_threshold=float(args.arm_event_threshold),
                 )
@@ -1166,19 +1203,18 @@ def main() -> None:
                     "patient_id": patient_id,
                     "split": _clean_text(row.get("split")),
                     "clinical_text_path": "",
-                    "gdisc_text_path": "",
-                    "llm_input_text_path": "",
-                    "llm_input_json_path": "",
+                    "genomics_text_path": "",
                     "mutation_maf_path": "",
                     "copy_number_gene_path": "",
                     "copy_number_segment_path": "",
+                    "dna_methylation_path": "",
+                    "rna_bulk_path": "",
                     "mutation_available": False,
                     "copy_number_gene_available": False,
                     "copy_number_segment_available": False,
-                    "tmb_mutations_per_mb": None,
-                    "panel_nonsilent_variant_count": None,
-                    "copy_number_non_neutral_count": None,
-                    "arm_level_event_count": None,
+                    "dna_methylation_available": False,
+                    "rna_available": False,
+                    "available_modalities": [],
                     "errors": f"case_failure:{type(exc).__name__}: {exc}",
                 }
             )
@@ -1191,10 +1227,12 @@ def main() -> None:
     print(f"[llm-input] Rows written: {len(manifest_df)}")
     print(f"[llm-input] Case failures: {failures}")
     if not manifest_df.empty:
+        print(f"[llm-input] DNAm-available rows: {int(manifest_df['dna_methylation_available'].sum())}")
+        print(f"[llm-input] RNA-available rows: {int(manifest_df['rna_available'].sum())}")
         print(f"[llm-input] Mutation-available rows: {int(manifest_df['mutation_available'].sum())}")
         print(f"[llm-input] Gene-CNA-available rows: {int(manifest_df['copy_number_gene_available'].sum())}")
     if bool(args.update_registry) and not manifest_df.empty:
-        updated_df, stats = update_registry_with_llm_input_context_manifest(
+        updated_df, stats = update_registry_with_genomics_context_manifest(
             registry_df,
             manifest_df,
             repo_root=ROOT,

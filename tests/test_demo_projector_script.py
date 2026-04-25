@@ -163,7 +163,7 @@ def test_load_h5_patch_features_supports_spatial_mean_pooling(tmp_path: Path) ->
 def test_resolve_checkpoint_path_finds_nested_best_checkpoint(tmp_path: Path) -> None:
     module = _load_script_module()
 
-    nested_ckpt = tmp_path / "outputs" / "projectors" / "qwen3_5_9b" / "pathology" / "run_a" / "best.ckpt"
+    nested_ckpt = tmp_path / "output" / "projectors" / "qwen3_5_9b" / "pathology" / "run_a" / "best.ckpt"
     nested_ckpt.parent.mkdir(parents=True)
     nested_ckpt.write_bytes(b"ckpt")
 

@@ -136,6 +136,7 @@ TEXT_COLUMNS = [
     "genomics_student_text_path",
     "genomics_json_errors",
     "genomics_clinical_text_path",
+    "genomics_genomics_text_path",
     "genomics_gdisc_text_path",
     "genomics_llm_input_text_path",
     "genomics_llm_input_json_path",

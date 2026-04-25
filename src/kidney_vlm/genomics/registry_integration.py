@@ -30,6 +30,7 @@ GENOMICS_JSON_COLUMNS = [
     "genomics_student_text_path",
     "genomics_json_errors",
     "genomics_clinical_text_path",
+    "genomics_genomics_text_path",
     "genomics_gdisc_text_path",
     "genomics_llm_input_text_path",
     "genomics_llm_input_json_path",
@@ -348,6 +349,70 @@ def update_registry_with_llm_input_context_manifest(
             available.append("copy_number_gene")
         if bool(row.get("copy_number_segment_available", False)):
             available.append("copy_number_segment")
+        if available and out.at[row_index, "genomics_available_modalities"] != available:
+            out.at[row_index, "genomics_available_modalities"] = available
+            changed = True
+
+        if changed:
+            updated_rows += 1
+
+    stats = RegistryUpdateStats(
+        matched_registry_rows=matched_rows,
+        updated_registry_rows=updated_rows,
+        unmatched_manifest_cases=len(set(manifest_by_case) - matched_keys),
+    )
+    return out, stats
+
+
+def update_registry_with_genomics_context_manifest(
+    registry_df: pd.DataFrame,
+    manifest_df: pd.DataFrame,
+    *,
+    repo_root: Path,
+    source_name: str = "tcga",
+    allowed_patient_ids: set[str] | None = None,
+    overwrite_existing: bool = True,
+) -> tuple[pd.DataFrame, RegistryUpdateStats]:
+    out = ensure_extra_genomics_registry_columns(registry_df)
+    manifest_by_case = _manifest_index(manifest_df)
+    allowed_patient_ids = {str(value).strip() for value in allowed_patient_ids or set() if str(value).strip()}
+    matched_keys: set[tuple[str, str]] = set()
+    matched_rows = 0
+    updated_rows = 0
+
+    selected_source_mask = out["source"].fillna("").astype(str).eq(source_name)
+    if allowed_patient_ids:
+        selected_source_mask = selected_source_mask & out["patient_id"].fillna("").astype(str).isin(allowed_patient_ids)
+
+    for row_index in out.index[selected_source_mask]:
+        project_id = str(out.at[row_index, "project_id"]).strip()
+        patient_id = str(out.at[row_index, "patient_id"]).strip()
+        case_manifest = manifest_by_case.get((project_id, patient_id))
+        if case_manifest is None or case_manifest.empty:
+            continue
+        row = case_manifest.iloc[0]
+        matched_rows += 1
+        matched_keys.add((project_id, patient_id))
+        changed = False
+
+        assignments = {
+            "genomics_clinical_text_path": row.get("clinical_text_path", ""),
+            "genomics_genomics_text_path": row.get("genomics_text_path", ""),
+            "genomics_llm_input_errors": row.get("errors", ""),
+        }
+        for column, raw_value in assignments.items():
+            if column.endswith("_path"):
+                new_value = to_repo_relative_path(raw_value, repo_root=repo_root)
+            else:
+                new_value = str(raw_value or "")
+            current = str(out.at[row_index, column] or "").strip()
+            if current and not overwrite_existing:
+                continue
+            if current != new_value:
+                out.at[row_index, column] = new_value
+                changed = True
+
+        available = _as_list(row.get("available_modalities", []))
         if available and out.at[row_index, "genomics_available_modalities"] != available:
             out.at[row_index, "genomics_available_modalities"] = available
             changed = True

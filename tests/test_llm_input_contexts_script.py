@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 from pathlib import Path
+
+import pandas as pd
 
 
 def _load_script_module():
@@ -17,31 +18,29 @@ def _load_script_module():
     return module
 
 
-def test_process_case_writes_clinical_gdisc_and_llm_context_files(tmp_path: Path) -> None:
+class _Feature:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+
+    def to_dict(self) -> dict[str, object]:
+        return dict(self.payload)
+
+
+def test_process_case_writes_clinical_and_genomics_files(tmp_path: Path, monkeypatch) -> None:
     module = _load_script_module()
 
     maf_path = tmp_path / "case.maf"
-    maf_path.write_text(
-        "\n".join(
-            [
-                "Hugo_Symbol\tVariant_Classification\tVariant_Type\tHGVSp_Short\tdbSNP_RS",
-                "TP53\tMissense_Mutation\tSNP\tp.R175H\trs1",
-                "VHL\tSilent\tSNP\tp.P25P\trs2",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    maf_path.write_text("placeholder\n", encoding="utf-8")
     cna_path = tmp_path / "gene_cna.tsv"
-    cna_path.write_text(
-        "\n".join(
-            [
-                "gene_name\tcopy_number\tchromosome\tstart\tend",
-                "TP53\t5\t17\t7565097\t7590856",
-                "VHL\t2\t3\t10141778\t10153667",
-            ]
-        ),
-        encoding="utf-8",
+    cna_path.write_text("placeholder\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        module.mut_ext,
+        "extract_mutation_cna_text_features",
+        lambda **_: _Feature({"msi_status": "MSS", "hrd_score": 12.0}),
     )
+    monkeypatch.setattr(module.text_block, "derive_integrated_surrogates", lambda **_: {"status": "ok"})
+    monkeypatch.setattr(module.text_block, "assemble_teacher_text_block", lambda **_: "genomics text\n")
 
     result = module.process_case(
         case_row={
@@ -69,22 +68,70 @@ def test_process_case_writes_clinical_gdisc_and_llm_context_files(tmp_path: Path
         arm_event_threshold=0.6,
     )
 
-    llm_input_path = Path(result["llm_input_text_path"])
-    json_path = Path(result["llm_input_json_path"])
-    assert llm_input_path.is_file()
-    assert json_path.is_file()
+    clinical_path = Path(result["clinical_text_path"])
+    genomics_path = Path(result["genomics_text_path"])
+    assert clinical_path.is_file()
+    assert genomics_path.is_file()
 
-    llm_text = llm_input_path.read_text(encoding="utf-8")
-    assert "CLINICAL METADATA:" in llm_text
-    assert "DISCRETE GENOMICS:" in llm_text
-    assert "TP53: p.R175H | Missense_Mutation | Hotspot:Level_2 | dbSNP:rs1" in llm_text
-    assert "TP53: amplification (+2)" in llm_text
-    assert "TMB: 0.03 mut/Mb" in llm_text
-    assert "MSI: MSS" in llm_text
+    clinical_text = clinical_path.read_text(encoding="utf-8")
+    assert "CLINICAL METADATA:" in clinical_text
+    assert "Primary diagnosis: Clear cell renal cell carcinoma" in clinical_text
 
-    payload = json.loads(json_path.read_text(encoding="utf-8"))
-    assert payload["available_modalities"] == ["mutation_maf", "copy_number_gene"]
-    assert payload["gdisc"]["panel_nonsilent_variant_count"] == 1
-    assert payload["gdisc"]["copy_number_calls"]["TP53"] == 2
+    genomics_text = genomics_path.read_text(encoding="utf-8")
+    assert genomics_text == "genomics text\n"
+
+    case_dir = clinical_path.parent
+    assert not (case_dir / "gdisc.txt").exists()
+    assert not (case_dir / "llm_input.txt").exists()
+    assert not (case_dir / "llm_input.json").exists()
+
+    assert result["available_modalities"] == ["mutation_maf", "copy_number_gene"]
     assert result["mutation_available"] is True
     assert result["copy_number_gene_available"] is True
+
+
+def test_filter_registry_require_text_genomics_keeps_any_supported_modality() -> None:
+    module = _load_script_module()
+
+    registry_df = pd.DataFrame(
+        [
+            {
+                "source": "tcga",
+                "project_id": "TCGA-KIRC",
+                "patient_id": "TCGA-AA-0001",
+                "genomics_rna_bulk_paths": ["data/rna.tsv"],
+            },
+            {
+                "source": "tcga",
+                "project_id": "TCGA-KIRC",
+                "patient_id": "TCGA-AA-0002",
+                "genomics_dna_methylation_paths": ["data/beta.tsv"],
+            },
+            {
+                "source": "tcga",
+                "project_id": "TCGA-KIRC",
+                "patient_id": "TCGA-AA-0003",
+                "genomics_mutation_paths": ["data/case.maf"],
+            },
+            {
+                "source": "tcga",
+                "project_id": "TCGA-KIRC",
+                "patient_id": "TCGA-AA-0004",
+            },
+        ]
+    )
+
+    filtered = module._filter_registry(
+        registry_df,
+        source_name="tcga",
+        case_subset="all",
+        case_json_path=Path("unused.json"),
+        require_text_genomics=True,
+        max_cases=None,
+    )
+
+    assert filtered["patient_id"].tolist() == [
+        "TCGA-AA-0001",
+        "TCGA-AA-0002",
+        "TCGA-AA-0003",
+    ]

@@ -6,6 +6,7 @@ import pandas as pd
 
 from kidney_vlm.genomics.registry_integration import (
     update_registry_with_extra_genomics_manifest,
+    update_registry_with_genomics_context_manifest,
     update_registry_with_genomics_json_manifest,
     update_registry_with_llm_input_context_manifest,
 )
@@ -218,3 +219,59 @@ def test_update_registry_with_llm_input_context_manifest_adds_prompt_paths(
         "data/features/llm_input_contexts/tcga/TCGA-KIRC/TCGA-AA-0001/llm_input.json"
     )
     assert row["genomics_available_modalities"] == ["mutation_maf", "copy_number_gene"]
+
+
+def test_update_registry_with_genomics_context_manifest_adds_canonical_paths(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path
+    case_dir = repo_root / "data/features/llm_input_contexts/tcga/TCGA-KIRC/TCGA-AA-0001"
+    clinical_path = case_dir / "clinical.txt"
+    genomics_path = case_dir / "genomics.txt"
+    for path in (clinical_path, genomics_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("placeholder\n", encoding="utf-8")
+
+    registry_df = pd.DataFrame(
+        [
+            {
+                "sample_id": "TCGA-AA-0001",
+                "source": "tcga",
+                "project_id": "TCGA-KIRC",
+                "patient_id": "TCGA-AA-0001",
+            }
+        ]
+    )
+    manifest_df = pd.DataFrame(
+        [
+            {
+                "project_id": "TCGA-KIRC",
+                "patient_id": "TCGA-AA-0001",
+                "clinical_text_path": str(clinical_path),
+                "genomics_text_path": str(genomics_path),
+                "available_modalities": ["dna_methylation_beta", "rna_bulk", "mutation_maf"],
+                "errors": "",
+            }
+        ]
+    )
+
+    updated, stats = update_registry_with_genomics_context_manifest(
+        registry_df,
+        manifest_df,
+        repo_root=repo_root,
+        source_name="tcga",
+    )
+
+    row = updated.iloc[0]
+    assert stats.updated_registry_rows == 1
+    assert row["genomics_clinical_text_path"] == (
+        "data/features/llm_input_contexts/tcga/TCGA-KIRC/TCGA-AA-0001/clinical.txt"
+    )
+    assert row["genomics_genomics_text_path"] == (
+        "data/features/llm_input_contexts/tcga/TCGA-KIRC/TCGA-AA-0001/genomics.txt"
+    )
+    assert row["genomics_available_modalities"] == [
+        "dna_methylation_beta",
+        "rna_bulk",
+        "mutation_maf",
+    ]

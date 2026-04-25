@@ -12,7 +12,7 @@ top_p: 1.0
 
 modalities:
   pathology:
-    projector_ckpt_path: ${project.root_dir}/outputs/projectors/qwen3_5_9b/pathology
+    projector_ckpt_path: ${project.root_dir}/output/projectors/qwen3_5_9b/pathology
     qa_parquet_path: ${pathology_proj.qa_parquet_path}
     sample_key_field: slide_stem
     feature_path_field: pathology_tile_embedding_paths
@@ -21,7 +21,7 @@ modalities:
     patch_compression_method: ${pathology_proj.patch_compression_method}
     patch_compression_kernel_size: ${pathology_proj.patch_compression_kernel_size}
   dnam:
-    projector_ckpt_path: ${project.root_dir}/outputs/projectors/qwen3_5_9b/dnam
+    projector_ckpt_path: ${project.root_dir}/output/projectors/qwen3_5_9b/dnam
     qa_parquet_path: ${dnam_proj.qa_parquet_path}
     sample_key_field: sample_id
     feature_path_field: genomics_dna_methylation_feature_path

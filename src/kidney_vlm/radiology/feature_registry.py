@@ -166,6 +166,7 @@ def register_radiology_series_artifacts(
     for row_idx, row in out.iterrows():
         series_paths = _as_list(row.get("radiology_image_paths"))
         download_paths = _as_list(row.get("radiology_download_paths"))
+        png_paths = _as_list(row.get("radiology_png_dirs"))
         if series_paths:
             cases_with_series_paths += 1
 
@@ -177,7 +178,7 @@ def register_radiology_series_artifacts(
         seen_mask_paths: set[str] = set()
         seen_mask_manifest_paths: set[str] = set()
 
-        candidate_paths = download_paths + series_paths
+        candidate_paths = download_paths + series_paths + png_paths
         for series_path in candidate_paths:
             if "://" in series_path:
                 continue

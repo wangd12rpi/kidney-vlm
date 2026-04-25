@@ -140,3 +140,27 @@ def test_manifest_paths_override_missing_registry_genomics_inputs(
 
     assert calls["mut_cna"]["maf_path"] == str(maf_path.resolve())
     assert result["available_modalities"] == ["mutation_maf"]
+
+
+def test_consume_legacy_opt_in_rejects_accidental_script_use() -> None:
+    module = _load_script_module()
+
+    try:
+        module._consume_legacy_opt_in([])
+    except SystemExit as exc:
+        message = str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("Expected SystemExit for missing legacy opt-in flag.")
+
+    assert "--allow-legacy-output" in message
+    assert "deprecated" in message.lower()
+
+
+def test_consume_legacy_opt_in_strips_flag_from_overrides() -> None:
+    module = _load_script_module()
+
+    cleaned = module._consume_legacy_opt_in(
+        ["--allow-legacy-output", "data.source.download.enabled=false"]
+    )
+
+    assert cleaned == ["data.source.download.enabled=false"]

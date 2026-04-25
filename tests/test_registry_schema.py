@@ -22,6 +22,7 @@ def test_normalize_fills_core_columns() -> None:
     assert normalized.at[0, "genomics_cnv_segment_paths"] == []
     assert normalized.at[0, "genomics_available_modalities"] == []
     assert normalized.at[0, "genomics_json_path"] == ""
+    assert normalized.at[0, "genomics_genomics_text_path"] == ""
     assert normalized.at[0, "genomics_llm_input_text_path"] == ""
 
 
