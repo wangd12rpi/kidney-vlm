@@ -41,7 +41,7 @@ os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 def load_cfg():
     return load_script_cfg(
         repo_root=ROOT,
-        config_relative_path="06_vqa_evaluation/evaluate_vqa_gpt.yaml",
+        config_relative_path="07_vqa_evaluation/evaluate_vqa_gpt.yaml",
         overrides=sys.argv[1:],
     )
 

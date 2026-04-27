@@ -111,7 +111,9 @@ uv run python scripts/02_radiology_proj/03_train_radiology_projectors.py
 uv run python scripts/03_dnam_proj/02_gen_dnam_case_captions.py
 uv run python scripts/03_dnam_proj/03_build_dnam_proj_train_qa.py
 uv run python scripts/03_dnam_proj/04_train_dnam_projectors.py
-uv run python scripts/vlm_train/01_train_vlm.py
+uv run python scripts/05_vqa_question_generation/generate_gt_mcq.py
+uv run python scripts/06_vqa_train/train_vqa_lora.py
+uv run python scripts/07_vqa_evaluation/evaluate_vqa.py
 ```
 
 Stage-scoped configs now live under:
@@ -125,7 +127,9 @@ Stage-scoped configs now live under:
 - `conf/03_dnam_proj/`
 - `conf/04_rna_features/`
 - `conf/04_rna_proj/`
-- `conf/vlm_train/`
+- `conf/05_vqa_question_generation/`
+- `conf/06_vqa_train/`
+- `conf/07_vqa_evaluation/`
 
 Multi-image support:
 - Each registry row already supports list-valued path columns.

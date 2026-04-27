@@ -66,9 +66,10 @@ def build_soft_prefix_per_layer_inputs(
     prefix_length: int,
     device: torch.device,
     dtype: torch.dtype,
+    prefix_token_mask: torch.Tensor | None = None,
 ) -> torch.Tensor | None:
     """Build Gemma4-style per-layer inputs for soft-prefix + text embeddings."""
-    if prefix_length <= 0:
+    if prefix_token_mask is None and prefix_length <= 0:
         return None
 
     text_model = _resolve_per_layer_text_model(language_model)
@@ -86,6 +87,15 @@ def build_soft_prefix_per_layer_inputs(
     with torch.no_grad():
         text_per_layer_inputs = get_per_layer_inputs(input_ids, None)
     text_per_layer_inputs = text_per_layer_inputs.to(device=device, dtype=dtype)
+    if prefix_token_mask is not None:
+        prefix_mask = prefix_token_mask.to(device=device, dtype=torch.bool)
+        if prefix_mask.shape != input_ids.shape:
+            raise ValueError(
+                "prefix_token_mask shape must match input_ids shape for interleaved soft-prefix inputs. "
+                f"Got mask={tuple(prefix_mask.shape)} input_ids={tuple(input_ids.shape)}."
+            )
+        return text_per_layer_inputs.masked_fill(prefix_mask[:, :, None, None], 0)
+
     prefix_per_layer_inputs = torch.zeros(
         (
             input_ids.shape[0],
@@ -125,6 +135,7 @@ def forward_language_model_with_soft_prefix(
     position_ids: torch.Tensor,
     labels: torch.Tensor | None,
     prefix_length: int,
+    prefix_token_mask: torch.Tensor | None = None,
 ) -> Any:
     per_layer_inputs = build_soft_prefix_per_layer_inputs(
         language_model,
@@ -132,6 +143,7 @@ def forward_language_model_with_soft_prefix(
         prefix_length=prefix_length,
         device=inputs_embeds.device,
         dtype=inputs_embeds.dtype,
+        prefix_token_mask=prefix_token_mask,
     )
     conditional_modules = _conditional_lm_inner_modules(language_model)
     if per_layer_inputs is None or conditional_modules is None:

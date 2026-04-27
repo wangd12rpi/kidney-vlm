@@ -28,6 +28,7 @@ dependencies = [
   "openslide-python>=1.4.3",
   "omegaconf>=2.3.0",
   "pandas>=2.2.0",
+  "peft>=0.15.0",
   "performer-pytorch>=1.1.4",
   "pillow>=12.1.1",
   "pydicom>=3.0.0",

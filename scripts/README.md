@@ -15,7 +15,8 @@
   - `scripts/04_rna_proj/`
   - `scripts/05_text_genomics/`
   - `scripts/05_vqa_question_generation/`
-  - `scripts/06_vqa_evaluation/`
+  - `scripts/06_vqa_train/`
+  - `scripts/07_vqa_evaluation/`
 
 ## Runnable Scripts
 - `scripts/data/01_upsert_tcga_registry_rows.py`
@@ -119,12 +120,19 @@
   - Task definitions live in `conf/05_vqa_question_generation/generate_gt_mcq.yaml`.
   - Example:
     - `uv run python scripts/05_vqa_question_generation/generate_gt_mcq.py`
-- `scripts/06_vqa_evaluation/evaluate_vqa.py`
+- `scripts/06_vqa_train/train_vqa_lora.py`
+  - Trains the projector-backed VLM on the single split-aware VQA parquet using PEFT LoRA SFT.
+  - Injects MCQ choices into the prompt; open-ended rows use the same schema with empty option columns.
+  - Saves LoRA adapters and projector checkpoints under `outputs/oncovlm/<run_name>/`.
+  - Training config lives in `conf/06_vqa_train/vqa_lora_sft.yaml`.
+  - Example:
+    - `uv run python scripts/06_vqa_train/train_vqa_lora.py projectors.pathology.checkpoint_path=/path/to/path.ckpt`
+- `scripts/07_vqa_evaluation/evaluate_vqa.py`
   - Single-entry VQA evaluation script. The current backend evaluates MCQ rows with Azure GPT using semantic option-text answers.
   - Defaults to a small TCGA-BRCA mutation smoke subset from `data/vqa/gt_mcq_questions.parquet`.
-  - Evaluation config lives in `conf/06_vqa_evaluation/evaluate_vqa_gpt.yaml`.
+  - Evaluation config lives in `conf/07_vqa_evaluation/evaluate_vqa_gpt.yaml`.
   - Example:
-    - `uv run python scripts/06_vqa_evaluation/evaluate_vqa.py`
+    - `uv run python scripts/07_vqa_evaluation/evaluate_vqa.py`
 - `scripts/hf_integration/01_upload_projector_train_to_hf.py`
   - Uploads projector-train parquet datasets to HF Hub using split-aware `DatasetDict` payloads.
   - Uses its own config file at `conf/hf_integration/projector_train_upload.yaml`.
@@ -132,7 +140,7 @@
   - Uploads the unified registry parquet to HF Hub as a split-aware dataset so the viewer exposes split selection.
   - Uses its own config file at `conf/hf_integration/unified_registry_upload.yaml`.
 - `scripts/vlm_train/01_train_vlm.py`
-  - Stage 2: VLM training scaffold entrypoint.
+  - Legacy VLM training scaffold. The active VQA SFT path is `scripts/06_vqa_train/train_vqa_lora.py`.
 
 ## Naming Rules
 - Runnable scripts must start with a verb.

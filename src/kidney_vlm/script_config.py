@@ -17,7 +17,8 @@ _SCRIPT_CONFIG_PACKAGE_BY_DIR = {
     "04_rna_features": "rna_features",
     "04_rna_proj": "rna_proj",
     "05_vqa_question_generation": "vqa_question_generation",
-    "06_vqa_evaluation": "vqa_evaluation",
+    "06_vqa_train": "vqa_train",
+    "07_vqa_evaluation": "vqa_evaluation",
 }
 
 
