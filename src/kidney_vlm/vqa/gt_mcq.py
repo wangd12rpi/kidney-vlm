@@ -16,6 +16,7 @@ from kidney_vlm.vqa.genomics_text_summary import (
     build_rna_text_summary,
 )
 from kidney_vlm.vqa.schema import (
+    ANSWER_LABELS,
     OPTION_COLUMNS,
     empty_vqa_frame,
     normalize_vqa_df,
@@ -174,6 +175,139 @@ def _minimum_semantic_questions(
     return count
 
 
+def _sampling_cfg(global_cfg: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = global_cfg.get("sampling") or {}
+    if not isinstance(value, Mapping):
+        raise ValueError("VQA GT MCQ sampling config must be a mapping.")
+    return value
+
+
+def _sampling_splits(sampling_cfg: Mapping[str, Any]) -> set[str]:
+    values = {
+        str(value).strip().casefold()
+        for value in _config_list(sampling_cfg, "splits", ["train"])
+        if str(value).strip()
+    }
+    return values or {"train"}
+
+
+def _validate_keep_ratio(value: Any, *, label: str) -> float:
+    ratio = float(value)
+    if ratio < 0.0 or ratio > 1.0:
+        raise ValueError(f"{label} must be in [0, 1], got {ratio}")
+    return ratio
+
+
+def _task_keep_ratio(
+    *,
+    task_id: str,
+    task_category: str,
+    sampling_cfg: Mapping[str, Any],
+) -> float:
+    task_id = str(task_id).strip()
+    task_category = str(task_category).strip()
+    task_id_ratios = dict(sampling_cfg.get("task_id_keep_ratios") or {})
+    if task_id in task_id_ratios:
+        return _validate_keep_ratio(
+            task_id_ratios[task_id],
+            label=f"task_id_keep_ratios.{task_id}",
+        )
+    task_category_ratios = dict(sampling_cfg.get("task_category_keep_ratios") or {})
+    if task_category in task_category_ratios:
+        return _validate_keep_ratio(
+            task_category_ratios[task_category],
+            label=f"task_category_keep_ratios.{task_category}",
+        )
+    return _validate_keep_ratio(
+        sampling_cfg.get("default_keep_ratio", 1.0),
+        label="default_keep_ratio",
+    )
+
+
+def _sample_generated_frame(
+    frame: pd.DataFrame,
+    *,
+    global_cfg: Mapping[str, Any],
+) -> tuple[pd.DataFrame, dict[str, int | bool]]:
+    stats: dict[str, int | bool] = {
+        "enabled": False,
+        "pre_sampling_rows": int(len(frame)),
+        "pre_sampling_semantic_questions": (
+            int(frame["base_question_id"].nunique()) if not frame.empty else 0
+        ),
+        "sampled_out_rows": 0,
+        "sampled_out_semantic_questions": 0,
+        "sampling_protected_radiology_questions": 0,
+    }
+    sampling_cfg = _sampling_cfg(global_cfg)
+    if frame.empty or not bool(sampling_cfg.get("enabled", False)):
+        return frame, stats
+
+    stats["enabled"] = True
+    splits = _sampling_splits(sampling_cfg)
+    protect_radiology = bool(sampling_cfg.get("protect_radiology_questions", True))
+    seed = int(sampling_cfg.get("seed", 42))
+    grouped: dict[tuple[str, str, str], list[tuple[int, int]]] = {}
+    keep_base_question_ids: set[int] = set()
+    row_counts_by_base_id: dict[int, int] = {}
+
+    for base_question_id, group in frame.groupby("base_question_id", sort=False):
+        base_id = int(base_question_id)
+        row_counts_by_base_id[base_id] = int(len(group))
+        first = group.iloc[0]
+        split = _clean_text(first.get("split")).casefold()
+        if split not in splits:
+            keep_base_question_ids.add(base_id)
+            continue
+        if protect_radiology and bool(group["use_radiology"].astype(bool).any()):
+            keep_base_question_ids.add(base_id)
+            stats["sampling_protected_radiology_questions"] += 1
+            continue
+        task_category = _clean_text(first.get("task_category"))
+        task_id = _clean_text(first.get("task_id"))
+        ratio = _task_keep_ratio(
+            task_id=task_id,
+            task_category=task_category,
+            sampling_cfg=sampling_cfg,
+        )
+        if ratio >= 1.0:
+            keep_base_question_ids.add(base_id)
+            continue
+        grouped.setdefault(
+            (
+                split,
+                task_category,
+                task_id,
+            ),
+            [],
+        ).append((base_id, row_counts_by_base_id[base_id]))
+
+    for group_key, group_records in grouped.items():
+        _, task_category, task_id = group_key
+        ratio = _task_keep_ratio(
+            task_id=task_id,
+            task_category=task_category,
+            sampling_cfg=sampling_cfg,
+        )
+        keep_count = int(math.ceil(len(group_records) * ratio)) if ratio > 0 else 0
+        if keep_count >= len(group_records):
+            keep_base_question_ids.update(base_id for base_id, _ in group_records)
+            continue
+        rng = random.Random(stable_int_id("semantic_record_sample", seed, *group_key))
+        selected_indices = set(rng.sample(range(len(group_records)), keep_count))
+        for index, (base_id, row_count) in enumerate(group_records):
+            if index in selected_indices:
+                keep_base_question_ids.add(base_id)
+            else:
+                stats["sampled_out_semantic_questions"] += 1
+                stats["sampled_out_rows"] += row_count
+
+    sampled = frame[frame["base_question_id"].isin(keep_base_question_ids)].reset_index(
+        drop=True
+    )
+    return sampled, stats
+
+
 def _format_template(template: str, context: Mapping[str, Any]) -> str:
     return str(template).format(**context).strip()
 
@@ -183,6 +317,14 @@ def _option_columns(choices: list[str]) -> dict[str, str]:
     for column, choice in zip(OPTION_COLUMNS, choices, strict=False):
         out[column] = str(choice).strip()
     return out
+
+
+def _answer_label(answer: str, choices: list[str]) -> str:
+    answer_text = str(answer).strip()
+    for index, choice in enumerate(choices[:4]):
+        if str(choice).strip() == answer_text:
+            return ANSWER_LABELS[index]
+    raise ValueError(f"Answer {answer_text!r} does not match any MCQ option.")
 
 
 def _fixed_options(task_cfg: Mapping[str, Any], *, task_name: str) -> list[str]:
@@ -348,6 +490,7 @@ def _artifact_paths_for_variant(
     populate_genomics_text = bool(
         global_cfg.get("populate_test_genomics_text_summaries", False)
     )
+    mutation_panel = _mutation_panel_for_project(global_cfg, _project_id(row))
     dnam_summary = ""
     rna_summary = ""
     if populate_genomics_text and variant["use_dnam"]:
@@ -356,11 +499,13 @@ def _artifact_paths_for_variant(
             max_beta_values=int(
                 global_cfg.get("dnam_text_summary_max_beta_values", 50_000) or 50_000
             ),
+            panel_genes=mutation_panel,
         )
     if populate_genomics_text and variant["use_rna"]:
         rna_summary = build_rna_text_summary(
             row,
             max_top_genes=int(global_cfg.get("rna_text_summary_max_top_genes", 8) or 8),
+            panel_genes=mutation_panel,
         )
     return {
         "pathology_roi_png_dir": _first_parent_dir(row, "pathology_png_roi_paths")
@@ -401,6 +546,23 @@ def _required_test_artifacts_are_present(
         ):
             return False
     return True
+
+
+def _mutation_panel_for_project(
+    global_cfg: Mapping[str, Any],
+    project_id: str,
+) -> list[str]:
+    genes: list[str] = []
+    for task_cfg in _config_list(global_cfg, "boolean_tasks"):
+        task = dict(task_cfg or {})
+        if not bool(task.get("enabled", True)):
+            continue
+        panel_by_project = dict(task.get("gene_panel_by_project") or {})
+        for gene in _config_list({"genes": panel_by_project.get(project_id)}, "genes"):
+            gene_text = str(gene).strip().upper()
+            if gene_text and gene_text not in genes:
+                genes.append(gene_text)
+    return genes
 
 
 def _case_id(row: Mapping[str, Any]) -> str:
@@ -507,6 +669,7 @@ def _build_vqa_rows_for_semantic_question(
                 "question": question,
                 **_option_columns(choices),
                 "answer": str(answer).strip(),
+                "answer_label": _answer_label(str(answer), choices),
                 "caption_id": "",
                 "ground_truth_source": str(ground_truth_source).strip(),
                 "radiology_biomarker": _clean_text(row.get("radiology_biomarker"))
@@ -971,6 +1134,11 @@ def build_ground_truth_mcq_frame(
         frame = frame.sort_values(
             ["split", "project_id", "case_id", "base_question_id", "question_id"]
         ).reset_index(drop=True)
+    frame, sampling_stats = _sample_generated_frame(frame, global_cfg=cfg)
+    if not frame.empty:
+        frame = frame.sort_values(
+            ["split", "project_id", "case_id", "base_question_id", "question_id"]
+        ).reset_index(drop=True)
     validate_vqa_df(frame)
     return frame, {
         "registry_rows_selected": int(len(selected)),
@@ -978,5 +1146,6 @@ def build_ground_truth_mcq_frame(
         "semantic_questions": int(frame["base_question_id"].nunique())
         if not frame.empty
         else 0,
+        "sampling": sampling_stats,
         "task_stats": task_stats,
     }

@@ -8,6 +8,12 @@ from kidney_vlm.vqa.schema import normalize_vqa_df, upsert_vqa_rows, validate_vq
 
 
 def _row(question_id: int, *, answer: str = "Stage II", question: str = "What is the stage?") -> dict[str, object]:
+    answer_labels = {
+        "Stage I": "A",
+        "Stage II": "B",
+        "Stage III": "C",
+        "Stage IV": "D",
+    }
     return {
         "case_id": "TCGA-AA-0001",
         "project_id": "TCGA-TEST",
@@ -29,6 +35,7 @@ def _row(question_id: int, *, answer: str = "Stage II", question: str = "What is
         "option_c": "Stage III",
         "option_d": "Stage IV",
         "answer": answer,
+        "answer_label": answer_labels.get(answer, ""),
         "caption_id": "",
         "ground_truth_source": "task_stage_label",
         "radiology_biomarker": "",
@@ -138,6 +145,15 @@ def test_validate_vqa_frame_requires_mcq_answer_to_match_an_option() -> None:
     frame = normalize_vqa_df(pd.DataFrame([_row(1, answer="Stage X")]))
 
     with pytest.raises(ValueError, match="answer must exactly match"):
+        validate_vqa_df(frame)
+
+
+def test_validate_vqa_frame_requires_mcq_answer_label_to_match_answer_option() -> None:
+    row = _row(1)
+    row["answer_label"] = "A"
+    frame = normalize_vqa_df(pd.DataFrame([row]))
+
+    with pytest.raises(ValueError, match="answer_label must be B"):
         validate_vqa_df(frame)
 
 

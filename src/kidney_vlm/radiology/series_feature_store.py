@@ -58,6 +58,19 @@ def _get_series_store_handle(store_path: Path):
     return h5py.File(str(store_path), "r")
 
 
+@lru_cache(maxsize=4)
+def _get_series_index(store_path: Path) -> dict[str, np.ndarray]:
+    handle = _get_series_store_handle(store_path)
+    if "png_relpaths" not in handle:
+        raise RuntimeError(f"Series feature store is missing 'png_relpaths': {store_path}")
+
+    index: dict[str, list[int]] = {}
+    for idx, png_relpath in enumerate(_decode_string_array(handle["png_relpaths"][:])):
+        series_path = _normalize_relpath(Path(png_relpath).parent)
+        index.setdefault(series_path, []).append(idx)
+    return {series_path: np.asarray(indices, dtype=np.int64) for series_path, indices in index.items()}
+
+
 def _decode_string_array(values: np.ndarray) -> list[str]:
     decoded: list[str] = []
     for value in values.tolist():
@@ -74,18 +87,11 @@ def load_series_feature_array(root_dir: Path, embedding_ref: str | Path) -> np.n
     handle = _get_series_store_handle(store_path)
     if "features" not in handle:
         raise RuntimeError(f"Series feature store is missing 'features': {store_path}")
-    if "png_relpaths" not in handle:
-        raise RuntimeError(f"Series feature store is missing 'png_relpaths': {store_path}")
 
     features = handle["features"]
-    png_relpaths = _decode_string_array(handle["png_relpaths"][:])
     target_series_path = _normalize_relpath(parsed.series_path)
-    matching_indices = [
-        idx
-        for idx, png_relpath in enumerate(png_relpaths)
-        if _normalize_relpath(Path(png_relpath).parent) == target_series_path
-    ]
-    if not matching_indices:
+    matching_indices = _get_series_index(store_path).get(target_series_path)
+    if matching_indices is None or len(matching_indices) == 0:
         raise FileNotFoundError(
             "No radiology slice features matched the requested series ref: "
             f"{embedding_ref}"

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import math
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
+from kidney_vlm.genomics import dnam_text_features as dnam_tf
+from kidney_vlm.genomics import rna_text_features as rna_tf
+from kidney_vlm.genomics import signatures as sig
 from kidney_vlm.repo_root import find_repo_root
 
 
@@ -63,7 +67,13 @@ def _first_existing_path(value: Any, *, field_name: str) -> str:
 
 
 def _format_float(value: float) -> str:
-    return f"{value:.3g}"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "not_assessed"
+    if not math.isfinite(numeric):
+        return "not_assessed"
+    return f"{numeric:.3g}"
 
 
 def _format_percent(value: float) -> str:
@@ -71,25 +81,76 @@ def _format_percent(value: float) -> str:
 
 
 def build_dnam_text_summary(
-    row: Mapping[str, Any], *, max_beta_values: int = 50_000
+    row: Mapping[str, Any],
+    *,
+    max_beta_values: int = 50_000,
+    panel_genes: Sequence[str] | None = None,
 ) -> str:
     raw_path = _first_existing_path(
         row.get("genomics_dna_methylation_paths"),
         field_name="genomics_dna_methylation_paths",
     )
-    return _summarize_dnam_beta_file(raw_path, max_beta_values=max_beta_values)
+    return _summarize_dnam_beta_file(
+        raw_path,
+        project_id=str(row.get("project_id", "")).strip(),
+        panel_genes=tuple(
+            str(gene).strip().upper()
+            for gene in panel_genes or []
+            if str(gene).strip()
+        ),
+        max_beta_values=max_beta_values,
+    )
 
 
-def build_rna_text_summary(row: Mapping[str, Any], *, max_top_genes: int = 8) -> str:
+def build_rna_text_summary(
+    row: Mapping[str, Any],
+    *,
+    max_top_genes: int = 8,
+    panel_genes: Sequence[str] | None = None,
+) -> str:
     raw_path = _first_existing_path(
         row.get("genomics_rna_bulk_paths"),
         field_name="genomics_rna_bulk_paths",
     )
-    return _summarize_rna_star_counts_file(raw_path, max_top_genes=max_top_genes)
+    return _summarize_rna_star_counts_file(
+        raw_path,
+        project_id=str(row.get("project_id", "")).strip(),
+        panel_genes=tuple(
+            str(gene).strip().upper()
+            for gene in panel_genes or []
+            if str(gene).strip()
+        ),
+        max_top_genes=max_top_genes,
+    )
 
 
 @lru_cache(maxsize=16384)
-def _summarize_dnam_beta_file(raw_path: str, *, max_beta_values: int = 50_000) -> str:
+def _dnam_probe_features(
+    raw_path: str,
+    *,
+    project_id: str,
+    panel_genes: tuple[str, ...],
+) -> dict[str, Any]:
+    betas = dnam_tf.read_tcga_beta_tsv(raw_path)
+    promoter = dnam_tf.promoter_methylation_by_gene(betas, project_id)
+    if panel_genes:
+        promoter = {gene: promoter.get(gene, float("nan")) for gene in panel_genes}
+    return {
+        "probe_count": int(betas.size),
+        "promoter_methylation": promoter,
+        "cimp_status": dnam_tf.classify_cimp(betas, project_id),
+        "dnam_tumor_purity": dnam_tf.lump_tumor_purity(betas),
+    }
+
+
+@lru_cache(maxsize=16384)
+def _summarize_dnam_beta_file(
+    raw_path: str,
+    *,
+    project_id: str,
+    panel_genes: tuple[str, ...],
+    max_beta_values: int = 50_000,
+) -> str:
     beta_values: list[float] = []
     missing_values = 0
     observed_rows = 0
@@ -124,21 +185,55 @@ def _summarize_dnam_beta_file(raw_path: str, *, max_beta_values: int = 50_000) -
     hypo_fraction = float((series < 0.2).mean())
     hyper_fraction = float((series > 0.8).mean())
     intermediate_fraction = 1.0 - hypo_fraction - hyper_fraction
-    return (
-        "DNA methylation raw beta summary: "
-        f"evaluated {total:,} CpG beta rows from the raw methylation file; "
-        f"valid beta values {len(beta_values):,}; "
-        f"missing or invalid beta values {_format_percent(missing_fraction)}; "
-        f"mean beta {_format_float(float(series.mean()))}; "
-        f"median beta {_format_float(float(series.median()))}; "
-        f"hypomethylated probes (beta < 0.2) {_format_percent(hypo_fraction)}; "
-        f"intermediate probes (0.2 <= beta <= 0.8) {_format_percent(intermediate_fraction)}; "
-        f"hypermethylated probes (beta > 0.8) {_format_percent(hyper_fraction)}."
-    )
+    project_text = f" for project {project_id}" if project_id else ""
+    parts = [
+        (
+            f"DNA methylation raw beta summary{project_text}: "
+            f"evaluated {total:,} CpG beta rows from the raw methylation file; "
+            f"valid beta values {len(beta_values):,}; "
+            f"missing or invalid beta values {_format_percent(missing_fraction)}; "
+            f"mean beta {_format_float(float(series.mean()))}; "
+            f"median beta {_format_float(float(series.median()))}; "
+            f"hypomethylated probes (beta < 0.2) {_format_percent(hypo_fraction)}; "
+            f"intermediate probes (0.2 <= beta <= 0.8) "
+            f"{_format_percent(intermediate_fraction)}; "
+            f"hypermethylated probes (beta > 0.8) {_format_percent(hyper_fraction)}."
+        )
+    ]
+    if project_id:
+        features = _dnam_probe_features(
+            raw_path,
+            project_id=project_id,
+            panel_genes=panel_genes,
+        )
+        parts.append(f"Full DNAm probe count {features['probe_count']:,}.")
+        parts.append(f"CIMP status from methylation markers: {features['cimp_status']}.")
+        parts.append(
+            "DNAm LUMP tumor purity estimate: "
+            f"{_format_float(features['dnam_tumor_purity'])}."
+        )
+        promoter = dict(features["promoter_methylation"] or {})
+        if promoter:
+            promoter_items = [
+                f"{gene} promoter beta {_format_float(value)}"
+                for gene, value in promoter.items()
+            ]
+            parts.append(
+                "Promoter methylation for benchmark mutation panel genes: "
+                + "; ".join(promoter_items)
+                + "."
+            )
+    return " ".join(parts)
 
 
 @lru_cache(maxsize=16384)
-def _summarize_rna_star_counts_file(raw_path: str, *, max_top_genes: int = 8) -> str:
+def _summarize_rna_star_counts_file(
+    raw_path: str,
+    *,
+    project_id: str,
+    panel_genes: tuple[str, ...],
+    max_top_genes: int = 8,
+) -> str:
     frame = pd.read_csv(raw_path, sep="\t", comment="#", low_memory=False)
     required_columns = {
         "gene_id",
@@ -186,9 +281,26 @@ def _summarize_rna_star_counts_file(raw_path: str, *, max_top_genes: int = 8) ->
         for row in top.itertuples(index=False)
         if str(row.gene_name).strip()
     ]
+    symbol_tpm = protein.groupby("gene_name", as_index=True)["tpm_unstranded"].max()
+    panel_expression = [
+        f"{gene} TPM {_format_float(symbol_tpm.get(gene, float('nan')))}"
+        for gene in panel_genes
+    ]
+    expression = symbol_tpm.apply(lambda value: math.log1p(max(float(value), 0.0)))
+    estimate = rna_tf.estimate_scores(expression)
+    proliferation = rna_tf.mean_expression_score(expression, sig.PROLIFERATION_CORE)
+    hypoxia = rna_tf.mean_expression_score(expression, sig.HYPOXIA_BUFFA_51)
+    emt = (
+        rna_tf.mean_expression_score(expression, sig.EMT_CORE_MESENCHYMAL)
+        - rna_tf.mean_expression_score(expression, sig.EMT_CORE_EPITHELIAL)
+    )
+    ifng = rna_tf.mean_expression_score(expression, sig.IFNG_AYERS_6)
+    tis = rna_tf.mean_expression_score(expression, sig.TIS_AYERS_18)
+    cytolytic = rna_tf.cytolytic_activity_log(expression)
     qc_text = "; ".join(f"{key} {value:,}" for key, value in qc_values.items())
+    project_text = f" for project {project_id}" if project_id else ""
     parts = [
-        "RNA-seq raw expression summary: "
+        f"RNA-seq raw expression summary{project_text}: "
         f"protein-coding genes measured {len(protein):,}; "
         f"protein-coding genes with TPM >= 1: {expressed:,}; "
         f"protein-coding genes with TPM >= 10: {high:,}; "
@@ -199,6 +311,24 @@ def _summarize_rna_star_counts_file(raw_path: str, *, max_top_genes: int = 8) ->
         parts.append(
             f"Top expressed non-mitochondrial protein-coding genes by TPM: {', '.join(top_genes)}."
         )
+    if panel_expression:
+        parts.append(
+            "RNA expression for benchmark mutation panel genes: "
+            + "; ".join(panel_expression)
+            + "."
+        )
+    parts.append(
+        "RNA pathway and microenvironment signatures from log1p(TPM): "
+        f"proliferation {_format_float(proliferation)}; "
+        f"hypoxia {_format_float(hypoxia)}; "
+        f"EMT composite {_format_float(emt)}; "
+        f"IFN-gamma {_format_float(ifng)}; "
+        f"TIS {_format_float(tis)}; "
+        f"cytolytic activity {_format_float(cytolytic)}; "
+        f"ESTIMATE stromal {_format_float(estimate.get('stromal'))}; "
+        f"ESTIMATE immune {_format_float(estimate.get('immune'))}; "
+        f"ESTIMATE tumor purity {_format_float(estimate.get('tumor_purity'))}."
+    )
     if qc_text:
         parts.append(f"STAR assignment summary rows: {qc_text}.")
     return " ".join(parts)

@@ -21,6 +21,22 @@ skip_values:
   - Unknown
   - Not Available
 
+sampling:
+  enabled: true
+  seed: 42
+  splits:
+    - train
+  # Radiology-bearing cases are rare; when enabled, keep any base question whose
+  # source case has radiology features, then sample only from the no-radiology majority.
+  protect_radiology_questions: true
+  default_keep_ratio: 1.0
+  task_category_keep_ratios:
+    mutation: 0.6
+    pathologic_t: 0.4
+    pathologic_n: 0.4
+    stage: 0.6
+  task_id_keep_ratios: {}
+
 default_modality_combinations:
   - name: all_available
     use_pathology: must_have             # path must have, other use if avail
@@ -183,37 +199,37 @@ boolean_tasks:
     task_category: mutation
     task_id_template: "{source_column}"
     gene_panel_by_project:
-      TCGA-ACC: [ATRX, TP53]
-      TCGA-BLCA: [ARID1A, CDKN2A, EP300, FBXW7, FGFR3, KDM6A, PTEN, RB1, RBM10, RXRA, STAG2, TP53, TSC1]
-      TCGA-BRCA: [CDH1, FOXA1, MAP2K4, MAP3K1, NCOR1, NF1, PIK3CA, PTEN, RB1, RUNX1, TP53]
-      TCGA-CESC: [ARID1A, EP300, FBXW7, LATS1, PTEN, RB1, SMAD4, TP53]
+      TCGA-ACC: [TP53]
+      TCGA-BLCA: [TP53, KDM6A, ARID1A, RB1, STAG2]
+      TCGA-BRCA: [PIK3CA, TP53, CDH1, MAP3K1]
+      TCGA-CESC: [EP300, FBXW7, PTEN, TP53, ARID1A]
       TCGA-CHOL: [PBRM1]
       TCGA-COAD: [APC, KRAS, PTEN, SMAD4, TP53]
-      TCGA-DLBC: [ARID1A, CD79B, HLA-B, KMT2D, MYD88, PIM1]
+      TCGA-DLBC: [KMT2D, PIM1, ARID1A, CD79B, HLA-B]
       TCGA-ESCA: [CDKN2A, TP53]
-      TCGA-GBM: [ATRX, IDH1, NF1, PIK3R1, PTEN, RB1, STAG2, TP53]
-      TCGA-HNSC: [AJUBA, CASP8, CDKN2A, FBXW7, FGFR3, FLNA, HRAS, KDM6A, NOTCH1, NSD1, PTEN, TP53]
+      TCGA-GBM: [PTEN, TP53, NF1, ATRX, PIK3R1]
+      TCGA-HNSC: [TP53, CDKN2A, NOTCH1, NSD1, CASP8]
       TCGA-KICH: [TP53]
-      TCGA-KIRC: [ATM, BAP1, KDM5C, KIF1A, MTOR, PBRM1, PTEN, SETD2, VHL]
-      TCGA-KIRP: [CUL3, KDM6A]
-      TCGA-LAML: [IDH2, RUNX1, SMC1A]
-      TCGA-LGG: [ATRX, CIC, FUBP1, IDH1, IDH2, MAX, NF1, PTEN, TP53]
-      TCGA-LIHC: [CTNNB1, RPS6KA3, TP53]
-      TCGA-LUAD: [ATM, EGFR, KRAS, NF1, RB1, RBM10, STK11, TP53]
-      TCGA-LUSC: [CDKN2A, FBXW7, KDM6A, NF1, NOTCH1, PTEN, RB1, TP53]
+      TCGA-KIRC: [VHL, PBRM1, SETD2, BAP1, MTOR]
+      TCGA-KIRP: []
+      TCGA-LAML: []
+      TCGA-LGG: [TP53, ATRX, IDH1, CIC, FUBP1]
+      TCGA-LIHC: [CTNNB1, TP53]
+      TCGA-LUAD: [TP53, KRAS, EGFR, STK11, NF1]
+      TCGA-LUSC: [TP53, CDKN2A, NF1, PTEN, NOTCH1]
       TCGA-MESO: [BAP1, NF2, TP53]
-      TCGA-OV: [NF1, RB1, TP53]
-      TCGA-PAAD: [CDKN2A, GNAS, KRAS, SMAD4, TP53]
-      TCGA-PCPG: [EPAS1, HRAS, RET]
-      TCGA-PRAD: [APC, PTEN, SPOP, TP53]
+      TCGA-OV: [NF1, TP53]
+      TCGA-PAAD: [CDKN2A, KRAS, SMAD4, TP53]
+      TCGA-PCPG: [HRAS]
+      TCGA-PRAD: [SPOP, TP53]
       TCGA-READ: [APC, FBXW7, KRAS, TP53]
       TCGA-SARC: [ATRX, RB1, TP53]
-      TCGA-SKCM: [ARID2, BRAF, CDKN2A, CFTR, COL5A1, IDH1, KCNQ5, MAP2K1, NF1, PTEN, TP53]
-      TCGA-STAD: [APC, ARID1A, BCOR, CNBD1, SMAD4, TP53]
-      TCGA-TGCT: [KIT, KRAS, NRAS, PIK3CA]
-      TCGA-THCA: [BRAF, EIF1AX, HRAS, NRAS, NUP93]
+      TCGA-SKCM: [BRAF, COL5A1, CFTR, NF1, TP53]
+      TCGA-STAD: [TP53, ARID1A, APC, BCOR, SMAD4]
+      TCGA-TGCT: [KIT]
+      TCGA-THCA: [BRAF, NRAS]
       TCGA-THYM: [GTF2I, HRAS]
-      TCGA-UCEC: [AKT1, APC, ARID1A, ATM, CTCF, CTNNB1, CTNND1, DYRK1A, ERBB2, KANSL1, KMT2B, KMT2C, KRAS, MAP3K1, MAX, NDUFS1, NRAS, PDS5B, PIK3CA, PTEN, RB1, RRAS2, SCAF4]
+      TCGA-UCEC: [PIK3CA, ARID1A, PTEN, CTNNB1, CTCF]
       TCGA-UCS: [PTEN, TP53]
       TCGA-UVM: [EIF1AX, GNA11, GNAQ, SF3B1]
     question_template: What is the {gene} mutation status for this case?

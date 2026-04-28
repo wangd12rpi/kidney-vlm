@@ -15,7 +15,8 @@
   - `scripts/04_rna_proj/`
   - `scripts/05_text_genomics/`
   - `scripts/05_vqa_question_generation/`
-  - `scripts/06_vqa_evaluation/`
+  - `scripts/06_vqa_train/`
+  - `scripts/07_vqa_evaluation/`
 
 ## Runnable Scripts
 - `scripts/data/01_upsert_tcga_registry_rows.py`
@@ -119,12 +120,60 @@
   - Task definitions live in `conf/05_vqa_question_generation/generate_gt_mcq.yaml`.
   - Example:
     - `uv run python scripts/05_vqa_question_generation/generate_gt_mcq.py`
-- `scripts/06_vqa_evaluation/evaluate_vqa.py`
-  - Single-entry VQA evaluation script. The current backend evaluates MCQ rows with Azure GPT using semantic option-text answers.
-  - Defaults to a small TCGA-BRCA mutation smoke subset from `data/vqa/gt_mcq_questions.parquet`.
-  - Evaluation config lives in `conf/06_vqa_evaluation/evaluate_vqa_gpt.yaml`.
+- `scripts/06_vqa_train/train_vqa_lora.py`
+  - Trains the projector-backed VLM on the single split-aware VQA parquet using PEFT LoRA SFT.
+  - Injects MCQ choices into the prompt; open-ended rows use the same schema with empty option columns.
+  - Saves LoRA adapters and projector checkpoints under `outputs/oncovlm/<run_name>/`.
+  - Training config lives in `conf/06_vqa_train/vqa_lora_sft.yaml`.
   - Example:
-    - `uv run python scripts/06_vqa_evaluation/evaluate_vqa.py`
+    - `uv run python scripts/06_vqa_train/train_vqa_lora.py projectors.pathology.checkpoint_path=/path/to/path.ckpt`
+- `scripts/07_vqa_evaluation/evaluate_vqa.py`
+  - Single-entry multi-model VQA benchmark runner. Every model with `enabled: true` in the YAML is evaluated sequentially.
+  - Supports Azure GPT, HF image-text VLMs, and the projector-only `oncovlm_qwen_no_finetune` baseline.
+  - Writes per-model predictions and flat metric records under `results/vqa_eval/<run.name>/<model.display_name>/`.
+  - Supports MCQ semantic option-text scoring and open-ended QA BERTScore scoring.
+  - Evaluation config lives in `conf/07_vqa_evaluation/evaluate_vqa_gpt.yaml`.
+  - Example:
+    - `uv run python scripts/07_vqa_evaluation/evaluate_vqa.py`
+
+## VQA Parquet Schema
+`modality_combination_name` is the named input recipe that produced the row, while the `use_*` columns are the actual modality booleans for that row. For example, `all_available` means "use every enabled artifact that exists for this case", so a case without radiology can still have `modality_combination_name=all_available` and `use_radiology=false`. In contrast, `radiology_only` requires radiology and sets the other `use_*` columns false. Current GT MCQ defaults are `all_available`, `path_only`, and `radiology_only`, but task configs can override these names.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `case_id` | string | TCGA case ID. |
+| `project_id` | string | TCGA project name, e.g. `TCGA-LUAD`. |
+| `question_id` | int64 | Unique row/question ID. |
+| `base_question_id` | int64 | Same semantic question before modality expansion. |
+| `split` | string | Registry split, usually `train`, `val`, or `test`. |
+| `question_type` | string | `mcq` or `qa`. |
+| `generation_type` | string | `from_ground_truth` or `from_caption`. |
+| `task_category` | string | Broad task family, e.g. `mutation`, `stage`, `grade`, `subtype`. |
+| `task_id` | string | Specific task, e.g. `mutation_tp53`, `pathologic_stage`. |
+| `modality_combination_name` | string | Config-defined modality recipe name. |
+| `use_pathology` | bool | Whether pathology evidence is used in this row. |
+| `use_radiology` | bool | Whether radiology evidence is used in this row. |
+| `use_dnam` | bool | Whether DNAm evidence is used in this row. |
+| `use_rna` | bool | Whether RNA evidence is used in this row. |
+| `question` | string | User-facing question text. |
+| `option_a` | string | Nullable/empty for open-ended rows. |
+| `option_b` | string | Nullable/empty for open-ended rows. |
+| `option_c` | string | Nullable/empty for open-ended rows. |
+| `option_d` | string | Nullable/empty for open-ended rows. |
+| `answer` | string | Semantic answer text, not the option letter. |
+| `answer_label` | string | `A`/`B`/`C`/`D` for MCQ rows, empty for open-ended rows. |
+| `caption_id` | string | Empty unless the row is caption-generated. |
+| `ground_truth_source` | string | Unified registry column(s), pipe-separated when multiple. |
+| `radiology_biomarker` | string | Optional radiology biomarker text for radiology rows. |
+| `pathology_feature_paths` | list[string] | Pathology feature refs, one-layer list. |
+| `radiology_feature_paths` | list[string] | Radiology feature refs, one-layer list. |
+| `dnam_feature_path` | string | DNAm feature path. |
+| `rna_feature_path` | string | RNA feature path. |
+| `pathology_roi_png_dir` | string | Test-row fallback image directory, empty otherwise. |
+| `radiology_view_png_dir` | string | Test-row fallback image directory, empty otherwise. |
+| `dnam_text_summary` | string | Test-row text fallback, empty otherwise. |
+| `rna_text_summary` | string | Test-row text fallback, empty otherwise. |
+
 - `scripts/hf_integration/01_upload_projector_train_to_hf.py`
   - Uploads projector-train parquet datasets to HF Hub using split-aware `DatasetDict` payloads.
   - Uses its own config file at `conf/hf_integration/projector_train_upload.yaml`.
@@ -132,7 +181,7 @@
   - Uploads the unified registry parquet to HF Hub as a split-aware dataset so the viewer exposes split selection.
   - Uses its own config file at `conf/hf_integration/unified_registry_upload.yaml`.
 - `scripts/vlm_train/01_train_vlm.py`
-  - Stage 2: VLM training scaffold entrypoint.
+  - Legacy VLM training scaffold. The active VQA SFT path is `scripts/06_vqa_train/train_vqa_lora.py`.
 
 ## Naming Rules
 - Runnable scripts must start with a verb.

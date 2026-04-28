@@ -10,6 +10,7 @@ __pycache__/
 data/raw/
 data/cache/
 data/tmp/
+data/vqa/prefix_cache/
 data/registry/manifests/*.json
 output/
 outputs/
