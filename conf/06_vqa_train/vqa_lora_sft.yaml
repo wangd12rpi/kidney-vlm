@@ -10,7 +10,8 @@ projector_dtype: float32
 attn_implementation: sdpa
 gradient_checkpointing: true
 gradient_checkpointing_use_reentrant: false
-device: cuda:0
+# If true, launch with torchrun; GPU ranks come from LOCAL_RANK, not YAML.
+ddp: false
 seed: 42
 
 dataset:
@@ -41,7 +42,7 @@ prompt:
 
 preview:
   num_train_samples: 5
-  exit_after_preview: true
+  exit_after_preview: false
 
 prefix_cache:
   enabled: true
