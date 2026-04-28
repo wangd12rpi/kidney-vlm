@@ -63,6 +63,25 @@ def test_vqa_train_script_cfg_wraps_under_stage_package() -> None:
     assert int(cfg.vqa_train.dataset.max_train_samples) == 4
 
 
+def test_vqa_prefix_cache_script_cfg_wraps_under_stage_package() -> None:
+    pytest.importorskip("hydra")
+
+    from kidney_vlm.script_config import load_script_cfg
+
+    repo_root = Path(__file__).resolve().parents[1]
+    os.environ["KIDNEY_VLM_ROOT"] = str(repo_root)
+
+    cfg = load_script_cfg(
+        repo_root=repo_root,
+        config_relative_path="06_vqa_train/cache_vqa_prefixes.yaml",
+        overrides=["vqa_train.batch_size.pathology=2"],
+    )
+
+    assert str(cfg.vqa_train.name) == "vqa_prefix_cache"
+    assert str(cfg.vqa_train.dataset.unified_parquet_path) == "data/registry/unified.parquet"
+    assert int(cfg.vqa_train.batch_size.pathology) == 2
+
+
 def test_vqa_evaluation_script_cfg_uses_stage_07_path() -> None:
     pytest.importorskip("hydra")
 
@@ -76,4 +95,16 @@ def test_vqa_evaluation_script_cfg_uses_stage_07_path() -> None:
         config_relative_path="07_vqa_evaluation/evaluate_vqa_gpt.yaml",
     )
 
-    assert str(cfg.vqa_evaluation.name) == "vqa_eval_gpt_mcq_smoke"
+    assert str(cfg.vqa_evaluation.name) == "vqa_eval_v2"
+    assert str(cfg.vqa_evaluation.run.name) == "smoke_test"
+    assert int(cfg.vqa_evaluation.run.print_first_n_outputs) == 0
+    assert bool(cfg.vqa_evaluation.models.gpt_5_1.enabled) is False
+    assert int(cfg.vqa_evaluation.models.gpt_5_1.batch_size) == 1
+    assert "display_name" not in cfg.vqa_evaluation.models.gpt_5_1
+    assert bool(cfg.vqa_evaluation.models.medgemma_4b_it.load_in_8bit) is True
+    assert int(cfg.vqa_evaluation.models.medgemma_4b_it.batch_size) == 1
+    assert bool(cfg.vqa_evaluation.models.oncovlm_qwen_no_finetune.enabled) is True
+    assert int(cfg.vqa_evaluation.models.oncovlm_qwen_no_finetune.batch_size) == 1
+    assert bool(cfg.vqa_evaluation.models.oncovlm_qwen_no_finetune.enable_thinking) is False
+    assert "display_name" not in cfg.vqa_evaluation.models.oncovlm_qwen_no_finetune
+    assert "enabled" not in cfg.vqa_evaluation.models.oncovlm_qwen_no_finetune.projectors.pathology

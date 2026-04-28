@@ -1,0 +1,60 @@
+name: vqa_prefix_cache
+
+model_name_or_path: Qwen/Qwen3.5-9B
+device: cuda:0
+projector_dtype: float32
+cache_dtype: float16
+cache_root: data/vqa/prefix_cache
+overwrite: false
+
+dataset:
+  unified_parquet_path: data/registry/unified.parquet
+  # Empty means every split in the unified registry.
+  splits: []
+  sources: []
+  project_ids: []
+  max_items_per_modality:
+
+modalities:
+  - pathology
+  - radiology
+  - dnam
+  - rna
+
+feature_columns:
+  pathology: pathology_tile_embedding_paths
+  radiology: radiology_embedding_paths
+  dnam: genomics_dna_methylation_feature_path
+  rna: genomics_rna_bulk_feature_path
+
+batch_size:
+  pathology: 12
+  radiology: 64
+  dnam: 64
+  rna: 64
+
+projectors:
+  pathology:
+    enabled: true
+    trainable: false
+    checkpoint_path: outputs/projectors/qwen3_5_9b/pathology/path_resampler_20260417_180638_EST/best.ckpt
+    max_tokens: 20000
+    patch_compression_method: none
+    patch_compression_kernel_size: 1
+    token_dropout_prob: 0.0
+  radiology:
+    enabled: true
+    trainable: false
+    checkpoint_path: outputs/projectors/qwen3_5_9b/radiology/radiology_remote_weights_20260423_000000_EST/best.ckpt
+    max_tokens: 4000
+    token_dropout_prob: 0.0
+  dnam:
+    enabled: true
+    trainable: false
+    checkpoint_path: outputs/projectors/qwen3_5_9b/dnam/dnam_mlp_20260420_025027_EST/best.ckpt
+    max_tokens: 80
+  rna:
+    enabled: true
+    trainable: false
+    checkpoint_path: outputs/projectors/qwen3_5_9b/rna/rna_remote_weights_20260423_000000_EST/best.ckpt
+    max_tokens: 80

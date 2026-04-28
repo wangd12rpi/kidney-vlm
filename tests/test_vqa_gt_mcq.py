@@ -77,6 +77,7 @@ def test_build_ground_truth_mcq_frame_creates_paired_modality_rows() -> None:
     assert frame["base_question_id"].nunique() == 1
     assert frame["question_id"].nunique() == 3
     assert frame["answer"].tolist() == ["Stage II", "Stage II", "Stage II"]
+    assert frame["answer_label"].tolist() == ["B", "B", "B"]
     assert frame[
         ["option_a", "option_b", "option_c", "option_d"]
     ].drop_duplicates().values.tolist() == [
@@ -204,6 +205,93 @@ def test_build_ground_truth_mcq_frame_applies_modality_requirement_states() -> N
     assert frame["question_id"].is_unique
 
 
+def test_build_ground_truth_mcq_sampling_protects_radiology_base_questions() -> None:
+    registry = pd.DataFrame(
+        [
+            {
+                "sample_id": "TCGA-AA-0001",
+                "project_id": "TCGA-TEST",
+                "split": "train",
+                "task_stage_label": "Stage I",
+                "pathology_tile_embedding_paths": ["features/path-a.h5"],
+            },
+            {
+                "sample_id": "TCGA-AA-0002",
+                "project_id": "TCGA-TEST",
+                "split": "train",
+                "task_stage_label": "Stage II",
+                "pathology_tile_embedding_paths": ["features/path-b.h5"],
+                "radiology_embedding_paths": ["features/rad-b.h5"],
+            },
+            {
+                "sample_id": "TCGA-AA-0003",
+                "project_id": "TCGA-TEST",
+                "split": "val",
+                "task_stage_label": "Stage III",
+                "pathology_tile_embedding_paths": ["features/path-c.h5"],
+            },
+        ]
+    )
+    cfg = {
+        "sampling": {
+            "enabled": True,
+            "seed": 123,
+            "splits": ["train"],
+            "protect_radiology_questions": True,
+            "task_id_keep_ratios": {"pathologic_stage": 0.0},
+        },
+        "categorical_tasks": [
+            {
+                "task_category": "stage",
+                "task_id": "pathologic_stage",
+                "source_column": "task_stage_label",
+                "question_template": "What is the AJCC pathologic stage for this case?",
+                "options": ["Stage I", "Stage II", "Stage III", "Stage IV"],
+                "modality_combination_overrides": [
+                    {
+                        "name": "all_available",
+                        "use_pathology": "must_have",
+                        "use_radiology": "use_if_avail",
+                        "use_dnam": "not_include",
+                        "use_rna": "not_include",
+                    },
+                    {
+                        "name": "path_only",
+                        "use_pathology": "must_have",
+                        "use_radiology": "not_include",
+                        "use_dnam": "not_include",
+                        "use_rna": "not_include",
+                    },
+                    {
+                        "name": "radiology_only",
+                        "use_pathology": "not_include",
+                        "use_radiology": "must_have",
+                        "use_dnam": "not_include",
+                        "use_rna": "not_include",
+                    },
+                ],
+            }
+        ],
+        "boolean_tasks": [],
+    }
+
+    frame, stats = build_ground_truth_mcq_frame(registry, cfg)
+
+    assert set(frame["case_id"]) == {"TCGA-AA-0002", "TCGA-AA-0003"}
+    assert sorted(
+        frame.loc[
+            frame["case_id"].eq("TCGA-AA-0002"),
+            "modality_combination_name",
+        ]
+    ) == [
+        "all_available",
+        "path_only",
+        "radiology_only",
+    ]
+    assert stats["sampling"]["sampled_out_semantic_questions"] == 1
+    assert stats["sampling"]["sampling_protected_radiology_questions"] == 1
+
+
 def test_build_ground_truth_mcq_frame_requires_modality_combination_names() -> None:
     registry = pd.DataFrame(
         [
@@ -329,6 +417,10 @@ def test_build_ground_truth_mcq_frame_supports_binary_mutation_tasks() -> None:
 
     assert len(frame) == 2
     assert set(frame["answer"]) == {"TP53 mutation present", "TP53 mutation absent"}
+    assert set(zip(frame["answer"], frame["answer_label"], strict=True)) == {
+        ("TP53 mutation present", "A"),
+        ("TP53 mutation absent", "B"),
+    }
     assert set(frame["task_id"]) == {"mutation_tp53"}
     assert frame["pathology_feature_paths"].tolist() == [[], []]
     assert frame["radiology_feature_paths"].tolist() == [[], []]
@@ -396,6 +488,7 @@ def test_build_ground_truth_mcq_frame_merges_and_skips_categorical_answers() -> 
     frame, stats = build_ground_truth_mcq_frame(registry, cfg)
 
     assert frame["answer"].tolist() == ["Stage I", "Stage IV"]
+    assert frame["answer_label"].tolist() == ["A", "D"]
     assert frame[
         ["option_a", "option_b", "option_c", "option_d"]
     ].drop_duplicates().values.tolist() == [
@@ -651,12 +744,35 @@ def test_build_ground_truth_mcq_frame_populates_test_genomics_text_from_raw_file
 
     test_row = frame.loc[frame["split"].eq("test")].iloc[0]
     train_row = frame.loc[frame["split"].eq("train")].iloc[0]
-    assert test_row["dnam_text_summary"].startswith("DNA methylation raw beta summary:")
+    assert test_row["dnam_text_summary"].startswith("DNA methylation raw beta summary")
     assert "mean beta" in test_row["dnam_text_summary"]
-    assert test_row["rna_text_summary"].startswith("RNA-seq raw expression summary:")
+    assert test_row["rna_text_summary"].startswith("RNA-seq raw expression summary")
     assert "GENEA (TPM 12.5)" in test_row["rna_text_summary"]
     assert train_row["dnam_text_summary"] == ""
     assert train_row["rna_text_summary"] == ""
+
+    dnam_summary = genomics_text_summary.build_dnam_text_summary(
+        {
+            "project_id": "TCGA-KIRC",
+            "genomics_dna_methylation_paths": [str(dnam_raw)],
+        },
+        panel_genes=["VHL"],
+    )
+    assert "Promoter methylation for benchmark mutation panel genes" in dnam_summary
+    assert "VHL promoter beta not_assessed" in dnam_summary
+
+    rna_summary = genomics_text_summary.build_rna_text_summary(
+        {
+            "project_id": "TCGA-TEST",
+            "genomics_rna_bulk_paths": [str(rna_raw)],
+        },
+        panel_genes=["GENEA", "GENEC", "TP53"],
+    )
+    assert "RNA expression for benchmark mutation panel genes" in rna_summary
+    assert "GENEA TPM 12.5" in rna_summary
+    assert "GENEC TPM 3.2" in rna_summary
+    assert "TP53 TPM not_assessed" in rna_summary
+    assert "RNA pathway and microenvironment signatures" in rna_summary
 
 
 def test_build_ground_truth_mcq_frame_can_skip_test_genomics_text_summaries(

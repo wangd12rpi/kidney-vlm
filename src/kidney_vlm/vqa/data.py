@@ -19,6 +19,7 @@ from kidney_vlm.training.collator import (
     _sample_sequence_features,
 )
 from kidney_vlm.vqa.constants import MODALITIES, MODALITY_FEATURE_COLUMNS, MODALITY_FLAG_COLUMNS
+from kidney_vlm.vqa.prefix_cache import prefix_cache_path
 from kidney_vlm.vqa.prompts import (
     build_vqa_prompt,
     is_open_ended_question_type,
@@ -214,6 +215,109 @@ def load_modality_feature_tensor(root_dir: Path, row: Mapping[str, Any], modalit
     raise ValueError(f"Unsupported modality: {modality}")
 
 
+def prefix_cache_enabled(stage_cfg: Any) -> bool:
+    return bool(cfg_get(cfg_get(stage_cfg, "prefix_cache", {}), "enabled", False))
+
+
+def row_feature_refs_for_modality(row: Mapping[str, Any], modality: str) -> list[str]:
+    values = _normalize_list(row.get(MODALITY_FEATURE_COLUMNS[modality], ""))
+    return [clean_text(value) for value in values if clean_text(value)]
+
+
+def row_prefix_cache_path(root_dir: Path, stage_cfg: Any, modality: str, feature_ref: str) -> Path:
+    prefix_cfg = cfg_get(stage_cfg, "prefix_cache", {})
+    projectors_cfg = cfg_get(stage_cfg, "projectors", {})
+    block_cfg = cfg_get(projectors_cfg, modality, {})
+    return prefix_cache_path(
+        repo_root=Path(root_dir),
+        cache_root=cfg_get(prefix_cfg, "cache_root", "data/vqa/prefix_cache"),
+        model_name_or_path=str(cfg_get(stage_cfg, "model_name_or_path")),
+        modality=modality,
+        checkpoint_path=cfg_get(block_cfg, "checkpoint_path"),
+        feature_ref=feature_ref,
+    )
+
+
+def row_missing_prefix_cache_entries(root_dir: Path, stage_cfg: Any, row: Mapping[str, Any]) -> list[str]:
+    missing: list[str] = []
+    for modality in MODALITIES:
+        if not row_uses_modality(row, modality):
+            continue
+        refs = row_feature_refs_for_modality(row, modality)
+        if not refs:
+            missing.append(f"{modality}: <empty feature reference>")
+            continue
+        for ref in refs:
+            path = row_prefix_cache_path(root_dir, stage_cfg, modality, ref)
+            if not path.exists():
+                try:
+                    display_path = path.relative_to(Path(root_dir).resolve()).as_posix()
+                except ValueError:
+                    display_path = str(path)
+                missing.append(f"{modality}: {display_path}")
+    return missing
+
+
+def filter_rows_with_prefix_cache(
+    frame: pd.DataFrame,
+    *,
+    root_dir: Path,
+    stage_cfg: Any,
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    if not prefix_cache_enabled(stage_cfg):
+        return frame.reset_index(drop=True), []
+
+    keep_mask: list[bool] = []
+    skipped: list[dict[str, Any]] = []
+    for row_index, row in frame.iterrows():
+        missing = row_missing_prefix_cache_entries(root_dir, stage_cfg, row)
+        keep = not missing
+        keep_mask.append(keep)
+        if not keep:
+            skipped.append(
+                {
+                    "row_index": int(row_index),
+                    "question_id": row.get("question_id"),
+                    "case_id": row.get("case_id"),
+                    "missing": missing,
+                }
+            )
+
+    return frame.loc[keep_mask].reset_index(drop=True), skipped
+
+
+def load_cached_prefix_tensor(path: Path) -> torch.Tensor:
+    if not path.exists():
+        raise FileNotFoundError(f"Cached VQA prefix tensor not found: {path}")
+    tensor = torch.load(path, map_location="cpu", weights_only=True)
+    if not torch.is_tensor(tensor):
+        raise TypeError(f"Cached VQA prefix must be a tensor: {path}")
+    tensor = tensor.detach().cpu()
+    if tensor.ndim != 2:
+        raise ValueError(f"Cached VQA prefix must be 2D [tokens, hidden], got {tuple(tensor.shape)} from {path}")
+    return tensor
+
+
+def load_row_cached_prefix_tensor(root_dir: Path, stage_cfg: Any, row: Mapping[str, Any], modality: str) -> torch.Tensor:
+    tensors: list[torch.Tensor] = []
+    for ref in row_feature_refs_for_modality(row, modality):
+        tensors.append(load_cached_prefix_tensor(row_prefix_cache_path(root_dir, stage_cfg, modality, ref)))
+    if not tensors:
+        raise FileNotFoundError(f"Question {row.get('question_id', '<unknown>')} uses {modality}, but has no cacheable feature refs.")
+    hidden_size = int(tensors[0].shape[1])
+    for tensor in tensors:
+        if int(tensor.shape[1]) != hidden_size:
+            raise ValueError(
+                f"Cached {modality} prefix hidden-size mismatch for question {row.get('question_id', '<unknown>')}: "
+                f"expected {hidden_size}, got {int(tensor.shape[1])}"
+            )
+    tensor = torch.cat(tensors, dim=0) if len(tensors) > 1 else tensors[0]
+    max_prefix_tokens = cfg_get(cfg_get(cfg_get(stage_cfg, "prefix_cache", {}), "max_prefix_tokens", {}), modality, None)
+    if max_prefix_tokens not in (None, "", "null"):
+        tensor = _sample_sequence_features(tensor, max_tokens=int(max_prefix_tokens))
+    return tensor
+
+
 def pad_optional_feature_tensors(modality: str, tensors: list[torch.Tensor | None]) -> dict[str, torch.Tensor]:
     present_tensors = [tensor for tensor in tensors if tensor is not None]
     if not present_tensors:
@@ -243,6 +347,36 @@ def pad_optional_feature_tensors(modality: str, tensors: list[torch.Tensor | Non
     }
 
 
+def pad_optional_prefix_tensors(modality: str, tensors: list[torch.Tensor | None]) -> dict[str, torch.Tensor]:
+    present_tensors = [tensor for tensor in tensors if tensor is not None]
+    if not present_tensors:
+        return {}
+    hidden_size = int(present_tensors[0].shape[1])
+    dtype = present_tensors[0].dtype
+    for tensor in present_tensors:
+        if tensor.ndim != 2:
+            raise ValueError(f"Expected 2D cached {modality} prefix tensor, got shape {tuple(tensor.shape)}")
+        if int(tensor.shape[1]) != hidden_size:
+            raise ValueError(
+                f"Cached {modality} prefix hidden-size mismatch in batch: expected {hidden_size}, got {int(tensor.shape[1])}"
+            )
+
+    batch_size = len(tensors)
+    max_tokens = max(int(tensor.shape[0]) for tensor in present_tensors)
+    embeddings = torch.zeros((batch_size, max_tokens, hidden_size), dtype=dtype)
+    mask = torch.zeros((batch_size, max_tokens), dtype=torch.long)
+    for row_index, tensor in enumerate(tensors):
+        if tensor is None:
+            continue
+        token_count = int(tensor.shape[0])
+        embeddings[row_index, :token_count] = tensor
+        mask[row_index, :token_count] = 1
+    return {
+        f"{modality}_prefix_embeddings": embeddings,
+        f"{modality}_prefix_mask": mask,
+    }
+
+
 @dataclass
 class VQATrainingCollator:
     tokenizer: Any
@@ -254,6 +388,7 @@ class VQATrainingCollator:
         self.max_text_length = int(cfg_get(self.stage_cfg, "max_text_length", 1024))
         self.prompt_cfg = cfg_get(self.stage_cfg, "prompt", {})
         self.projectors_cfg = cfg_get(self.stage_cfg, "projectors", {})
+        self.use_prefix_cache = prefix_cache_enabled(self.stage_cfg)
 
     def _build_text_pair(self, row: Mapping[str, Any]) -> tuple[list[int], list[int], list[dict[str, int | str]], str]:
         answer = clean_text(row.get("answer", ""))
@@ -280,6 +415,7 @@ class VQATrainingCollator:
         prefix_spans: list[list[dict[str, int | str]]] = []
         prompt_texts: list[str] = []
         modality_tensors: dict[str, list[torch.Tensor | None]] = {modality: [] for modality in MODALITIES}
+        prefix_tensors: dict[str, list[torch.Tensor | None]] = {modality: [] for modality in MODALITIES}
         metadata_keys = ("question_id", "case_id", "project_id", "task_id", "question_type", "generation_type")
         metadata: dict[str, list[Any]] = {key: [] for key in metadata_keys}
 
@@ -291,10 +427,14 @@ class VQATrainingCollator:
             prompt_texts.append(prompt_text)
             for modality in MODALITIES:
                 if row_uses_modality(row, modality):
-                    block_cfg = cfg_get(self.projectors_cfg, modality, {})
-                    modality_tensors[modality].append(load_modality_feature_tensor(self.root_dir, row, modality, block_cfg))
+                    if self.use_prefix_cache:
+                        prefix_tensors[modality].append(load_row_cached_prefix_tensor(self.root_dir, self.stage_cfg, row, modality))
+                    else:
+                        block_cfg = cfg_get(self.projectors_cfg, modality, {})
+                        modality_tensors[modality].append(load_modality_feature_tensor(self.root_dir, row, modality, block_cfg))
                 else:
                     modality_tensors[modality].append(None)
+                    prefix_tensors[modality].append(None)
             for key in metadata_keys:
                 metadata[key].append(row.get(key))
 
@@ -316,8 +456,12 @@ class VQATrainingCollator:
             "prefix_spans": prefix_spans,
             "prompt_text": prompt_texts,
         }
-        for modality, tensors in modality_tensors.items():
-            batch.update(pad_optional_feature_tensors(modality, tensors))
+        if self.use_prefix_cache:
+            for modality, tensors in prefix_tensors.items():
+                batch.update(pad_optional_prefix_tensors(modality, tensors))
+        else:
+            for modality, tensors in modality_tensors.items():
+                batch.update(pad_optional_feature_tensors(modality, tensors))
         batch.update(metadata)
         return batch
 

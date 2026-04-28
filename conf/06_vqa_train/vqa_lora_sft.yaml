@@ -7,7 +7,7 @@ load_in_8bit: true
 torch_dtype: bfloat16
 autocast_dtype: float16
 projector_dtype: float32
-attn_implementation:
+attn_implementation: sdpa
 gradient_checkpointing: true
 gradient_checkpointing_use_reentrant: false
 device: cuda:0
@@ -35,16 +35,28 @@ dataset:
   sample_seed: 42
 
 prompt:
-  system_prompt: You are OncoVLM, a multimodal cancer assistant. Use only the provided projector features to answer.
-  mcq_response_instruction: Answer with the exact choice text.
+  system_prompt: You are OncoVLM, a multimodal cancer assistant. This is a forced-choice predictive benchmark. Use only the provided evidence and choose the most likely listed option.
+  mcq_response_instruction: Return only the exact text of one choice. Do not explain. Do not say that the information is insufficient.
   open_response_instruction: Answer concisely.
 
 preview:
-  num_train_samples: 0
-  exit_after_preview: false
+  num_train_samples: 5
+  exit_after_preview: true
+
+prefix_cache:
+  enabled: true
+  cache_root: data/vqa/prefix_cache
+  scan_before_training: false
+  skip_missing_rows: true
+  max_missing_examples: 10
+  max_prefix_tokens:
+    pathology: 512
+    radiology: 256
+    dnam:
+    rna:
 
 lora:
-  r: 16
+  r: 8
   alpha: 32
   dropout: 0.05
   bias: none
@@ -85,7 +97,7 @@ projectors:
 
 batch_size: 1
 num_epochs: 3
-learning_rate: 2e-5
+learning_rate: 1e-4
 weight_decay: 0.0
 gradient_accumulation_steps: 16
 grad_clip_norm: 1.0
@@ -108,6 +120,7 @@ wandb:
   project: oncovlm
   entity: d0nnw0n9-rensselaer-polytechnic-institute
   mode: online
+  log_every_n_steps: 4
   tags:
     - vqa_train
     - lora

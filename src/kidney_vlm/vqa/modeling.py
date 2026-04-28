@@ -191,16 +191,17 @@ class OncoVLMVQASFTModel(nn.Module):
         self,
         *,
         language_model: nn.Module,
-        projectors: dict[str, nn.ModuleDict],
-        projector_metadata: dict[str, dict[str, Any]],
+        projectors: dict[str, nn.ModuleDict] | None = None,
+        projector_metadata: dict[str, dict[str, Any]] | None = None,
     ):
         super().__init__()
+        projectors = projectors or {}
         self.language_model = language_model
         self.path_projectors = projectors.get("pathology")
         self.radiology_projectors = projectors.get("radiology")
         self.dnam_projectors = projectors.get("dnam")
         self.rna_projectors = projectors.get("rna")
-        self.projector_metadata = projector_metadata
+        self.projector_metadata = projector_metadata or {}
         self.hidden_size = resolve_language_model_hidden_size(language_model)
         config = getattr(self.language_model, "config", None)
         if config is not None and hasattr(config, "use_cache"):
@@ -295,7 +296,40 @@ class OncoVLMVQASFTModel(nn.Module):
             raise RuntimeError("VQA batch has no projector prefix features.")
         return prefix_outputs
 
-    def _forward_with_interleaved_prefixes(
+    def _cached_available_prefixes(
+        self,
+        *,
+        attention_mask: torch.Tensor,
+        pathology_prefix_embeddings: torch.Tensor | None,
+        pathology_prefix_mask: torch.Tensor | None,
+        radiology_prefix_embeddings: torch.Tensor | None,
+        radiology_prefix_mask: torch.Tensor | None,
+        dnam_prefix_embeddings: torch.Tensor | None,
+        dnam_prefix_mask: torch.Tensor | None,
+        rna_prefix_embeddings: torch.Tensor | None,
+        rna_prefix_mask: torch.Tensor | None,
+    ) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+        prefix_outputs: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+        for modality, prefix_embeddings, prefix_mask in [
+            ("pathology", pathology_prefix_embeddings, pathology_prefix_mask),
+            ("radiology", radiology_prefix_embeddings, radiology_prefix_mask),
+            ("dnam", dnam_prefix_embeddings, dnam_prefix_mask),
+            ("rna", rna_prefix_embeddings, rna_prefix_mask),
+        ]:
+            if prefix_embeddings is None:
+                continue
+            if prefix_embeddings.ndim != 3:
+                raise ValueError(f"Cached {modality} prefixes must be 3D [batch, tokens, hidden], got {tuple(prefix_embeddings.shape)}")
+            if prefix_mask is None:
+                prefix_mask = torch.ones(prefix_embeddings.shape[:2], device=attention_mask.device, dtype=attention_mask.dtype)
+            else:
+                prefix_mask = prefix_mask.to(device=attention_mask.device, dtype=attention_mask.dtype)
+            prefix_outputs[modality] = (prefix_embeddings, prefix_mask)
+        if not prefix_outputs:
+            raise RuntimeError("VQA batch has no cached prefix embeddings.")
+        return prefix_outputs
+
+    def _assemble_interleaved_prefix_sequence(
         self,
         *,
         input_ids: torch.Tensor,
@@ -304,7 +338,7 @@ class OncoVLMVQASFTModel(nn.Module):
         labels: torch.Tensor | None,
         prefix_outputs: dict[str, tuple[torch.Tensor, torch.Tensor]],
         prefix_spans: list[list[dict[str, Any]]],
-    ) -> Any:
+    ) -> dict[str, torch.Tensor | None]:
         row_embeddings: list[torch.Tensor] = []
         row_attention: list[torch.Tensor] = []
         row_labels: list[torch.Tensor] = []
@@ -397,15 +431,42 @@ class OncoVLMVQASFTModel(nn.Module):
         position_ids = combined_attention.long().cumsum(dim=1) - 1
         position_ids = position_ids.clamp_min(0)
         position_ids = position_ids.masked_fill(combined_attention == 0, 0)
+        return {
+            "input_ids": combined_per_layer_input_ids,
+            "inputs_embeds": combined_embeddings,
+            "attention_mask": combined_attention,
+            "position_ids": position_ids,
+            "labels": combined_labels,
+            "prefix_token_mask": combined_prefix_token_mask,
+        }
+
+    def _forward_with_interleaved_prefixes(
+        self,
+        *,
+        input_ids: torch.Tensor,
+        text_embeddings: torch.Tensor,
+        attention_mask: torch.Tensor,
+        labels: torch.Tensor | None,
+        prefix_outputs: dict[str, tuple[torch.Tensor, torch.Tensor]],
+        prefix_spans: list[list[dict[str, Any]]],
+    ) -> Any:
+        assembled = self._assemble_interleaved_prefix_sequence(
+            input_ids=input_ids,
+            text_embeddings=text_embeddings,
+            attention_mask=attention_mask,
+            labels=labels,
+            prefix_outputs=prefix_outputs,
+            prefix_spans=prefix_spans,
+        )
         return forward_language_model_with_soft_prefix(
             self.language_model,
-            input_ids=combined_per_layer_input_ids,
-            inputs_embeds=combined_embeddings,
-            attention_mask=combined_attention,
-            position_ids=position_ids,
-            labels=combined_labels,
+            input_ids=assembled["input_ids"],
+            inputs_embeds=assembled["inputs_embeds"],
+            attention_mask=assembled["attention_mask"],
+            position_ids=assembled["position_ids"],
+            labels=assembled["labels"],
             prefix_length=0,
-            prefix_token_mask=combined_prefix_token_mask,
+            prefix_token_mask=assembled["prefix_token_mask"],
         )
 
     def _forward_with_prepended_prefixes(
@@ -454,6 +515,154 @@ class OncoVLMVQASFTModel(nn.Module):
             prefix_length=prefix_embeddings.shape[1],
         )
 
+    def _prefix_outputs_from_inputs(
+        self,
+        *,
+        attention_mask: torch.Tensor,
+        pathology_features: torch.Tensor | None = None,
+        pathology_feature_mask: torch.Tensor | None = None,
+        radiology_features: torch.Tensor | None = None,
+        radiology_feature_mask: torch.Tensor | None = None,
+        dnam_features: torch.Tensor | None = None,
+        dnam_feature_mask: torch.Tensor | None = None,
+        rna_features: torch.Tensor | None = None,
+        rna_feature_mask: torch.Tensor | None = None,
+        pathology_prefix_embeddings: torch.Tensor | None = None,
+        pathology_prefix_mask: torch.Tensor | None = None,
+        radiology_prefix_embeddings: torch.Tensor | None = None,
+        radiology_prefix_mask: torch.Tensor | None = None,
+        dnam_prefix_embeddings: torch.Tensor | None = None,
+        dnam_prefix_mask: torch.Tensor | None = None,
+        rna_prefix_embeddings: torch.Tensor | None = None,
+        rna_prefix_mask: torch.Tensor | None = None,
+    ) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+        has_cached_prefixes = any(
+            tensor is not None
+            for tensor in [
+                pathology_prefix_embeddings,
+                radiology_prefix_embeddings,
+                dnam_prefix_embeddings,
+                rna_prefix_embeddings,
+            ]
+        )
+        has_raw_features = any(
+            tensor is not None
+            for tensor in [
+                pathology_features,
+                radiology_features,
+                dnam_features,
+                rna_features,
+            ]
+        )
+        if has_cached_prefixes and has_raw_features:
+            raise RuntimeError("VQA forward received both cached prefixes and raw features. Use exactly one prefix source.")
+        if has_cached_prefixes:
+            return self._cached_available_prefixes(
+                attention_mask=attention_mask,
+                pathology_prefix_embeddings=pathology_prefix_embeddings,
+                pathology_prefix_mask=pathology_prefix_mask,
+                radiology_prefix_embeddings=radiology_prefix_embeddings,
+                radiology_prefix_mask=radiology_prefix_mask,
+                dnam_prefix_embeddings=dnam_prefix_embeddings,
+                dnam_prefix_mask=dnam_prefix_mask,
+                rna_prefix_embeddings=rna_prefix_embeddings,
+                rna_prefix_mask=rna_prefix_mask,
+            )
+        return self._project_available_prefixes(
+            attention_mask=attention_mask,
+            pathology_features=pathology_features,
+            pathology_feature_mask=pathology_feature_mask,
+            radiology_features=radiology_features,
+            radiology_feature_mask=radiology_feature_mask,
+            dnam_features=dnam_features,
+            dnam_feature_mask=dnam_feature_mask,
+            rna_features=rna_features,
+            rna_feature_mask=rna_feature_mask,
+        )
+
+    def prepare_interleaved_generation_inputs(
+        self,
+        *,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        pathology_features: torch.Tensor | None = None,
+        pathology_feature_mask: torch.Tensor | None = None,
+        radiology_features: torch.Tensor | None = None,
+        radiology_feature_mask: torch.Tensor | None = None,
+        dnam_features: torch.Tensor | None = None,
+        dnam_feature_mask: torch.Tensor | None = None,
+        rna_features: torch.Tensor | None = None,
+        rna_feature_mask: torch.Tensor | None = None,
+        pathology_prefix_embeddings: torch.Tensor | None = None,
+        pathology_prefix_mask: torch.Tensor | None = None,
+        radiology_prefix_embeddings: torch.Tensor | None = None,
+        radiology_prefix_mask: torch.Tensor | None = None,
+        dnam_prefix_embeddings: torch.Tensor | None = None,
+        dnam_prefix_mask: torch.Tensor | None = None,
+        rna_prefix_embeddings: torch.Tensor | None = None,
+        rna_prefix_mask: torch.Tensor | None = None,
+        prefix_spans: list[list[dict[str, Any]]],
+    ) -> dict[str, torch.Tensor]:
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids, dtype=torch.long)
+        text_embeddings = self.language_model.get_input_embeddings()(input_ids)
+        prefix_outputs = self._prefix_outputs_from_inputs(
+            attention_mask=attention_mask,
+            pathology_features=pathology_features,
+            pathology_feature_mask=pathology_feature_mask,
+            radiology_features=radiology_features,
+            radiology_feature_mask=radiology_feature_mask,
+            dnam_features=dnam_features,
+            dnam_feature_mask=dnam_feature_mask,
+            rna_features=rna_features,
+            rna_feature_mask=rna_feature_mask,
+            pathology_prefix_embeddings=pathology_prefix_embeddings,
+            pathology_prefix_mask=pathology_prefix_mask,
+            radiology_prefix_embeddings=radiology_prefix_embeddings,
+            radiology_prefix_mask=radiology_prefix_mask,
+            dnam_prefix_embeddings=dnam_prefix_embeddings,
+            dnam_prefix_mask=dnam_prefix_mask,
+            rna_prefix_embeddings=rna_prefix_embeddings,
+            rna_prefix_mask=rna_prefix_mask,
+        )
+        assembled = self._assemble_interleaved_prefix_sequence(
+            input_ids=input_ids,
+            text_embeddings=text_embeddings,
+            attention_mask=attention_mask,
+            labels=None,
+            prefix_outputs=prefix_outputs,
+            prefix_spans=prefix_spans,
+        )
+        input_ids = assembled["input_ids"]
+        inputs_embeds = assembled["inputs_embeds"]
+        attention_mask = assembled["attention_mask"]
+        if input_ids.shape[0] > 1:
+            row_lengths = attention_mask.sum(dim=1).long()
+            max_len = int(attention_mask.shape[1])
+            left_input_ids = torch.zeros_like(input_ids)
+            left_inputs_embeds = torch.zeros_like(inputs_embeds)
+            left_attention_mask = torch.zeros_like(attention_mask)
+            for row_idx, row_len_tensor in enumerate(row_lengths):
+                row_len = int(row_len_tensor.item())
+                if row_len == 0:
+                    continue
+                dst_start = max_len - row_len
+                left_input_ids[row_idx, dst_start:] = input_ids[row_idx, :row_len]
+                left_inputs_embeds[row_idx, dst_start:] = inputs_embeds[row_idx, :row_len]
+                left_attention_mask[row_idx, dst_start:] = attention_mask[row_idx, :row_len]
+            input_ids = left_input_ids
+            inputs_embeds = left_inputs_embeds
+            attention_mask = left_attention_mask
+        position_ids = attention_mask.long().cumsum(dim=1) - 1
+        position_ids = position_ids.clamp_min(0)
+        position_ids = position_ids.masked_fill(attention_mask == 0, 0)
+        return {
+            "input_ids": input_ids,
+            "inputs_embeds": inputs_embeds,
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
+        }
+
     def forward(
         self,
         *,
@@ -468,13 +677,21 @@ class OncoVLMVQASFTModel(nn.Module):
         dnam_feature_mask: torch.Tensor | None = None,
         rna_features: torch.Tensor | None = None,
         rna_feature_mask: torch.Tensor | None = None,
+        pathology_prefix_embeddings: torch.Tensor | None = None,
+        pathology_prefix_mask: torch.Tensor | None = None,
+        radiology_prefix_embeddings: torch.Tensor | None = None,
+        radiology_prefix_mask: torch.Tensor | None = None,
+        dnam_prefix_embeddings: torch.Tensor | None = None,
+        dnam_prefix_mask: torch.Tensor | None = None,
+        rna_prefix_embeddings: torch.Tensor | None = None,
+        rna_prefix_mask: torch.Tensor | None = None,
         prefix_spans: list[list[dict[str, Any]]] | None = None,
     ) -> Any:
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids, dtype=torch.long)
 
         text_embeddings = self.language_model.get_input_embeddings()(input_ids)
-        prefix_outputs = self._project_available_prefixes(
+        prefix_outputs = self._prefix_outputs_from_inputs(
             attention_mask=attention_mask,
             pathology_features=pathology_features,
             pathology_feature_mask=pathology_feature_mask,
@@ -484,6 +701,14 @@ class OncoVLMVQASFTModel(nn.Module):
             dnam_feature_mask=dnam_feature_mask,
             rna_features=rna_features,
             rna_feature_mask=rna_feature_mask,
+            pathology_prefix_embeddings=pathology_prefix_embeddings,
+            pathology_prefix_mask=pathology_prefix_mask,
+            radiology_prefix_embeddings=radiology_prefix_embeddings,
+            radiology_prefix_mask=radiology_prefix_mask,
+            dnam_prefix_embeddings=dnam_prefix_embeddings,
+            dnam_prefix_mask=dnam_prefix_mask,
+            rna_prefix_embeddings=rna_prefix_embeddings,
+            rna_prefix_mask=rna_prefix_mask,
         )
         if prefix_spans is None:
             return self._forward_with_prepended_prefixes(

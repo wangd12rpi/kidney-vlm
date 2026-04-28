@@ -28,6 +28,7 @@ VQA_COLUMNS = [
     "option_c",
     "option_d",
     "answer",
+    "answer_label",
     "caption_id",
     "ground_truth_source",
     "radiology_biomarker",
@@ -45,6 +46,7 @@ ID_COLUMNS = ["question_id", "base_question_id"]
 BOOL_COLUMNS = ["use_pathology", "use_radiology", "use_dnam", "use_rna"]
 ARRAY_COLUMNS = ["pathology_feature_paths", "radiology_feature_paths"]
 OPTION_COLUMNS = ["option_a", "option_b", "option_c", "option_d"]
+ANSWER_LABELS = ("A", "B", "C", "D")
 TEXT_COLUMNS = [
     column
     for column in VQA_COLUMNS
@@ -202,8 +204,16 @@ def validate_vqa_df(df: pd.DataFrame, required_columns: Iterable[str] = VQA_COLU
             options = _option_values(row)
             if len(options) < 2:
                 raise ValueError(f"MCQ row {row_index} must have at least two non-empty options.")
-            if str(row["answer"]).strip() not in options:
+            answer = str(row["answer"]).strip()
+            if answer not in options:
                 raise ValueError(f"MCQ row {row_index} answer must exactly match one non-empty option.")
+            answer_label = str(row["answer_label"]).strip().upper()
+            expected_answer_label = ANSWER_LABELS[options.index(answer)]
+            if answer_label != expected_answer_label:
+                raise ValueError(
+                    f"MCQ row {row_index} answer_label must be {expected_answer_label} "
+                    f"for answer {answer!r}."
+                )
         if generation_type == "from_ground_truth" and not str(row["ground_truth_source"]).strip():
             raise ValueError(f"Ground-truth row {row_index} must set ground_truth_source.")
         if generation_type == "from_caption" and not str(row["caption_id"]).strip():

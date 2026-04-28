@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any
 import pandas as pd
 
 OPTION_COLUMNS = ["option_a", "option_b", "option_c", "option_d"]
+ANSWER_LABELS = ("A", "B", "C", "D")
 MODALITY_COMBO_KEYS = {
     "path": "use_pathology",
     "rad": "use_radiology",
@@ -36,6 +38,25 @@ def option_values(row: Mapping[str, Any]) -> list[str]:
         for column in OPTION_COLUMNS
         if str(row.get(column, "")).strip()
     ]
+
+
+def answer_label_for_text(row: Mapping[str, Any], answer_text: str) -> str:
+    answer = str(answer_text).strip()
+    if not answer:
+        return ""
+    for label, column in zip(ANSWER_LABELS, OPTION_COLUMNS, strict=True):
+        if str(row.get(column, "")).strip().casefold() == answer.casefold():
+            return label
+    return ""
+
+
+def question_type_key(question_type: Any) -> str:
+    normalized = str(question_type).strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized == "mcq":
+        return "mcq"
+    if normalized in {"qa", "open", "open_ended", "openended", "free_text", "short_answer"}:
+        return "qa"
+    raise ValueError(f"Unsupported VQA question_type for evaluation: {question_type!r}")
 
 
 def _required_text(row: Mapping[str, Any], column: str, modality_name: str) -> str:
@@ -156,6 +177,11 @@ def select_eval_rows(vqa_df: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFra
         question_types = _required_filter_values(question_type_filter, "question_types")
         out = out[out["question_type"].astype(str).isin(question_types)]
 
+    generation_type_filter = _enabled_filter(filters, "generation_types")
+    if generation_type_filter:
+        generation_types = _required_filter_values(generation_type_filter, "generation_types")
+        out = out[out["generation_type"].astype(str).isin(generation_types)]
+
     project_filter = _enabled_filter(filters, "project_ids")
     if project_filter:
         project_ids = _required_filter_values(project_filter, "project_ids")
@@ -212,9 +238,106 @@ def select_eval_rows(vqa_df: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFra
     return out
 
 
-def build_mcq_prompt(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> tuple[str, str]:
-    options = option_values(row)
-    option_lines = [f"- {option}" for option in options]
+def apply_group_sampling(frame: pd.DataFrame, sampling_cfg: Mapping[str, Any] | None) -> pd.DataFrame:
+    cfg = dict(sampling_cfg or {})
+    if frame.empty or not bool(cfg.get("enabled", False)):
+        return frame.reset_index(drop=True)
+
+    ratio = float(cfg.get("ratio", 1.0))
+    if ratio < 0.0 or ratio > 1.0:
+        raise ValueError(f"sampling.ratio must be in [0, 1], got {ratio}")
+    min_per_group = int(cfg.get("min_per_group", 0) or 0)
+    if min_per_group < 0:
+        raise ValueError(f"sampling.min_per_group must be non-negative, got {min_per_group}")
+    seed = int(cfg.get("seed", 42))
+    group_by = _as_list(
+        cfg.get(
+            "group_by",
+            [
+                "question_type",
+                "generation_type",
+                "task_category",
+                "task_id",
+                "modality_combination_name",
+            ],
+        )
+    )
+    missing_columns = [column for column in group_by if column not in frame.columns]
+    if missing_columns:
+        raise ValueError(f"sampling.group_by columns are missing from VQA frame: {missing_columns}")
+
+    sampled_groups: list[pd.DataFrame] = []
+    grouped = frame.groupby(group_by, sort=False, dropna=False)
+    for group_index, (_, group) in enumerate(grouped):
+        group = group.reset_index(drop=True)
+        target = max(min_per_group, int(math.ceil(len(group) * ratio)))
+        target = min(len(group), target)
+        if target >= len(group):
+            sampled_groups.append(group)
+            continue
+        sampled_groups.append(group.sample(n=target, random_state=seed + group_index))
+    if not sampled_groups:
+        return frame.head(0).reset_index(drop=True)
+    return pd.concat(sampled_groups, ignore_index=True).sort_values(
+        ["project_id", "case_id", "task_id", "question_id"]
+    ).reset_index(drop=True)
+
+
+def enabled_model_configs(models_cfg: Mapping[str, Any] | Sequence[Any]) -> list[dict[str, Any]]:
+    if isinstance(models_cfg, Mapping):
+        raw_items = list(models_cfg.items())
+    elif isinstance(models_cfg, Sequence) and not isinstance(models_cfg, (str, bytes)):
+        raw_items = [
+            (
+                str(raw_model_cfg.get("display_name", f"model_{index}"))
+                if isinstance(raw_model_cfg, Mapping)
+                else f"model_{index}",
+                raw_model_cfg,
+            )
+            for index, raw_model_cfg in enumerate(models_cfg)
+        ]
+    else:
+        raise TypeError("vqa_evaluation.models must be a mapping or list of model configs.")
+    enabled: list[dict[str, Any]] = []
+    for model_key, raw_model_cfg in raw_items:
+        if not isinstance(raw_model_cfg, Mapping):
+            raise TypeError(f"vqa_evaluation.models.{model_key} must be a mapping.")
+        model_cfg = dict(raw_model_cfg)
+        if not bool(model_cfg.get("enabled", False)):
+            continue
+        model_cfg["model_key"] = str(model_key)
+        model_cfg["display_name"] = str(model_cfg.get("display_name") or model_key).strip()
+        if not model_cfg["display_name"]:
+            raise ValueError(f"vqa_evaluation.models.{model_key}.display_name is empty.")
+        backend = str(model_cfg.get("backend", "")).strip()
+        if not backend:
+            raise ValueError(f"vqa_evaluation.models.{model_key}.backend is required.")
+        model_cfg["backend"] = backend
+        enabled.append(model_cfg)
+    if not enabled:
+        raise RuntimeError("No enabled VQA evaluation models found.")
+    return enabled
+
+
+def _prompt_block_for_row(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> dict[str, Any]:
+    prompt_key = question_type_key(row.get("question_type", ""))
+    prompts = cfg.get("prompts") or {}
+    if not isinstance(prompts, Mapping):
+        raise TypeError("vqa_evaluation.prompts must be a mapping.")
+    block = prompts.get(prompt_key)
+    if not isinstance(block, Mapping):
+        raise ValueError(f"vqa_evaluation.prompts.{prompt_key} must be defined.")
+    return dict(block)
+
+
+def _ignore_radiology_biomarker(cfg: Mapping[str, Any]) -> bool:
+    image_cfg = cfg.get("image_inputs") or {}
+    if not isinstance(image_cfg, Mapping):
+        raise TypeError("vqa_evaluation.image_inputs must be a mapping.")
+    return bool(image_cfg.get("ignore_radiology_biomarker", False))
+
+
+def _modality_evidence_text(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> str:
     modality_blocks: list[str] = []
 
     if bool(row.get("use_pathology")):
@@ -233,35 +356,58 @@ def build_mcq_prompt(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> tuple[st
         )
     if bool(row.get("use_radiology")):
         modality_blocks.append("<radiology_images>attached</radiology_images>")
-        modality_blocks.append(
-            "<radiology_biomarker>\n"
-            f"{_required_text(row, 'radiology_biomarker', 'radiology biomarker')}\n"
-            "</radiology_biomarker>"
-        )
+        if not _ignore_radiology_biomarker(cfg):
+            modality_blocks.append(
+                "<radiology_biomarker>\n"
+                f"{_required_text(row, 'radiology_biomarker', 'radiology biomarker')}\n"
+                "</radiology_biomarker>"
+            )
 
     if not modality_blocks:
         question_id = row.get("question_id", "<unknown>")
         raise ValueError(f"Question {question_id} has no enabled modalities.")
-    modality_text = "\n\n".join(modality_blocks).strip()
-    system_prompt = str(cfg.get("system_prompt", "")).strip()
-    response_instruction = str(cfg.get("response_instruction", "")).strip()
+    return "\n\n".join(modality_blocks).strip()
+
+
+def build_eval_prompt(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> tuple[str, str]:
+    prompt_block = _prompt_block_for_row(row, cfg)
+    prompt_key = question_type_key(row.get("question_type", ""))
+    system_prompt = str(prompt_block.get("system_prompt", "")).strip()
+    response_instruction = str(prompt_block.get("response_instruction", "")).strip()
     if not system_prompt:
-        raise ValueError("VQA GPT evaluation config must define system_prompt.")
+        raise ValueError(f"VQA evaluation prompt block for {prompt_key} must define system_prompt.")
     if not response_instruction:
-        raise ValueError("VQA GPT evaluation config must define response_instruction.")
+        raise ValueError(f"VQA evaluation prompt block for {prompt_key} must define response_instruction.")
+
+    question = str(row.get("question", "")).strip()
+    if not question:
+        raise ValueError(f"Question {row.get('question_id', '<unknown>')} has empty question text.")
+    modality_text = _modality_evidence_text(row, cfg)
     user_prompt = (
         f"{response_instruction}\n\n"
         "<modality_evidence>\n"
         f"{modality_text}\n"
         "</modality_evidence>\n\n"
         "<question>\n"
-        f"{str(row.get('question', '')).strip()}\n"
-        "</question>\n\n"
-        "<options>\n"
-        f"{chr(10).join(option_lines)}\n"
-        "</options>"
+        f"{question}\n"
+        "</question>"
     )
+    if prompt_key == "mcq":
+        options = option_values(row)
+        if len(options) < 2:
+            raise ValueError(f"MCQ question {row.get('question_id', '<unknown>')} has fewer than two options.")
+        option_lines = [f"- {option}" for option in options]
+        user_prompt = (
+            f"{user_prompt}\n\n"
+            "<choices>\n"
+            f"{chr(10).join(option_lines)}\n"
+            "</choices>"
+        )
     return system_prompt, user_prompt
+
+
+def build_mcq_prompt(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> tuple[str, str]:
+    return build_eval_prompt(row, cfg)
 
 
 def _resolve_path(path_value: str, *, repo_root: Path) -> Path:
@@ -400,6 +546,209 @@ def parse_mcq_response(response_text: str, options: Sequence[str]) -> dict[str, 
         return {"predicted_answer": answer, "parse_status": "substring"}
 
     return {"predicted_answer": "", "parse_status": "failed"}
+
+
+def parse_model_response(row: Mapping[str, Any], response_text: str) -> dict[str, str]:
+    prompt_key = question_type_key(row.get("question_type", ""))
+    if prompt_key == "mcq":
+        parsed = parse_mcq_response(response_text, option_values(row))
+        predicted_answer = parsed["predicted_answer"]
+        parsed["predicted_answer_label"] = answer_label_for_text(row, predicted_answer)
+        return parsed
+
+    parsed_json = _extract_json_object(response_text)
+    if parsed_json is not None:
+        answer = str(parsed_json.get("answer", "")).strip()
+        return {
+            "predicted_answer": answer,
+            "predicted_answer_label": "",
+            "parse_status": "exact" if answer else "failed",
+        }
+    answer = str(response_text).strip()
+    return {
+        "predicted_answer": answer,
+        "predicted_answer_label": "",
+        "parse_status": "raw" if answer else "failed",
+    }
+
+
+def _safe_mean(values: Sequence[float]) -> float | None:
+    return float(sum(values) / len(values)) if values else None
+
+
+def _classification_metrics(frame: pd.DataFrame) -> dict[str, Any]:
+    if frame.empty:
+        return {
+            "accuracy": None,
+            "correct": 0,
+            "f1_macro": None,
+            "f1_weighted": None,
+            "parse_failed": 0,
+        }
+    y_true = frame["answer_label"].fillna("").astype(str).str.strip().tolist()
+    y_pred = frame["predicted_answer_label"].fillna("").astype(str).str.strip().tolist()
+    correct = [bool(pred) and pred == true for true, pred in zip(y_true, y_pred, strict=True)]
+    labels = sorted({label for label in y_true if label})
+    f1_values: list[float] = []
+    weighted_values: list[float] = []
+    weights: list[int] = []
+    for label in labels:
+        tp = sum(1 for true, pred in zip(y_true, y_pred, strict=True) if true == label and pred == label)
+        fp = sum(1 for true, pred in zip(y_true, y_pred, strict=True) if true != label and pred == label)
+        fn = sum(1 for true, pred in zip(y_true, y_pred, strict=True) if true == label and pred != label)
+        denom = (2 * tp) + fp + fn
+        f1 = (2 * tp / denom) if denom else 0.0
+        support = sum(1 for true in y_true if true == label)
+        f1_values.append(float(f1))
+        weighted_values.append(float(f1) * support)
+        weights.append(support)
+    return {
+        "accuracy": float(sum(correct) / len(correct)),
+        "correct": int(sum(correct)),
+        "f1_macro": _safe_mean(f1_values),
+        "f1_weighted": float(sum(weighted_values) / sum(weights)) if weights else None,
+        "parse_failed": int(frame["parse_status"].astype(str).eq("failed").sum()),
+    }
+
+
+def add_bertscore_columns(predictions_df: pd.DataFrame, bert_score_cfg: Mapping[str, Any]) -> pd.DataFrame:
+    out = predictions_df.copy()
+    for column in ["bertscore_precision", "bertscore_recall", "bertscore_f1"]:
+        if column not in out.columns:
+            out[column] = None
+
+    cfg = dict(bert_score_cfg or {})
+    if not bool(cfg.get("enabled", True)):
+        return out
+    qa_mask = out["question_type"].astype(str).map(question_type_key).eq("qa")
+    qa_frame = out[qa_mask]
+    if qa_frame.empty:
+        return out
+
+    try:
+        from bert_score import score as bert_score
+    except ImportError as exc:
+        raise RuntimeError("Open-ended VQA evaluation requires bert-score. Install it with: uv add bert-score") from exc
+
+    candidates = qa_frame["predicted_answer"].fillna("").astype(str).tolist()
+    references = qa_frame["answer"].fillna("").astype(str).tolist()
+    precision, recall, f1 = bert_score(
+        candidates,
+        references,
+        model_type=str(cfg.get("model_type", "roberta-large")),
+        lang=str(cfg.get("lang", "en")),
+        batch_size=int(cfg.get("batch_size", 8)),
+        rescale_with_baseline=bool(cfg.get("rescale_with_baseline", True)),
+    )
+    indices = qa_frame.index.tolist()
+    out.loc[indices, "bertscore_precision"] = [float(value) for value in precision.detach().cpu().tolist()]
+    out.loc[indices, "bertscore_recall"] = [float(value) for value in recall.detach().cpu().tolist()]
+    out.loc[indices, "bertscore_f1"] = [float(value) for value in f1.detach().cpu().tolist()]
+    return out
+
+
+METRIC_DIMENSIONS = [
+    "question_type",
+    "generation_type",
+    "task_category",
+    "task_id",
+    "modality_combination_name",
+    "project_id",
+]
+
+
+def _base_metric_record(
+    *,
+    metric_group: str,
+    model_display_name: str,
+    backend: str,
+    model_name_or_path: str,
+    values: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "metric_group": metric_group,
+        "model_display_name": model_display_name,
+        "backend": backend,
+        "model_name_or_path": model_name_or_path,
+    }
+    for dimension in METRIC_DIMENSIONS:
+        record[dimension] = "ALL"
+    if values:
+        record.update(values)
+    return record
+
+
+def _metric_values(frame: pd.DataFrame) -> dict[str, Any]:
+    if frame.empty:
+        return {"n": 0}
+    prompt_keys = frame["question_type"].astype(str).map(question_type_key)
+    if prompt_keys.nunique() > 1:
+        return {"n": int(len(frame))}
+    if prompt_keys.iloc[0] == "mcq":
+        return {"n": int(len(frame)), **_classification_metrics(frame)}
+
+    precision_values = [float(value) for value in frame["bertscore_precision"].dropna().tolist()]
+    recall_values = [float(value) for value in frame["bertscore_recall"].dropna().tolist()]
+    f1_values = [float(value) for value in frame["bertscore_f1"].dropna().tolist()]
+    return {
+        "n": int(len(frame)),
+        "parse_failed": int(frame["parse_status"].astype(str).eq("failed").sum()),
+        "bertscore_precision_mean": _safe_mean(precision_values),
+        "bertscore_recall_mean": _safe_mean(recall_values),
+        "bertscore_f1_mean": _safe_mean(f1_values),
+    }
+
+
+def build_flat_metric_records(
+    predictions_df: pd.DataFrame,
+    *,
+    model_display_name: str,
+    backend: str,
+    model_name_or_path: str,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    group_specs: list[tuple[str, list[str]]] = [
+        ("overall", []),
+        ("by_question_type", ["question_type"]),
+        ("by_generation_type", ["generation_type"]),
+        ("by_task_category", ["task_category"]),
+        ("by_task_id", ["task_id"]),
+        ("by_modality_combination_name", ["modality_combination_name"]),
+        ("by_project_id", ["project_id"]),
+        (
+            "core_slice",
+            ["question_type", "generation_type", "task_category", "modality_combination_name"],
+        ),
+    ]
+    for metric_group, group_columns in group_specs:
+        if not group_columns:
+            record = _base_metric_record(
+                metric_group=metric_group,
+                model_display_name=model_display_name,
+                backend=backend,
+                model_name_or_path=model_name_or_path,
+            )
+            record.update(_metric_values(predictions_df))
+            records.append(record)
+            continue
+
+        for group_values, group in predictions_df.groupby(group_columns, dropna=False, sort=True):
+            if not isinstance(group_values, tuple):
+                group_values = (group_values,)
+            dimension_values = {
+                column: str(value)
+                for column, value in zip(group_columns, group_values, strict=True)
+            }
+            record = _base_metric_record(
+                metric_group=metric_group,
+                model_display_name=model_display_name,
+                backend=backend,
+                model_name_or_path=model_name_or_path,
+                values=dimension_values,
+            )
+            record.update(_metric_values(group))
+            records.append(record)
+    return records
 
 
 def compute_mcq_metrics(predictions_df: pd.DataFrame) -> dict[str, Any]:

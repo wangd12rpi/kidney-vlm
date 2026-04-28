@@ -30,6 +30,8 @@ from kidney_vlm.vqa.data import (
     VQADataset,
     VQATrainingCollator,
     assert_vqa_rows_are_trainable,
+    row_missing_prefix_cache_entries,
+    prefix_cache_enabled,
     select_vqa_rows,
 )
 from kidney_vlm.vqa.modeling import (
@@ -182,6 +184,14 @@ def _forward_vqa_batch(model: OncoVLMVQASFTModel, batch: dict[str, Any]):
         dnam_feature_mask=batch.get("dnam_feature_mask"),
         rna_features=batch.get("rna_features"),
         rna_feature_mask=batch.get("rna_feature_mask"),
+        pathology_prefix_embeddings=batch.get("pathology_prefix_embeddings"),
+        pathology_prefix_mask=batch.get("pathology_prefix_mask"),
+        radiology_prefix_embeddings=batch.get("radiology_prefix_embeddings"),
+        radiology_prefix_mask=batch.get("radiology_prefix_mask"),
+        dnam_prefix_embeddings=batch.get("dnam_prefix_embeddings"),
+        dnam_prefix_mask=batch.get("dnam_prefix_mask"),
+        rna_prefix_embeddings=batch.get("rna_prefix_embeddings"),
+        rna_prefix_mask=batch.get("rna_prefix_mask"),
         prefix_spans=batch.get("prefix_spans"),
     )
 
@@ -198,6 +208,87 @@ def _print_prompt_previews(*, stage_cfg: Any, train_frame: pd.DataFrame) -> bool
         print(build_vqa_prompt_preview(row, prompt_cfg))
         print(f"\n<assistant_answer>\n{clean_text(row.get('answer', ''))}\n</assistant_answer>")
     return bool(cfg_get(preview_cfg, "exit_after_preview", False))
+
+
+def _cached_projector_metadata(stage_cfg: Any) -> dict[str, dict[str, Any]]:
+    projectors_cfg = cfg_get(stage_cfg, "projectors", {})
+    metadata: dict[str, dict[str, Any]] = {}
+    for modality in ("pathology", "radiology", "dnam", "rna"):
+        block_cfg = cfg_get(projectors_cfg, modality, {})
+        if not bool(cfg_get(block_cfg, "enabled", False)):
+            continue
+        if bool(cfg_get(block_cfg, "trainable", False)):
+            raise ValueError(f"vqa_train.prefix_cache.enabled=true requires frozen projectors; {modality}.trainable=true.")
+        metadata[modality] = {
+            "modality": modality,
+            "checkpoint_path": str(resolve_repo_path(ROOT, cfg_get(block_cfg, "checkpoint_path"))),
+            "trainable": False,
+            "prefix_cache_enabled": True,
+            "prefix_cache_root": str(resolve_repo_path(ROOT, cfg_get(cfg_get(stage_cfg, "prefix_cache", {}), "cache_root"))),
+        }
+    if not metadata:
+        raise RuntimeError("Prefix-cache training needs at least one enabled projector block.")
+    return metadata
+
+
+def _filter_missing_prefix_cache_rows(
+    *,
+    stage_cfg: Any,
+    frame: pd.DataFrame,
+    split_label: str,
+) -> pd.DataFrame:
+    if not prefix_cache_enabled(stage_cfg):
+        return frame
+    prefix_cfg = cfg_get(stage_cfg, "prefix_cache", {})
+    if not bool(cfg_get(prefix_cfg, "scan_before_training", True)):
+        print(f"Prefix cache: scan_before_training=false; not pre-scanning {split_label} rows.")
+        return frame
+
+    keep_mask: list[bool] = []
+    skipped: list[dict[str, Any]] = []
+    for row_index, row in tqdm(
+        frame.iterrows(),
+        total=len(frame),
+        desc=f"scan {split_label} prefix cache",
+        leave=False,
+    ):
+        missing = row_missing_prefix_cache_entries(ROOT, stage_cfg, row)
+        keep = not missing
+        keep_mask.append(keep)
+        if not keep:
+            skipped.append(
+                {
+                    "row_index": int(row_index),
+                    "question_id": row.get("question_id"),
+                    "case_id": row.get("case_id"),
+                    "missing": missing,
+                }
+            )
+
+    filtered_frame = frame.loc[keep_mask].reset_index(drop=True)
+    if not skipped:
+        print(f"Prefix cache: no missing {split_label} rows.")
+        return filtered_frame
+
+    if not bool(cfg_get(prefix_cfg, "skip_missing_rows", True)):
+        first = skipped[0]
+        raise FileNotFoundError(
+            f"Missing cached VQA prefixes for {split_label} row question_id={first.get('question_id')}: "
+            f"{first.get('missing')}"
+        )
+
+    print(f"Prefix cache: skipped {len(skipped):,} {split_label} rows with missing cached prefixes.")
+    max_examples = int(cfg_get(prefix_cfg, "max_missing_examples", 10) or 0)
+    for item in skipped[:max_examples]:
+        missing = item["missing"]
+        first_missing = missing[0] if missing else "<unknown>"
+        print(
+            "  skipped "
+            f"question_id={item.get('question_id')} case_id={item.get('case_id')} missing={first_missing}"
+        )
+    if len(skipped) > max_examples:
+        print(f"  ... {len(skipped) - max_examples:,} more skipped rows")
+    return filtered_frame
 
 
 def _run_validation(
@@ -310,6 +401,7 @@ def main() -> None:
         max_samples_key="max_train_samples",
         sample_key="sample_train",
     )
+    train_frame = _filter_missing_prefix_cache_rows(stage_cfg=stage_cfg, frame=train_frame, split_label=train_split)
     assert_vqa_rows_are_trainable(train_frame)
     if _print_prompt_previews(stage_cfg=stage_cfg, train_frame=train_frame):
         print("preview.exit_after_preview=true; stopping before tokenizer/model/projector loading.")
@@ -325,6 +417,7 @@ def main() -> None:
             max_samples_key="max_val_samples",
             sample_key="sample_val",
         )
+        val_frame = _filter_missing_prefix_cache_rows(stage_cfg=stage_cfg, frame=val_frame, split_label=validation_split)
         if val_frame.empty and bool(cfg_get(validation_cfg, "required", False)):
             raise RuntimeError(f"Validation is required but no rows were selected for split={validation_split!r}.")
         if not val_frame.empty:
@@ -345,7 +438,12 @@ def main() -> None:
     if hasattr(language_model, "print_trainable_parameters"):
         language_model.print_trainable_parameters()
 
-    projectors, projector_metadata = load_projectors(stage_cfg, repo_root=ROOT, hidden_size=hidden_size)
+    use_prefix_cache = prefix_cache_enabled(stage_cfg)
+    if use_prefix_cache:
+        projectors = {}
+        projector_metadata = _cached_projector_metadata(stage_cfg)
+    else:
+        projectors, projector_metadata = load_projectors(stage_cfg, repo_root=ROOT, hidden_size=hidden_size)
     model = OncoVLMVQASFTModel(
         language_model=language_model,
         projectors=projectors,
@@ -355,10 +453,12 @@ def main() -> None:
     autocast_dtype = resolve_torch_dtype(cfg_get(stage_cfg, "autocast_dtype", "bfloat16")) or torch.bfloat16
     projector_dtype = resolve_torch_dtype(cfg_get(stage_cfg, "projector_dtype", "float32"))
     if load_in_8bit:
-        model.move_projectors_to(device, dtype=projector_dtype)
+        if not use_prefix_cache:
+            model.move_projectors_to(device, dtype=projector_dtype)
     else:
         model.to(device=device)
-        model.move_projectors_to(device, dtype=projector_dtype)
+        if not use_prefix_cache:
+            model.move_projectors_to(device, dtype=projector_dtype)
     model.train()
     model.set_frozen_projectors_eval()
 
@@ -418,7 +518,11 @@ def main() -> None:
     print(f"Hidden size: {hidden_size}")
     print(f"Device: {device}")
     print(f"LoRA r: {int(cfg_get(cfg_get(stage_cfg, 'lora', {}), 'r', 16))}")
-    print(f"Loaded projectors: {', '.join(projector_metadata)}")
+    if use_prefix_cache:
+        print(f"Prefix source: cached embeddings from {cfg_get(cfg_get(stage_cfg, 'prefix_cache', {}), 'cache_root')}")
+        print("Loaded projectors: none (prefix cache enabled)")
+    else:
+        print(f"Loaded projectors: {', '.join(projector_metadata)}")
     print(f"Trainable projector mode: {projector_trainable_summary(stage_cfg)}")
     print(f"Run output dir: {run_output_dir}")
     print(f"Trainable parameters: {model.trainable_parameter_count():,}")
@@ -440,14 +544,18 @@ def main() -> None:
     best_epoch = None
     best_artifacts = None
     final_artifacts = None
+    wandb_cfg = cfg_get(stage_cfg, "wandb", {})
+    wandb_log_every_n_steps = int(cfg_get(wandb_cfg, "log_every_n_steps", 0) or 0)
     optimizer.zero_grad(set_to_none=True)
     for epoch in range(num_epochs):
         model.train()
         model.set_frozen_projectors_eval()
         running_loss = 0.0
+        accum_loss = 0.0
+        accum_count = 0
         loop = tqdm(train_loader, total=len(train_loader), desc=f"Epoch {epoch + 1}/{num_epochs}")
         for step, batch in enumerate(loop, start=1):
-            batch = move_batch_to_device(batch, device, floating_dtype=projector_dtype)
+            batch = move_batch_to_device(batch, device, floating_dtype=None if use_prefix_cache else projector_dtype)
             with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
                 outputs = _forward_vqa_batch(model, batch)
                 loss = outputs.loss
@@ -459,38 +567,51 @@ def main() -> None:
                 grad_scaler.scale(scaled_loss).backward()
             else:
                 scaled_loss.backward()
+            batch_loss = float(loss.detach().cpu())
+            accum_loss += batch_loss
+            accum_count += 1
             if step % grad_accum == 0 or step == len(train_loader):
                 if grad_clip_norm > 0:
                     if use_grad_scaler:
                         grad_scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(trainable_parameters, grad_clip_norm)
+                optimizer_stepped = True
                 if use_grad_scaler:
+                    scale_before_step = grad_scaler.get_scale()
                     grad_scaler.step(optimizer)
                     grad_scaler.update()
+                    optimizer_stepped = grad_scaler.get_scale() >= scale_before_step
                 else:
                     optimizer.step()
-                if lr_scheduler is not None:
+                if optimizer_stepped and lr_scheduler is not None:
                     lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
-                global_step += 1
-                if wandb_run is not None:
-                    wandb_run.log(
-                        {
-                            "train/loss": float(loss.detach().cpu()),
-                            "train/lr": float(optimizer.param_groups[0]["lr"]),
-                            "train/epoch": epoch + 1,
-                            "train/optimizer_step": global_step,
-                        },
-                        step=global_step,
-                    )
-
-            running_loss += float(loss.detach().cpu())
+                if optimizer_stepped:
+                    global_step += 1
+                    if (
+                        wandb_run is not None
+                        and wandb_log_every_n_steps > 0
+                        and global_step % wandb_log_every_n_steps == 0
+                    ):
+                        wandb_run.log(
+                            {
+                                "train/loss": accum_loss / max(1, accum_count),
+                                "train/lr": float(optimizer.param_groups[0]["lr"]),
+                                "train/epoch": epoch + 1,
+                                "train/epoch_step": step,
+                                "train/optimizer_step": global_step,
+                            },
+                            step=global_step,
+                        )
+                accum_loss = 0.0
+                accum_count = 0
+            running_loss += batch_loss
             loop.set_postfix(loss=f"{running_loss / step:.4f}")
 
         epoch_loss = running_loss / max(1, len(train_loader))
         print(f"Epoch {epoch + 1} mean loss: {epoch_loss:.4f}")
         if wandb_run is not None:
-            wandb_run.log({"train/epoch_mean_loss": epoch_loss, "train/epoch": epoch + 1}, step=max(global_step, 1))
+            wandb_run.log({"train/epoch_mean_loss": epoch_loss, "train/epoch": epoch + 1}, step=global_step)
 
         validation_loss = None
         if validation_loader is not None and len(validation_loader) > 0:
@@ -500,11 +621,11 @@ def main() -> None:
                 device=device,
                 autocast_dtype=autocast_dtype,
                 use_autocast=use_autocast,
-                floating_input_dtype=projector_dtype,
+                floating_input_dtype=None if use_prefix_cache else projector_dtype,
             )
             print(f"Epoch {epoch + 1} validation loss: {validation_loss:.4f}")
             if wandb_run is not None:
-                wandb_run.log({"val/loss": validation_loss, "val/epoch": epoch + 1}, step=max(global_step, 1))
+                wandb_run.log({"val/loss": validation_loss, "val/epoch": epoch + 1}, step=global_step)
             if _is_improved_validation_loss(validation_loss, best_validation_loss):
                 best_validation_loss = validation_loss
                 best_epoch = epoch + 1
@@ -573,7 +694,7 @@ def main() -> None:
             payload["val/best_loss"] = best_validation_loss
         if best_epoch is not None:
             payload["val/best_epoch"] = best_epoch
-        wandb_run.log(payload, step=max(global_step, 1))
+        wandb_run.log(payload, step=global_step)
         wandb_run.finish()
 
     print(f"Saved final LoRA adapter to: {final_artifacts['lora_adapter_dir']}")

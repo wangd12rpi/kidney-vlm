@@ -9,6 +9,7 @@ dependencies = [
   "bitsandbytes>=0.49.2",
   "biopython>=1.84",
   "boto3>=1.37.0",
+  "bert-score>=0.3.13",
   "datasets>=2.20.0",
   "einops>=0.8.2",
   "einops-exts>=0.0.4",

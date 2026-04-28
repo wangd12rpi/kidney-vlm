@@ -89,6 +89,16 @@ def main() -> None:
     print(f"Output path: {output_path}")
     print(f"Generated rows: {stats['generated_rows']}")
     print(f"Generated semantic questions: {stats['semantic_questions']}")
+    sampling_stats = dict(stats.get("sampling") or {})
+    if sampling_stats.get("enabled"):
+        print(
+            "Sampling: "
+            f"pre_rows={sampling_stats['pre_sampling_rows']} "
+            f"pre_semantic_questions={sampling_stats['pre_sampling_semantic_questions']} "
+            f"sampled_out_rows={sampling_stats['sampled_out_rows']} "
+            f"sampled_out_semantic_questions={sampling_stats['sampled_out_semantic_questions']} "
+            f"protected_radiology_questions={sampling_stats['sampling_protected_radiology_questions']}"
+        )
     if generated_df.empty:
         print(
             "No ground-truth MCQ VQA rows generated; wrote an empty replacement parquet."

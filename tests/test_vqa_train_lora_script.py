@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -32,6 +33,7 @@ def _base_row(**overrides):
         "option_c": "",
         "option_d": "",
         "answer": "mutated",
+        "answer_label": "A",
         "pathology_feature_paths": ["data/features/path.h5"],
         "radiology_feature_paths": [],
         "dnam_feature_path": "data/features/dnam.pt",
@@ -206,6 +208,235 @@ def test_generated_run_name_contains_basic_config_and_est_timestamp() -> None:
     assert run_name == "gemma_4_e4b_it_gt_mcq_questions_n128_r32_projft_dnam_20260427_123000_EST"
 
 
+def test_prefix_cache_path_is_readable_and_project_relative(tmp_path) -> None:
+    from kidney_vlm.vqa.prefix_cache import prefix_cache_path
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    cache_path = prefix_cache_path(
+        repo_root=repo_root,
+        cache_root="data/vqa/prefix_cache",
+        model_name_or_path="Qwen/Qwen3.5-9B",
+        modality="pathology",
+        checkpoint_path="outputs/projectors/qwen3_5_9b/pathology/path_resampler_20260417_180638_EST/best.ckpt",
+        feature_ref="data/features/features_uni/slide-a.h5",
+    )
+
+    assert cache_path.relative_to(repo_root).as_posix() == (
+        "data/vqa/prefix_cache/qwen3_5_9b/"
+        "pathology__path_resampler_20260417_180638_EST__best.ckpt/"
+        "data__features__features_uni__slide-a.h5.pt"
+    )
+
+
+def test_prefix_cache_path_handles_readable_radiology_refs(tmp_path) -> None:
+    from kidney_vlm.vqa.prefix_cache import prefix_cache_path
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    cache_path = prefix_cache_path(
+        repo_root=repo_root,
+        cache_root="data/vqa/prefix_cache",
+        model_name_or_path="Qwen/Qwen3.5-9B",
+        modality="radiology",
+        checkpoint_path="outputs/projectors/qwen3_5_9b/radiology/radiology_remote_weights_20260423_000000_EST/best.ckpt",
+        feature_ref="data/features/features_radiology/radiology_features.h5::series=data/processes/radiology/series-a",
+    )
+
+    assert cache_path.relative_to(repo_root).as_posix() == (
+        "data/vqa/prefix_cache/qwen3_5_9b/"
+        "radiology__radiology_remote_weights_20260423_000000_EST__best.ckpt/"
+        "data__features__features_radiology__radiology_features.h5__ref/"
+        "series=data__processes__radiology__series-a.pt"
+    )
+
+
+def test_prefix_cache_filter_skips_rows_with_missing_cache(tmp_path: Path) -> None:
+    from omegaconf import OmegaConf
+
+    from kidney_vlm.vqa.data import filter_rows_with_prefix_cache, row_prefix_cache_path
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    cfg = OmegaConf.create(
+        {
+            "model_name_or_path": "Qwen/Qwen3.5-9B",
+            "prefix_cache": {"enabled": True, "cache_root": "data/vqa/prefix_cache"},
+            "projectors": {
+                "pathology": {
+                    "enabled": True,
+                    "checkpoint_path": "outputs/projectors/qwen3_5_9b/pathology/path_resampler_20260417_180638_EST/best.ckpt",
+                },
+                "radiology": {"enabled": False, "checkpoint_path": "unused.ckpt"},
+                "dnam": {"enabled": False, "checkpoint_path": "unused.ckpt"},
+                "rna": {"enabled": False, "checkpoint_path": "unused.ckpt"},
+            },
+        }
+    )
+    present_row = _base_row(question_id=1, use_dnam=False, dnam_feature_path="")
+    missing_row = _base_row(
+        question_id=2,
+        use_dnam=False,
+        dnam_feature_path="",
+        pathology_feature_paths=["data/features/missing.h5"],
+    )
+    cache_path = row_prefix_cache_path(repo_root, cfg, "pathology", "data/features/path.h5")
+    cache_path.parent.mkdir(parents=True)
+    torch.save(torch.ones((2, 4), dtype=torch.float16), cache_path)
+
+    filtered, skipped = filter_rows_with_prefix_cache(
+        pd.DataFrame([present_row, missing_row]),
+        root_dir=repo_root,
+        stage_cfg=cfg,
+    )
+
+    assert filtered["question_id"].tolist() == [1]
+    assert skipped[0]["question_id"] == 2
+    assert "missing.h5.pt" in skipped[0]["missing"][0]
+
+
+def test_train_script_can_skip_prefix_cache_prescan() -> None:
+    import importlib.util
+
+    from omegaconf import OmegaConf
+
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = repo_root / "scripts" / "06_vqa_train" / "train_vqa_lora.py"
+    spec = importlib.util.spec_from_file_location("train_vqa_lora_script_for_test", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    frame = pd.DataFrame([_base_row(use_dnam=False, dnam_feature_path="")])
+    cfg = OmegaConf.create(
+        {
+            "prefix_cache": {
+                "enabled": True,
+                "scan_before_training": False,
+            }
+        }
+    )
+
+    out = module._filter_missing_prefix_cache_rows(stage_cfg=cfg, frame=frame, split_label="train")
+
+    assert out.equals(frame)
+
+
+def test_vqa_collator_loads_cached_prefixes_without_raw_features(tmp_path: Path) -> None:
+    from omegaconf import OmegaConf
+
+    from kidney_vlm.vqa.data import VQATrainingCollator, row_prefix_cache_path
+
+    class FakeTokenizer:
+        eos_token = "<eos>"
+        pad_token_id = 0
+
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": [ord(character) for character in str(text)]}
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    cfg = OmegaConf.create(
+        {
+            "model_name_or_path": "Qwen/Qwen3.5-9B",
+            "max_text_length": 4096,
+            "prefix_cache": {"enabled": True, "cache_root": "data/vqa/prefix_cache"},
+            "prompt": {
+                "system_prompt": "Use the features.",
+                "mcq_response_instruction": "Answer with the exact choice text.",
+                "open_response_instruction": "Answer concisely.",
+            },
+            "projectors": {
+                "pathology": {
+                    "enabled": True,
+                    "checkpoint_path": "outputs/projectors/qwen3_5_9b/pathology/path_resampler_20260417_180638_EST/best.ckpt",
+                },
+                "radiology": {"enabled": False, "checkpoint_path": "unused.ckpt"},
+                "dnam": {
+                    "enabled": True,
+                    "checkpoint_path": "outputs/projectors/qwen3_5_9b/dnam/dnam_mlp_20260420_025027_EST/best.ckpt",
+                },
+                "rna": {"enabled": False, "checkpoint_path": "unused.ckpt"},
+            },
+        }
+    )
+    for modality, ref, tensor in [
+        ("pathology", "data/features/path.h5", torch.ones((2, 4), dtype=torch.float16)),
+        ("dnam", "data/features/dnam.pt", torch.ones((3, 4), dtype=torch.float16)),
+    ]:
+        cache_path = row_prefix_cache_path(repo_root, cfg, modality, ref)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(tensor, cache_path)
+
+    batch = VQATrainingCollator(tokenizer=FakeTokenizer(), root_dir=repo_root, stage_cfg=cfg)([_base_row()])
+
+    assert "pathology_features" not in batch
+    assert tuple(batch["pathology_prefix_embeddings"].shape) == (1, 2, 4)
+    assert tuple(batch["dnam_prefix_embeddings"].shape) == (1, 3, 4)
+    assert batch["pathology_prefix_embeddings"].dtype == torch.float16
+
+
+def test_vqa_collator_caps_cached_pathology_prefix_tokens(tmp_path: Path) -> None:
+    from omegaconf import OmegaConf
+
+    from kidney_vlm.vqa.data import VQATrainingCollator, row_prefix_cache_path
+
+    class FakeTokenizer:
+        eos_token = "<eos>"
+        pad_token_id = 0
+
+        def __call__(self, text, add_special_tokens=False):
+            return {"input_ids": [ord(character) for character in str(text)]}
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    cfg = OmegaConf.create(
+        {
+            "model_name_or_path": "Qwen/Qwen3.5-9B",
+            "max_text_length": 4096,
+            "prefix_cache": {
+                "enabled": True,
+                "cache_root": "data/vqa/prefix_cache",
+                "max_prefix_tokens": {"pathology": 3},
+            },
+            "prompt": {
+                "system_prompt": "Use the features.",
+                "mcq_response_instruction": "Answer with the exact choice text.",
+                "open_response_instruction": "Answer concisely.",
+            },
+            "projectors": {
+                "pathology": {
+                    "enabled": True,
+                    "checkpoint_path": "outputs/projectors/qwen3_5_9b/pathology/path_resampler_20260417_180638_EST/best.ckpt",
+                },
+                "radiology": {"enabled": False, "checkpoint_path": "unused.ckpt"},
+                "dnam": {"enabled": False, "checkpoint_path": "unused.ckpt"},
+                "rna": {"enabled": False, "checkpoint_path": "unused.ckpt"},
+            },
+        }
+    )
+    refs = ["data/features/path-a.h5", "data/features/path-b.h5"]
+    for index, ref in enumerate(refs):
+        cache_path = row_prefix_cache_path(repo_root, cfg, "pathology", ref)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(torch.full((2, 4), float(index + 1), dtype=torch.float16), cache_path)
+
+    batch = VQATrainingCollator(tokenizer=FakeTokenizer(), root_dir=repo_root, stage_cfg=cfg)(
+        [
+            _base_row(
+                use_dnam=False,
+                dnam_feature_path="",
+                pathology_feature_paths=refs,
+            )
+        ]
+    )
+
+    assert tuple(batch["pathology_prefix_embeddings"].shape) == (1, 3, 4)
+    assert batch["pathology_prefix_mask"].tolist() == [[1, 1, 1]]
+
+
 def test_vqa_model_replaces_placeholder_span_with_prefix_tokens() -> None:
     from types import SimpleNamespace
 
@@ -252,3 +483,108 @@ def test_vqa_model_replaces_placeholder_span_with_prefix_tokens() -> None:
 
     assert outputs.loss is not None
     assert language_model.last_inputs_embeds_shape == (1, 6, 4)
+    generation_inputs = model.prepare_interleaved_generation_inputs(
+        input_ids=torch.tensor([[11, 12, 13, 14, 15]], dtype=torch.long),
+        attention_mask=torch.ones((1, 5), dtype=torch.long),
+        pathology_features=torch.ones((1, 2, 4), dtype=torch.float32),
+        pathology_feature_mask=torch.ones((1, 2), dtype=torch.long),
+        prefix_spans=[[{"modality": "pathology", "start": 2, "end": 3}]],
+    )
+
+    assert tuple(generation_inputs["inputs_embeds"].shape) == (1, 6, 4)
+    assert generation_inputs["attention_mask"].tolist() == [[1, 1, 1, 1, 1, 1]]
+    assert generation_inputs["position_ids"].tolist() == [[0, 1, 2, 3, 4, 5]]
+
+
+def test_vqa_model_uses_cached_prefixes_without_projectors() -> None:
+    from types import SimpleNamespace
+
+    from kidney_vlm.vqa.modeling import OncoVLMVQASFTModel
+
+    class DummyLM(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=4, vocab_size=16)
+            self.embedding = nn.Embedding(256, 4)
+            self.last_inputs_embeds_shape = None
+
+        def get_input_embeddings(self):
+            return self.embedding
+
+        def forward(self, *, inputs_embeds, attention_mask, position_ids, labels=None, **kwargs):
+            self.last_inputs_embeds_shape = tuple(inputs_embeds.shape)
+            return SimpleNamespace(loss=inputs_embeds.sum() * 0.0, logits=torch.zeros((*inputs_embeds.shape[:2], 16)))
+
+    language_model = DummyLM()
+    model = OncoVLMVQASFTModel(language_model=language_model, projectors={}, projector_metadata={})
+
+    outputs = model(
+        input_ids=torch.tensor([[11, 12, 13, 14, 15]], dtype=torch.long),
+        attention_mask=torch.ones((1, 5), dtype=torch.long),
+        labels=torch.full((1, 5), -100, dtype=torch.long),
+        pathology_prefix_embeddings=torch.ones((1, 2, 4), dtype=torch.float32),
+        pathology_prefix_mask=torch.ones((1, 2), dtype=torch.long),
+        prefix_spans=[[{"modality": "pathology", "start": 2, "end": 3}]],
+    )
+
+    assert outputs.loss is not None
+    assert language_model.last_inputs_embeds_shape == (1, 6, 4)
+    generation_inputs = model.prepare_interleaved_generation_inputs(
+        input_ids=torch.tensor([[11, 12, 13, 14, 15]], dtype=torch.long),
+        attention_mask=torch.ones((1, 5), dtype=torch.long),
+        pathology_prefix_embeddings=torch.ones((1, 2, 4), dtype=torch.float32),
+        pathology_prefix_mask=torch.ones((1, 2), dtype=torch.long),
+        prefix_spans=[[{"modality": "pathology", "start": 2, "end": 3}]],
+    )
+
+    assert tuple(generation_inputs["inputs_embeds"].shape) == (1, 6, 4)
+
+
+def test_vqa_generation_inputs_left_pad_batched_decoder_prompts() -> None:
+    from types import SimpleNamespace
+
+    from kidney_vlm.vqa.modeling import OncoVLMVQASFTModel
+
+    class DummyLM(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=4, vocab_size=16)
+            self.embedding = nn.Embedding(256, 4)
+
+        def get_input_embeddings(self):
+            return self.embedding
+
+    model = OncoVLMVQASFTModel(language_model=DummyLM(), projectors={}, projector_metadata={})
+
+    generation_inputs = model.prepare_interleaved_generation_inputs(
+        input_ids=torch.tensor(
+            [
+                [11, 12, 13, 14, 15],
+                [21, 22, 23, 0, 0],
+            ],
+            dtype=torch.long,
+        ),
+        attention_mask=torch.tensor(
+            [
+                [1, 1, 1, 1, 1],
+                [1, 1, 1, 0, 0],
+            ],
+            dtype=torch.long,
+        ),
+        pathology_prefix_embeddings=torch.ones((2, 2, 4), dtype=torch.float32),
+        pathology_prefix_mask=torch.tensor([[1, 1], [1, 0]], dtype=torch.long),
+        prefix_spans=[
+            [{"modality": "pathology", "start": 2, "end": 3}],
+            [{"modality": "pathology", "start": 1, "end": 2}],
+        ],
+    )
+
+    assert tuple(generation_inputs["inputs_embeds"].shape) == (2, 6, 4)
+    assert generation_inputs["attention_mask"].tolist() == [
+        [1, 1, 1, 1, 1, 1],
+        [0, 0, 0, 1, 1, 1],
+    ]
+    assert generation_inputs["position_ids"].tolist() == [
+        [0, 1, 2, 3, 4, 5],
+        [0, 0, 0, 0, 1, 2],
+    ]
