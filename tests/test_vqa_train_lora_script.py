@@ -108,6 +108,31 @@ def test_open_ended_prompt_leaves_choices_out() -> None:
     assert "Answer concisely." in prompt
 
 
+def test_radiology_prompt_includes_biomarker_text_when_present() -> None:
+    from omegaconf import OmegaConf
+
+    from kidney_vlm.vqa.prompts import build_vqa_prompt
+
+    prompt = build_vqa_prompt(
+        _base_row(
+            use_radiology=True,
+            radiology_feature_paths=["data/features/rad.h5::series=abc"],
+            radiology_biomarker="Radiology report biomarker: enhancing renal mass.",
+        ),
+        OmegaConf.create(
+            {
+                "system_prompt": "Use the features.",
+                "mcq_response_instruction": "Answer with the exact choice text.",
+                "open_response_instruction": "Answer concisely.",
+            }
+        ),
+    )
+
+    assert "<radiology_features>" in prompt
+    assert "<radiology_biomarker>" in prompt
+    assert "Radiology report biomarker: enhancing renal mass." in prompt
+
+
 def test_select_train_rows_keeps_modality_dropout_and_skips_disabled_modalities() -> None:
     from omegaconf import OmegaConf
 

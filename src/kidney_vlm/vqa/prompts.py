@@ -49,6 +49,10 @@ def _modality_evidence_blocks(row: Mapping[str, Any], *, preview: bool = False) 
         tag = PREFIX_TAGS[modality]
         prefix_text = f"[PREFIX:{modality} soft tokens]" if preview else prefix_placeholder_for_modality(modality)
         blocks.append(f"<{tag}>\n{prefix_text}\n</{tag}>")
+        if modality == "radiology":
+            radiology_biomarker = clean_text(row.get("radiology_biomarker", ""))
+            if radiology_biomarker:
+                blocks.append(f"<radiology_biomarker>\n{radiology_biomarker}\n</radiology_biomarker>")
     if not blocks:
         raise ValueError(f"Question {row.get('question_id', '<unknown>')} has no enabled modalities.")
     return blocks
