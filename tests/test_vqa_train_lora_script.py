@@ -108,6 +108,31 @@ def test_open_ended_prompt_leaves_choices_out() -> None:
     assert "Answer concisely." in prompt
 
 
+def test_radiology_prompt_includes_biomarker_text_when_present() -> None:
+    from omegaconf import OmegaConf
+
+    from kidney_vlm.vqa.prompts import build_vqa_prompt
+
+    prompt = build_vqa_prompt(
+        _base_row(
+            use_radiology=True,
+            radiology_feature_paths=["data/features/rad.h5::series=abc"],
+            radiology_biomarker="Radiology report biomarker: enhancing renal mass.",
+        ),
+        OmegaConf.create(
+            {
+                "system_prompt": "Use the features.",
+                "mcq_response_instruction": "Answer with the exact choice text.",
+                "open_response_instruction": "Answer concisely.",
+            }
+        ),
+    )
+
+    assert "<radiology_features>" in prompt
+    assert "<radiology_biomarker>" in prompt
+    assert "Radiology report biomarker: enhancing renal mass." in prompt
+
+
 def test_select_train_rows_keeps_modality_dropout_and_skips_disabled_modalities() -> None:
     from omegaconf import OmegaConf
 
@@ -322,6 +347,58 @@ def test_train_script_can_skip_prefix_cache_prescan() -> None:
     out = module._filter_missing_prefix_cache_rows(stage_cfg=cfg, frame=frame, split_label="train")
 
     assert out.equals(frame)
+
+
+def test_train_script_resolves_default_device_without_yaml_rank() -> None:
+    import importlib.util
+
+    from omegaconf import OmegaConf
+
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = repo_root / "scripts" / "06_vqa_train" / "train_vqa_lora.py"
+    spec = importlib.util.spec_from_file_location("train_vqa_lora_script_for_test_device", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    cfg = OmegaConf.create({"ddp": False})
+    ddp_state = {
+        "requested": False,
+        "initialized": False,
+        "rank": 0,
+        "local_rank": 0,
+        "world_size": 1,
+        "is_main": True,
+    }
+
+    device = module._resolve_training_device(cfg, ddp_state)
+
+    if torch.cuda.is_available():
+        assert str(device) == "cuda:0"
+    else:
+        assert str(device) == "cpu"
+
+
+def test_train_script_ddp_requires_torchrun_env(monkeypatch) -> None:
+    import importlib.util
+
+    from omegaconf import OmegaConf
+
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = repo_root / "scripts" / "06_vqa_train" / "train_vqa_lora.py"
+    spec = importlib.util.spec_from_file_location("train_vqa_lora_script_for_test_ddp", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for name in ("RANK", "LOCAL_RANK", "WORLD_SIZE"):
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(RuntimeError, match="torchrun"):
+        module._init_ddp(OmegaConf.create({"ddp": True}))
 
 
 def test_vqa_collator_loads_cached_prefixes_without_raw_features(tmp_path: Path) -> None:

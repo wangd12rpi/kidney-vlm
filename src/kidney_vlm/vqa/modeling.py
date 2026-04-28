@@ -764,7 +764,10 @@ def build_language_model(stage_cfg: Any, *, device: torch.device) -> nn.Module:
     if load_in_8bit:
         model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
         model_kwargs["low_cpu_mem_usage"] = True
-        model_kwargs["device_map"] = {"": str(device)}
+        if device.type == "cuda":
+            model_kwargs["device_map"] = {"": int(device.index or 0)}
+        else:
+            model_kwargs["device_map"] = {"": str(device)}
     elif resolved_dtype is not None:
         model_kwargs["torch_dtype"] = resolved_dtype
     attn_implementation = cfg_get(stage_cfg, "attn_implementation", None)

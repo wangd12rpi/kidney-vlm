@@ -10,11 +10,12 @@ projector_dtype: float32
 attn_implementation: sdpa
 gradient_checkpointing: true
 gradient_checkpointing_use_reentrant: false
-device: cuda:0
+# If true, launch with torchrun; GPU ranks come from LOCAL_RANK, not YAML.
+ddp: false
 seed: 42
 
 dataset:
-  vqa_parquet_path: ${project.root_dir}/data/vqa/gt_mcq_questions.parquet
+  vqa_parquet_path: ${project.root_dir}/data/vqa/merged_full_vqa.parquet
   train_split: train
   validation_split: val
   # Empty lists mean "all values". Modality-dropout rows are kept as long as
@@ -35,18 +36,18 @@ dataset:
   sample_seed: 42
 
 prompt:
-  system_prompt: You are OncoVLM, a multimodal cancer assistant. This is a forced-choice predictive benchmark. Use only the provided evidence and choose the most likely listed option.
+  system_prompt: You are OncoVLM, a multimodal cancer assistant. Use only the provided multimodal evidence to answer the question.
   mcq_response_instruction: Return only the exact text of one choice. Do not explain. Do not say that the information is insufficient.
   open_response_instruction: Answer concisely.
 
 preview:
   num_train_samples: 5
-  exit_after_preview: true
+  exit_after_preview: false
 
 prefix_cache:
   enabled: true
   cache_root: data/vqa/prefix_cache
-  scan_before_training: false
+  scan_before_training: true
   skip_missing_rows: true
   max_missing_examples: 10
   max_prefix_tokens:
