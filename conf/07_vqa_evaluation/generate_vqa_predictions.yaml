@@ -1,11 +1,11 @@
 name: vqa_generate_predictions
 
 run:
-  name: actual_run
+  name: gemma_debug_rna_only
   output_root: ${project.root_dir}/results
   resume_existing: true
   prediction_filename: predictions.parquet
-  save_every_n_predictions: 50
+  save_every_n_predictions: 10
   include_prompt_in_predictions: true
   print_first_n_outputs: 0
   dry_run: false
@@ -16,19 +16,20 @@ data:
 prefix_cache:
   enabled: true
   cache_root: data/vqa/prefix_cache
+  prefix_value_override: cached # cached | ones | random
   scan_before_training: true
   skip_missing_rows: true
   max_missing_examples: 10
   max_prefix_tokens:
-    pathology: 512
-    radiology: 256
-    dnam:
-    rna:
+    pathology: 1
+    radiology: 1
+    dnam: 1
+    rna: 64
+
 
 models:
-
   oncovlm_qwen_lora: 
-    enabled: true
+    enabled: false
     backend: oncovlm_lora
     model_name_or_path: Qwen/Qwen3.5-9B
     lora_adapter_path: outputs/oncovlm/qwen3_5_9b_merged_full_vqa_n90422_r8_projfrozen_20260429_185618_est/lora_adapter
@@ -63,7 +64,7 @@ models:
       top_p: 1.0
 
   medgemma-4b-it:
-    enabled: true
+    enabled: false
     backend: hf_image_text_to_text
     model_name_or_path: google/medgemma-4b-it
     prompt_profile: baseline
@@ -75,7 +76,7 @@ models:
     batch_size: 8
 
   oncovlm_qwen_no_finetune:
-    enabled: true
+    enabled: false
     backend: oncovlm_projector
     model_name_or_path: Qwen/Qwen3.5-9B
     prompt_profile: baseline
@@ -109,19 +110,26 @@ filters:
     value: test
   project_ids:
     enabled: true
-    values: [TCGA-BRCA, TCGA-KIRC, TCGA-KIRP, TCGA-LGG, TCGA-UCEC, TCGA-LUAD]
-  # generation_types:
-  #   enabled: false
-  #   values: []
+    values: [TCGA-BRCA]
+  question_types:
+    enabled: true
+    values: [mcq]
+  generation_types:
+    enabled: true
+    values: [from_caption]
   # task_categories:
   #   enabled: false
   #   values: []
   # task_ids:
   #   enabled: false
   #   values: []
-  # allowed_modality_combo:
-  #   enabled: false
-  #   values: []
+  allowed_modality_combo:
+    enabled: true
+    values:
+      - path: true
+        rad: true
+        dnam: true
+        rna: true
   # row_limit:
   #   enabled: false
   #   max_rows: 20
@@ -130,7 +138,7 @@ filters:
 
 sampling:
   enabled: true
-  ratio: 0.5
+  ratio: 0.001
   min_per_group: 20
   seed: 42
   group_by:
@@ -141,7 +149,7 @@ sampling:
     - modality_combination_name
 
 repeats:
-  n: 3
+  n: 1
   seed: 42
   repeat_modality_combination_names:
     - all_available
@@ -172,7 +180,7 @@ prompts:
         Answer concisely.
 
 generation:
-  max_new_tokens: 256
+  max_new_tokens: 48
   do_sample: true
   temperature: 0.2
   top_p: 0.9

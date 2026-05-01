@@ -1,23 +1,38 @@
 name: vqa_make_tables
 
 run:
-  name: smoke_test
+  name: actual_run
   output_root: ${project.root_dir}/results
   metrics_filename: metrics.json
   tables_dirname: tables
 
 display_names:
   models:
-    gpt_5_4: GPT-5.4
-    medgemma-4b-it: MedGemma-4B
-    oncovlm_qwen_no_finetune: OncoVLM-Qwen-No-Finetune
-    oncovlm_qwen_lora: OncoVLM-Qwen-LoRA
-    oncovlm_gemma4_no_finetune: OncoVLM-Gemma4
+    gpt_5_4:
+      name: GPT-5.4
+      backbone: GPT-5.4
+      finetuned: false
+    medgemma-4b-it:
+      name: MedGemma
+      backbone: MedGemma-4B
+      finetuned: false
+    oncovlm_qwen_no_finetune:
+      name: OncoVLM-base
+      backbone: Qwen-3.5-9B
+      finetuned: false
+    oncovlm_qwen_lora:
+      name: OncoVLM
+      backbone: Qwen-3.5-9B
+      finetuned: true
+    oncovlm_gemma4_no_finetune:
+      name: OncoVLM-base
+      backbone: Gemma-4-E4B
+      finetuned: false
   task_categories:
     mutation: Mutation
     grade: Tumor grade
-    stage: AJCC stage
-    stage_component: AJCC T/N/M
+    stage: Tumor stage
+    stage_component: AJCC T/N
     concordance: Concordance
     integrated_dx: Integrated diagnosis
     molecular_pathway: Molecular pathway
@@ -33,14 +48,17 @@ tables:
     modality_combination_name: all_available
     model_order:
       - gpt_5_4
-      - oncovlm_qwen_no_finetune
-      - oncovlm_qwen_lora
-      - oncovlm_gemma4_no_finetune
       - medgemma-4b-it
+      - oncovlm_qwen_no_finetune
+      - oncovlm_gemma4_no_finetune
+      - _vrule
+      - oncovlm_qwen_lora
+
     colors:
       f1: 2563EB
       bert: 7C3AED
       header_bg: F3F6FA
       group_bg: EFF6FF
       mean_bg: F8FAFC
-      rule: CBD5E1
+      stdev: 64748B
+      rule: "000000"

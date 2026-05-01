@@ -4,8 +4,8 @@ from __future__ import annotations
 # ruff: noqa: E402
 
 import json
-import math
 import os
+import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -24,6 +24,8 @@ from kidney_vlm.vqa.stage_config import clean_text
 
 ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
+
+VRULE_TOKEN = "_vrule"
 
 MAIN_GROUPS = [
     {
@@ -112,24 +114,50 @@ def _latex_escape(value: Any) -> str:
     return "".join(replacements.get(char, char) for char in text)
 
 
+def _model_metadata(model_display: Mapping[str, Any], model: str) -> dict[str, str]:
+    raw = model_display.get(model)
+    if raw is None:
+        return {"name": model, "backbone": "--", "finetuned": "--"}
+    if not isinstance(raw, Mapping):
+        return {"name": clean_text(raw) or model, "backbone": "--", "finetuned": "--"}
+
+    name = clean_text(raw.get("name")) or model
+    backbone = clean_text(raw.get("backbone")) or "--"
+    finetuned_raw = raw.get("finetuned")
+    if isinstance(finetuned_raw, bool):
+        finetuned = "Yes" if finetuned_raw else "No"
+    else:
+        finetuned = clean_text(finetuned_raw) or "--"
+    return {"name": name, "backbone": backbone, "finetuned": finetuned}
+
+
+def _model_metadata_row(label: str, key: str, models: list[str], model_display: Mapping[str, Any]) -> str:
+    cells = [r"\textbf{" + _latex_escape(label) + r"}"]
+    for model in models:
+        cells.append(_latex_escape(_model_metadata(model_display, model)[key]))
+    return " & ".join(cells) + r" \\"
+
+
 def _fmt_metric(value: float | None) -> str:
     if value is None:
         return "--"
     return f"{100.0 * value:.1f}"
 
 
-def _safe_std(values: list[float]) -> float | None:
-    if len(values) < 2:
-        return None
-    mean = sum(values) / len(values)
-    return math.sqrt(sum((value - mean) ** 2 for value in values) / (len(values) - 1))
-
-
-def _fmt_metric_summary(mean: float | None, std: float | None) -> str:
+def _fmt_metric_summary(mean: float | None, std: float | None, std_color: str, *, bold: bool = False) -> str:
     value_text = _fmt_metric(mean)
+    if bold and value_text != "--":
+        value_text = r"\textbf{" + value_text + r"}"
     if std is None or value_text == "--":
         return value_text
-    return value_text + r"\,{\scriptsize $\pm$ " + _fmt_metric(std) + r"}"
+    return (
+        value_text
+        + r"\,{\scriptsize \textcolor[HTML]{"
+        + std_color
+        + r"}{$\pm$ "
+        + _fmt_metric(std)
+        + r"}}"
+    )
 
 
 def _weighted_mean(records: list[Mapping[str, Any]], key: str) -> float | None:
@@ -158,12 +186,15 @@ def _aggregate_records(records: list[Mapping[str, Any]], metric_kind: str) -> di
         return {
             "n": n,
             "accuracy": correct / n,
+            "accuracy_stdev": _weighted_mean(records, "accuracy_stdev"),
             "f1_macro": _weighted_mean(records, "f1_macro"),
+            "f1_macro_stdev": _weighted_mean(records, "f1_macro_stdev"),
         }
     if metric_kind == "qa":
         return {
             "n": n,
             "bertscore_f1_mean": _weighted_mean(records, "bertscore_f1_mean"),
+            "bertscore_f1_mean_stdev": _weighted_mean(records, "bertscore_f1_mean_stdev"),
         }
     raise ValueError(f"Unknown metric kind: {metric_kind}")
 
@@ -174,39 +205,9 @@ def _metric_value(metrics: dict[str, Any] | None, key: str) -> float | None:
     return float(metrics[key])
 
 
-def _repeat_summary_values(records: list[Mapping[str, Any]], metric_kind: str) -> dict[str, Any] | None:
-    if not records:
-        return None
-    repeat_ids = sorted({int(record["repeat_id"]) for record in records})
-    repeat_aggregates = [
-        _aggregate_records(
-            [record for record in records if int(record["repeat_id"]) == repeat_id],
-            metric_kind,
-        )
-        for repeat_id in repeat_ids
-    ]
-    repeat_aggregates = [aggregate for aggregate in repeat_aggregates if aggregate is not None]
-    if not repeat_aggregates:
-        return None
-
-    out: dict[str, Any] = {"repeat_count": len(repeat_aggregates)}
-    keys = ["accuracy", "f1_macro"] if metric_kind == "mcq" else ["bertscore_f1_mean"]
-    for key in keys:
-        values = [float(aggregate[key]) for aggregate in repeat_aggregates if aggregate.get(key) is not None]
-        out[f"{key}_mean"] = sum(values) / len(values) if values else None
-        out[f"{key}_std"] = _safe_std(values)
-    return out
-
-
 def _is_row_best(value: float | None, values: list[float | None]) -> bool:
     present = [item for item in values if item is not None]
     return value is not None and bool(present) and value == max(present)
-
-
-def _bold_if(value: str, enabled: bool) -> str:
-    if not enabled or value == "--":
-        return value
-    return r"\textbf{" + value + r"}"
 
 
 def _metric_cell(
@@ -219,9 +220,10 @@ def _metric_cell(
 ) -> str:
     if metrics is None:
         return r"\multicolumn{1}{c}{--}"
+    std_color = clean_text(colors.get("stdev", "64748B"))
     if metric_kind == "mcq":
-        acc = _bold_if(_fmt_metric_summary(metrics.get("accuracy_mean"), metrics.get("accuracy_std")), bold_first)
-        f1 = _bold_if(_fmt_metric_summary(metrics.get("f1_macro_mean"), metrics.get("f1_macro_std")), bold_second)
+        acc = _fmt_metric_summary(metrics.get("accuracy"), metrics.get("accuracy_stdev"), std_color, bold=bold_first)
+        f1 = _fmt_metric_summary(metrics.get("f1_macro"), metrics.get("f1_macro_stdev"), std_color, bold=bold_second)
         return (
             r"\cellmetric{"
             + f"{acc}"
@@ -231,16 +233,46 @@ def _metric_cell(
             + clean_text(colors.get("f1", "2563EB"))
             + r"}"
         )
-    bert = _bold_if(_fmt_metric_summary(metrics.get("bertscore_f1_mean_mean"), metrics.get("bertscore_f1_mean_std")), bold_first)
+    bert = _fmt_metric_summary(
+        metrics.get("bertscore_f1_mean"),
+        metrics.get("bertscore_f1_mean_stdev"),
+        std_color,
+        bold=bold_first,
+    )
     return r"\bertcell{" + f"{bert}" + r"}"
 
 
-def _model_order(metrics: list[Mapping[str, Any]], table_cfg: Mapping[str, Any]) -> list[str]:
+def _model_order_and_vrules(metrics: list[Mapping[str, Any]], table_cfg: Mapping[str, Any]) -> tuple[list[str], set[int]]:
     configured = [clean_text(item) for item in table_cfg.get("model_order", []) if clean_text(item)]
     present = sorted({clean_text(record.get("model_display_name")) for record in metrics if clean_text(record.get("model_display_name"))})
-    ordered = [model for model in configured if model in present]
+    ordered: list[str] = []
+    vrules_after: set[int] = set()
+    for item in configured:
+        if item == VRULE_TOKEN:
+            vrules_after.add(len(ordered))
+            continue
+        if item in present and item not in ordered:
+            ordered.append(item)
     ordered.extend(model for model in present if model not in ordered)
-    return ordered
+    vrules_after = {index for index in vrules_after if 0 < index < len(ordered)}
+    return ordered, vrules_after
+
+
+def _column_spec(model_count: int, vrules_after: set[int]) -> str:
+    parts = ["l", "|"]
+    for model_index in range(1, model_count + 1):
+        parts.append("c")
+        if model_index in vrules_after:
+            parts.append("|")
+    return "".join(parts)
+
+
+def _colored_hline(colors: Mapping[str, str]) -> str:
+    return (
+        r"\arrayrulecolor[HTML]{"
+        + clean_text(colors.get("rule", "CBD5E1"))
+        + r"}\hline\arrayrulecolor{black}"
+    )
 
 
 def _task_order(metrics: list[Mapping[str, Any]], display_names: Mapping[str, Any]) -> list[str]:
@@ -298,21 +330,21 @@ def _group_task_categories(
 
 def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) -> str:
     metrics = list(metrics_blob.get("metrics") or [])
-    if metrics and any("repeat_id" not in record for record in metrics):
-        raise ValueError("metrics.json records must contain repeat_id. Rerun score_vqa_predictions.py.")
+    if any("repeat_id" in record for record in metrics):
+        raise ValueError("metrics.json is in the old repeat-level format. Rerun score_vqa_predictions.py.")
     table_cfg = dict(dict(cfg.get("tables") or {}).get("main_result") or {})
     colors = dict(table_cfg.get("colors") or {})
     modality_combination_name = clean_text(table_cfg.get("modality_combination_name")) or "all_available"
     display_cfg = dict(cfg.get("display_names") or {})
     model_display = dict(display_cfg.get("models") or {})
     task_display = dict(display_cfg.get("task_categories") or {})
-    models = _model_order(metrics, table_cfg)
+    models, vrules_after = _model_order_and_vrules(metrics, table_cfg)
     if not models:
         raise RuntimeError("No models found in metrics.json.")
     task_order = _task_order(metrics, task_display)
 
     num_columns = len(models) + 1
-    column_spec = "l" + ("c" * len(models))
+    column_spec = _column_spec(len(models), vrules_after)
     lines = [
         r"\begin{table}[t]",
         r"\centering",
@@ -328,10 +360,15 @@ def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) 
         r"\rowcolor[HTML]{"
         + clean_text(colors.get("header_bg", "F3F6FA"))
         + r"}",
-        r"\textbf{Task} & "
-        + " & ".join(r"\textbf{" + _latex_escape(model_display.get(model, model)) + r"}" for model in models)
-        + r" \\",
-        r"\midrule",
+        _model_metadata_row("Name", "name", models, model_display),
+        r"\rowcolor[HTML]{"
+        + clean_text(colors.get("header_bg", "F3F6FA"))
+        + r"}",
+        _model_metadata_row("Backbone", "backbone", models, model_display),
+        r"\rowcolor[HTML]{"
+        + clean_text(colors.get("header_bg", "F3F6FA"))
+        + r"}",
+        _model_metadata_row("Finetuned", "finetuned", models, model_display),
     ]
 
     first_group = True
@@ -349,12 +386,13 @@ def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) 
         first_group = False
         lines.extend(
             [
+                _colored_hline(colors),
                 r"\rowcolor[HTML]{"
                 + clean_text(colors.get("group_bg", "EFF6FF"))
                 + r"}",
                 r"\multicolumn{"
                 + str(num_columns)
-                + r"}{l}{\textbf{"
+                + r"}{l}{\rule[-0.8ex]{0pt}{3.2ex}\textbf{"
                 + _latex_escape(group["label"])
                 + r"}"
                 + (
@@ -368,6 +406,8 @@ def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) 
                     else r" \textnormal{(BERT-F1)}"
                 )
                 + r"} \\",
+                _colored_hline(colors),
+                r"\noalign{\vskip 0.28em}",
             ]
         )
         group_model_records: dict[str, list[Mapping[str, Any]]] = {model: [] for model in models}
@@ -384,10 +424,10 @@ def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) 
                     modality_combination_name=modality_combination_name,
                 )
                 group_model_records[model].extend(records)
-                row_aggregates[model] = _repeat_summary_values(records, group["metric"])
+                row_aggregates[model] = _aggregate_records(records, group["metric"])
             if group["metric"] == "mcq":
-                acc_values = [_metric_value(row_aggregates[model], "accuracy_mean") for model in models]
-                f1_values = [_metric_value(row_aggregates[model], "f1_macro_mean") for model in models]
+                acc_values = [_metric_value(row_aggregates[model], "accuracy") for model in models]
+                f1_values = [_metric_value(row_aggregates[model], "f1_macro") for model in models]
                 for model in models:
                     aggregate = row_aggregates[model]
                     cells.append(
@@ -395,12 +435,12 @@ def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) 
                             aggregate,
                             group["metric"],
                             colors,
-                            bold_first=_is_row_best(_metric_value(aggregate, "accuracy_mean"), acc_values),
-                            bold_second=_is_row_best(_metric_value(aggregate, "f1_macro_mean"), f1_values),
+                            bold_first=_is_row_best(_metric_value(aggregate, "accuracy"), acc_values),
+                            bold_second=_is_row_best(_metric_value(aggregate, "f1_macro"), f1_values),
                         )
                     )
             else:
-                bert_values = [_metric_value(row_aggregates[model], "bertscore_f1_mean_mean") for model in models]
+                bert_values = [_metric_value(row_aggregates[model], "bertscore_f1_mean") for model in models]
                 for model in models:
                     aggregate = row_aggregates[model]
                     cells.append(
@@ -408,19 +448,19 @@ def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) 
                             aggregate,
                             group["metric"],
                             colors,
-                            bold_first=_is_row_best(_metric_value(aggregate, "bertscore_f1_mean_mean"), bert_values),
+                            bold_first=_is_row_best(_metric_value(aggregate, "bertscore_f1_mean"), bert_values),
                         )
                     )
             lines.append(" & ".join(cells) + r" \\")
 
         mean_cells = [r"\textbf{Mean}"]
         mean_aggregates = {
-            model: _repeat_summary_values(group_model_records[model], group["metric"])
+            model: _aggregate_records(group_model_records[model], group["metric"])
             for model in models
         }
         if group["metric"] == "mcq":
-            mean_acc_values = [_metric_value(mean_aggregates[model], "accuracy_mean") for model in models]
-            mean_f1_values = [_metric_value(mean_aggregates[model], "f1_macro_mean") for model in models]
+            mean_acc_values = [_metric_value(mean_aggregates[model], "accuracy") for model in models]
+            mean_f1_values = [_metric_value(mean_aggregates[model], "f1_macro") for model in models]
             for model in models:
                 aggregate = mean_aggregates[model]
                 mean_cells.append(
@@ -428,12 +468,12 @@ def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) 
                         aggregate,
                         group["metric"],
                         colors,
-                        bold_first=_is_row_best(_metric_value(aggregate, "accuracy_mean"), mean_acc_values),
-                        bold_second=_is_row_best(_metric_value(aggregate, "f1_macro_mean"), mean_f1_values),
+                        bold_first=_is_row_best(_metric_value(aggregate, "accuracy"), mean_acc_values),
+                        bold_second=_is_row_best(_metric_value(aggregate, "f1_macro"), mean_f1_values),
                     )
                 )
         else:
-            mean_bert_values = [_metric_value(mean_aggregates[model], "bertscore_f1_mean_mean") for model in models]
+            mean_bert_values = [_metric_value(mean_aggregates[model], "bertscore_f1_mean") for model in models]
             for model in models:
                 aggregate = mean_aggregates[model]
                 mean_cells.append(
@@ -441,7 +481,7 @@ def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) 
                         aggregate,
                         group["metric"],
                         colors,
-                        bold_first=_is_row_best(_metric_value(aggregate, "bertscore_f1_mean_mean"), mean_bert_values),
+                        bold_first=_is_row_best(_metric_value(aggregate, "bertscore_f1_mean"), mean_bert_values),
                     )
                 )
         lines.extend(
@@ -472,6 +512,13 @@ def _preview_document(table_files: list[str]) -> str:
         [
             r"\documentclass{article}",
             r"\usepackage[margin=0.45in]{geometry}",
+            r"\usepackage{iftex}",
+            r"\ifPDFTeX",
+            r"\usepackage{mathptmx}",
+            r"\else",
+            r"\usepackage{fontspec}",
+            r"\setmainfont{Times New Roman}",
+            r"\fi",
             r"\usepackage{booktabs}",
             r"\usepackage[table]{xcolor}",
             r"\usepackage{array}",
@@ -482,6 +529,14 @@ def _preview_document(table_files: list[str]) -> str:
             r"\end{document}",
             "",
         ]
+    )
+
+
+def _render_preview_pdf(preview_path: Path) -> None:
+    subprocess.run(
+        ["pdflatex", "-interaction=nonstopmode", preview_path.name],
+        cwd=preview_path.parent,
+        check=True,
     )
 
 
@@ -510,11 +565,13 @@ def main() -> None:
     preview_path = tables_dir / "preview_tables.tex"
     _write_text_atomic(main_table_path, main_table)
     _write_text_atomic(preview_path, _preview_document([main_table_path.name]))
+    _render_preview_pdf(preview_path)
 
     print(f"Metrics path: {metrics_path}")
     print(f"Tables dir: {tables_dir}")
     print(f"Wrote: {main_table_path}")
     print(f"Wrote: {preview_path}")
+    print(f"Rendered: {preview_path.with_suffix('.pdf')}")
 
 
 if __name__ == "__main__":

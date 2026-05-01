@@ -1,4 +1,6 @@
-modality: rna
+model: gemma
+modality: radiology
+inference_mode: projector_training_mode # vqa_mode | projector_training_mode
 sample_key: ""
 sample_keys: []
 max_samples: 5
@@ -9,28 +11,74 @@ max_new_tokens: 96
 do_sample: false
 temperature: 1.0
 top_p: 1.0
+device: cuda:0
+trust_remote_code: true
+load_in_8bit: true
+torch_dtype: bfloat16
+autocast_dtype: bfloat16
+projector_dtype: float32
+attn_implementation: sdpa
 
 modalities:
-  pathology:
-    projector_ckpt_path: ${project.root_dir}/output/projectors/qwen3_5_9b/pathology
-    qa_parquet_path: ${pathology_proj.qa_parquet_path}
-    sample_key_field: slide_stem
-    feature_path_field: pathology_tile_embedding_paths
-    label_field: project_id
-    max_feature_tokens: ${pathology_proj.max_patch_tokens}
-    patch_compression_method: ${pathology_proj.patch_compression_method}
-    patch_compression_kernel_size: ${pathology_proj.patch_compression_kernel_size}
-  dnam:
-    projector_ckpt_path: ${project.root_dir}/output/projectors/qwen3_5_9b/dnam
-    qa_parquet_path: ${dnam_proj.qa_parquet_path}
-    sample_key_field: sample_id
-    feature_path_field: genomics_dna_methylation_feature_path
-    label_field: project_id
-    max_feature_tokens: ${dnam_proj.max_dnam_tokens}
-  rna:
-    projector_ckpt_path: ${project.root_dir}/outputs/projectors/qwen3_5_9b/rna
-    qa_parquet_path: ${data.unified_registry_path}
-    sample_key_field: sample_id
-    feature_path_field: genomics_rna_bulk_feature_path
-    label_field: project_id
-    max_feature_tokens: ${rna_proj.max_rna_tokens}
+  gemma:
+    pathology:
+      projector_ckpt_path: ${project.root_dir}/outputs/projectors/gemma_4_e4b_it/pathology/path_resampler_20260422_002758_EST/best.ckpt
+      qa_parquet_path: ${data.unified_registry_path}
+      sample_key_field: sample_id
+      feature_path_field: pathology_tile_embedding_paths
+      label_field: project_id
+      max_feature_tokens: 4096
+      patch_compression_method: none
+      patch_compression_kernel_size: 1
+    radiology:
+      projector_ckpt_path: ${project.root_dir}/outputs/projectors/gemma_4_e4b_it/radiology/best.ckpt
+      qa_parquet_path: ${data.unified_registry_path}
+      sample_key_field: sample_id
+      feature_path_field: radiology_embedding_paths
+      label_field: project_id
+      max_feature_tokens: 128
+    dnam:
+      projector_ckpt_path: ${project.root_dir}/outputs/projectors/gemma_4_e4b_it/dnam/dnam_mlp_20260423_012429_EST/best.ckpt
+      qa_parquet_path: ${data.unified_registry_path}
+      sample_key_field: sample_id
+      feature_path_field: genomics_dna_methylation_feature_path
+      label_field: project_id
+      max_feature_tokens: 80
+    rna:
+      projector_ckpt_path: ${project.root_dir}/outputs/projectors/gemma_4_e4b_it/rna/best.ckpt
+      qa_parquet_path: ${data.unified_registry_path}
+      sample_key_field: sample_id
+      feature_path_field: genomics_rna_bulk_feature_path
+      label_field: project_id
+      max_feature_tokens: 80
+  qwen:
+    pathology:
+      projector_ckpt_path: ${project.root_dir}/outputs/projectors/qwen3_5_9b/pathology/path_resampler_20260417_180638_EST/best.ckpt
+      qa_parquet_path: ${data.unified_registry_path}
+      sample_key_field: sample_id
+      feature_path_field: pathology_tile_embedding_paths
+      label_field: project_id
+      max_feature_tokens: 4096
+      patch_compression_method: none
+      patch_compression_kernel_size: 1
+    radiology:
+      projector_ckpt_path: ${project.root_dir}/outputs/projectors/qwen3_5_9b/radiology/radiology_remote_weights_20260423_000000_EST/best.ckpt
+      qa_parquet_path: ${data.unified_registry_path}
+      sample_key_field: sample_id
+      feature_path_field: radiology_embedding_paths
+      label_field: project_id
+      max_feature_tokens: 16
+    dnam:
+      projector_ckpt_path: ${project.root_dir}/outputs/projectors/qwen3_5_9b/dnam/dnam_mlp_20260420_025027_EST/best.ckpt
+      qa_parquet_path: ${data.unified_registry_path}
+      sample_key_field: sample_id
+      feature_path_field: genomics_dna_methylation_feature_path
+      label_field: project_id
+      max_feature_tokens: 80
+    rna:
+      projector_ckpt_path: ${project.root_dir}/outputs/projectors/qwen3_5_9b/rna/rna_remote_weights_20260423_000000_EST/best.ckpt
+      qa_parquet_path: ${data.unified_registry_path}
+      sample_key_field: sample_id
+      feature_path_field: genomics_rna_bulk_feature_path
+      label_field: project_id
+      max_feature_tokens: 80

@@ -32,6 +32,28 @@ from kidney_vlm.vqa.stage_config import clean_text
 ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 
+METRIC_ID_COLUMNS = [
+    "metric_group",
+    "model_display_name",
+    "backend",
+    "question_type",
+    "generation_type",
+    "task_category",
+    "task_id",
+    "modality_combination_name",
+    "project_id",
+]
+
+COUNT_COLUMNS = {"n", "correct", "parse_failed"}
+VALUE_COLUMNS = {
+    "accuracy",
+    "f1_macro",
+    "f1_weighted",
+    "bertscore_precision_mean",
+    "bertscore_recall_mean",
+    "bertscore_f1_mean",
+}
+
 
 def load_cfg():
     return load_script_cfg(
@@ -138,6 +160,60 @@ def _run_payload(
     }
 
 
+def _stdev(values: list[float]) -> float:
+    if len(values) <= 1:
+        return 0.0
+    mean = sum(values) / len(values)
+    return float((sum((value - mean) ** 2 for value in values) / (len(values) - 1)) ** 0.5)
+
+
+def _mean(values: list[float]) -> float | None:
+    return float(sum(values) / len(values)) if values else None
+
+
+def _clean_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _aggregate_repeat_records(per_repeat_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for record in per_repeat_records:
+        key = tuple(clean_text(record.get(column)) for column in METRIC_ID_COLUMNS)
+        grouped.setdefault(key, []).append(record)
+
+    out: list[dict[str, Any]] = []
+    for records in grouped.values():
+        first = records[0]
+        aggregate = {column: first[column] for column in METRIC_ID_COLUMNS}
+        aggregate["num_repeat"] = int(len(records))
+
+        for column in COUNT_COLUMNS:
+            values = [_clean_number(record.get(column)) for record in records if record.get(column) is not None]
+            if values:
+                total = sum(values)
+                aggregate[column] = int(total) if total.is_integer() else float(total)
+                aggregate[f"{column}_stdev"] = _stdev(values)
+
+        for column in VALUE_COLUMNS:
+            values = [_clean_number(record.get(column)) for record in records if record.get(column) is not None]
+            values = [value for value in values if value is not None]
+            if not values:
+                continue
+            if column == "accuracy" and aggregate.get("n") and aggregate.get("correct") is not None:
+                aggregate[column] = float(aggregate["correct"] / aggregate["n"])
+            else:
+                aggregate[column] = _mean(values)
+            aggregate[f"{column}_stdev"] = _stdev(values)
+
+        out.append(aggregate)
+    return sorted(
+        out,
+        key=lambda record: tuple(clean_text(record.get(column)) for column in METRIC_ID_COLUMNS),
+    )
+
+
 def main() -> None:
     cfg = load_cfg()
     score_cfg = cfg.vqa_evaluation
@@ -163,13 +239,12 @@ def main() -> None:
         dict(dict(score_dict.get("metrics") or {}).get("bert_score") or {}),
     )
 
-    metric_records: list[dict[str, Any]] = []
-    model_columns = ["model_display_name", "backend", "model_name_or_path", "repeat_id"]
+    per_repeat_records: list[dict[str, Any]] = []
+    model_columns = ["model_display_name", "backend", "repeat_id"]
     for group_values, group in scored_predictions.groupby(model_columns, dropna=False, sort=True):
         model_display_name = clean_text(group_values[0])
         backend = clean_text(group_values[1])
-        model_name_or_path = clean_text(group_values[2])
-        repeat_id = int(group_values[3])
+        repeat_id = int(group_values[2])
         print("\nVQA scoring model")
         print(f"  Model: {model_display_name}")
         print(f"  Repeat: {repeat_id}")
@@ -178,13 +253,14 @@ def main() -> None:
             group,
             model_display_name=model_display_name,
             backend=backend,
-            model_name_or_path=model_name_or_path,
         )
         for record in records:
             record["repeat_id"] = repeat_id
-        metric_records.extend(records)
+        per_repeat_records.extend(records)
         overall = next((item for item in records if item["metric_group"] == "overall"), {})
         print(f"  Overall metrics: {overall}")
+
+    metric_records = _aggregate_repeat_records(per_repeat_records)
 
     payload = {
         "run": _run_payload(
