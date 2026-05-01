@@ -1,7 +1,7 @@
 name: vqa_score_predictions
 
 run:
-  name: smoke_test
+  name: actual_run
   output_root: ${project.root_dir}/results
   prediction_filename: predictions.parquet
   metrics_filename: metrics.json
@@ -15,3 +15,4 @@ metrics:
     batch_size: 8
     max_length: 512
     rescale_with_baseline: false
+    use_fast_tokenizer: true

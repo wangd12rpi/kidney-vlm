@@ -777,6 +777,9 @@ def _cached_prefix_rows_batch(
     prompt_texts: list[str] = []
     prefix_tensors: dict[str, list[torch.Tensor | None]] = {modality: [] for modality in MODALITIES}
     enable_thinking = as_bool(stage_cfg.get("enable_thinking", False))
+    prefix_value_override = clean_text(dict(stage_cfg.get("prefix_cache") or {}).get("prefix_value_override")) or "cached"
+    if prefix_value_override not in {"cached", "ones", "random"}:
+        raise ValueError("prefix_cache.prefix_value_override must be cached, ones, or random.")
 
     for row in rows:
         prompt_text = build_vqa_prompt(row, _prompt_block_for_projector(row, eval_cfg))
@@ -791,7 +794,12 @@ def _cached_prefix_rows_batch(
 
         for modality in MODALITIES:
             if row_uses_modality(row, modality):
-                prefix_tensors[modality].append(load_row_cached_prefix_tensor(ROOT, stage_cfg, row, modality))
+                tensor = load_row_cached_prefix_tensor(ROOT, stage_cfg, row, modality)
+                if prefix_value_override == "ones":
+                    tensor = torch.ones_like(tensor)
+                elif prefix_value_override == "random":
+                    tensor = torch.randn_like(tensor)
+                prefix_tensors[modality].append(tensor)
             else:
                 prefix_tensors[modality].append(None)
 

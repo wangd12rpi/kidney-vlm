@@ -660,8 +660,19 @@ def add_bertscore_columns(predictions_df: pd.DataFrame, bert_score_cfg: Mapping[
     except ImportError as exc:
         raise RuntimeError("Open-ended VQA evaluation requires bert-score. Install it with: uv add bert-score") from exc
 
-    candidates = qa_frame["predicted_answer"].fillna("").astype(str).tolist()
-    references = qa_frame["answer"].fillna("").astype(str).tolist()
+    reference_series = qa_frame["answer"].fillna("").astype(str)
+    empty_reference_mask = reference_series.str.strip().eq("")
+    if bool(empty_reference_mask.any()):
+        bad_ids = qa_frame.loc[empty_reference_mask, "question_id"].astype(str).head(10).tolist()
+        raise ValueError(f"BERTScore references are empty for question_id(s): {bad_ids}")
+
+    candidate_series = qa_frame["predicted_answer"].fillna("").astype(str)
+    empty_candidate_mask = candidate_series.str.strip().eq("")
+    if bool(empty_candidate_mask.any()):
+        print(f"BERTScore: scoring {int(empty_candidate_mask.sum())} empty QA prediction(s) as [empty answer].")
+
+    candidates = [text.strip() if text.strip() else "[empty answer]" for text in candidate_series.tolist()]
+    references = [text.strip() for text in reference_series.tolist()]
     max_length = int(cfg.get("max_length", 512))
     if max_length <= 0:
         raise ValueError("metrics.bert_score.max_length must be positive.")
@@ -675,6 +686,7 @@ def add_bertscore_columns(predictions_df: pd.DataFrame, bert_score_cfg: Mapping[
             lang=str(cfg.get("lang", "en")),
             batch_size=int(cfg.get("batch_size", 8)),
             rescale_with_baseline=bool(cfg.get("rescale_with_baseline", True)),
+            use_fast_tokenizer=bool(cfg.get("use_fast_tokenizer", True)),
         )
     finally:
         restore_tokenizer()
@@ -720,14 +732,12 @@ def _base_metric_record(
     metric_group: str,
     model_display_name: str,
     backend: str,
-    model_name_or_path: str,
     values: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "metric_group": metric_group,
         "model_display_name": model_display_name,
         "backend": backend,
-        "model_name_or_path": model_name_or_path,
     }
     for dimension in METRIC_DIMENSIONS:
         record[dimension] = "ALL"
@@ -762,7 +772,6 @@ def build_flat_metric_records(
     *,
     model_display_name: str,
     backend: str,
-    model_name_or_path: str,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     group_specs: list[tuple[str, list[str]]] = [
@@ -770,7 +779,6 @@ def build_flat_metric_records(
         ("by_question_type", ["question_type"]),
         ("by_generation_type", ["generation_type"]),
         ("by_task_category", ["task_category"]),
-        ("by_task_id", ["task_id"]),
         ("by_modality_combination_name", ["modality_combination_name"]),
         ("by_project_id", ["project_id"]),
         (
@@ -784,7 +792,6 @@ def build_flat_metric_records(
                 metric_group=metric_group,
                 model_display_name=model_display_name,
                 backend=backend,
-                model_name_or_path=model_name_or_path,
             )
             record.update(_metric_values(predictions_df))
             records.append(record)
@@ -801,7 +808,6 @@ def build_flat_metric_records(
                 metric_group=metric_group,
                 model_display_name=model_display_name,
                 backend=backend,
-                model_name_or_path=model_name_or_path,
                 values=dimension_values,
             )
             record.update(_metric_values(group))

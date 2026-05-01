@@ -58,3 +58,5 @@ external/Medical-SAM3/**/*.pt
 external/Medical-SAM3/**/__pycache__/
 external/Medical-SAM3/**/*.pyc
 data/radiology_png
+
+results/*/tables*

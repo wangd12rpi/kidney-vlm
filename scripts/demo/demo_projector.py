@@ -18,6 +18,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from kidney_vlm.modeling.dnam_qwen_projector import DnamQwenProjectorLM
+from kidney_vlm.modeling.path_projectors import build_soft_prefix_per_layer_inputs
 from kidney_vlm.modeling.pathology_qwen_projector import PathologyQwenProjectorLM
 from kidney_vlm.modeling.rna_qwen_projector import RnaQwenProjectorLM
 from kidney_vlm.repo_root import find_repo_root
@@ -26,12 +27,23 @@ from kidney_vlm.training.collator import (
     _load_h5_patch_features as _load_h5_patch_features_shared,
     _load_pt_feature_tensor as _load_pt_feature_tensor_shared,
 )
+from kidney_vlm.vqa.data import _find_placeholder_span, load_modality_feature_tensor
+from kidney_vlm.vqa.modeling import (
+    OncoVLMVQASFTModel,
+    build_language_model,
+    build_projector_module,
+    build_tokenizer,
+    generate_language_model_with_soft_prefix,
+)
+from kidney_vlm.vqa.prompts import prefix_placeholder_for_modality
+from kidney_vlm.vqa.stage_config import clean_text, resolve_torch_dtype
 
 ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 
 DEMO_PROMPT = "what is this?"
-SUPPORTED_MODALITIES = {"pathology", "dnam", "rna"}
+SUPPORTED_MODALITIES = {"pathology", "radiology", "dnam", "rna"}
+SUPPORTED_INFERENCE_MODES = {"projector_training_mode", "vqa_mode"}
 
 
 def load_cfg():
@@ -59,6 +71,8 @@ def _resolve_device(device_value: str | None) -> torch.device:
 def _projector_cfg(cfg: Any, modality: str) -> Any:
     if modality == "pathology":
         return cfg.pathology_proj
+    if modality == "radiology":
+        return cfg.radiology_proj
     if modality == "dnam":
         return cfg.dnam_proj
     if modality == "rna":
@@ -66,15 +80,21 @@ def _projector_cfg(cfg: Any, modality: str) -> Any:
     raise ValueError(f"Unsupported demo modality: {modality}")
 
 
-def _selected_modality_cfg(cfg: Any) -> tuple[str, Any]:
+def _selected_modality_cfg(cfg: Any) -> tuple[str, str, Any]:
     demo_cfg = cfg.demo
+    model_key = str(demo_cfg.get("model", "")).strip().lower()
+    if not model_key:
+        raise RuntimeError("demo.model must be configured, for example 'gemma' or 'qwen'.")
     modality = str(demo_cfg.get("modality", "")).strip().lower()
     if modality not in SUPPORTED_MODALITIES:
         raise RuntimeError(f"demo.modality must be one of {sorted(SUPPORTED_MODALITIES)}, got: {modality!r}")
-    modality_cfg = demo_cfg.get("modalities", {}).get(modality)
+    model_cfg = demo_cfg.get("modalities", {}).get(model_key)
+    if model_cfg is None:
+        raise RuntimeError(f"demo.modalities.{model_key} must be configured.")
+    modality_cfg = model_cfg.get(modality)
     if modality_cfg is None:
-        raise RuntimeError(f"demo.modalities.{modality} must be configured.")
-    return modality, modality_cfg
+        raise RuntimeError(f"demo.modalities.{model_key}.{modality} must be configured.")
+    return model_key, modality, modality_cfg
 
 
 def _build_tokenizer(model_name_or_path: str, trust_remote_code: bool):
@@ -95,8 +115,8 @@ def _build_tokenizer(model_name_or_path: str, trust_remote_code: bool):
     return tokenizer
 
 
-def _build_chat_prompt_input_ids(tokenizer: Any, *, device: torch.device) -> torch.Tensor:
-    messages = [{"role": "user", "content": DEMO_PROMPT}]
+def _build_chat_prompt_input_ids(tokenizer: Any, *, prompt_text: str, device: torch.device) -> torch.Tensor:
+    messages = [{"role": "user", "content": prompt_text}]
     kwargs = {"tokenize": True, "add_generation_prompt": True}
     try:
         token_ids = tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
@@ -399,6 +419,248 @@ def _load_feature_paths_by_sample_key(modality_cfg: Any) -> dict[str, str]:
     return mapping
 
 
+def _load_feature_refs_by_sample_key(modality_cfg: Any) -> dict[str, list[str]]:
+    key_field = str(modality_cfg.sample_key_field)
+    feature_path_field = str(modality_cfg.feature_path_field)
+    frame = _read_projector_frame(modality_cfg, columns=[key_field, feature_path_field])
+    mapping: dict[str, list[str]] = {}
+    for row in frame.itertuples(index=False):
+        sample_key = str(getattr(row, key_field)).strip()
+        feature_refs = _as_list(getattr(row, feature_path_field))
+        if sample_key and feature_refs and sample_key not in mapping:
+            mapping[sample_key] = feature_refs
+    return mapping
+
+
+def _checkpoint_path_for_block(checkpoint_path: Path) -> str:
+    try:
+        return checkpoint_path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(checkpoint_path)
+
+
+def _demo_stage_cfg(demo_cfg: Any, state: dict[str, Any]) -> dict[str, Any]:
+    model_name_or_path = clean_text(state.get("model_name_or_path")) or clean_text(demo_cfg.get("model_name_or_path"))
+    if not model_name_or_path:
+        raise ValueError("Projector checkpoint/demo config must define model_name_or_path.")
+    return {
+        "model_name_or_path": model_name_or_path,
+        "trust_remote_code": bool(demo_cfg.get("trust_remote_code", True)),
+        "load_in_8bit": bool(demo_cfg.get("load_in_8bit", False)),
+        "torch_dtype": demo_cfg.get("torch_dtype", None),
+        "attn_implementation": demo_cfg.get("attn_implementation", None),
+    }
+
+
+def _load_single_modality_vqa_model(
+    *,
+    modality: str,
+    demo_cfg: Any,
+    modality_cfg: Any,
+    state: dict[str, Any],
+    checkpoint_path: Path,
+    device: torch.device,
+) -> tuple[OncoVLMVQASFTModel, dict[str, Any]]:
+    stage_cfg = _demo_stage_cfg(demo_cfg, state)
+    language_model = build_language_model(stage_cfg, device=device)
+    hidden_size = int(state.get("hidden_size") or 0)
+    if hidden_size <= 0:
+        raise ValueError(f"{modality} checkpoint is missing hidden_size: {checkpoint_path}")
+
+    block_cfg = {
+        "enabled": True,
+        "trainable": False,
+        "checkpoint_path": _checkpoint_path_for_block(checkpoint_path),
+        "max_tokens": int(modality_cfg.get("max_feature_tokens", state.get("max_slice_tokens") or 32)),
+        "patch_compression_method": str(modality_cfg.get("patch_compression_method", "none")),
+        "patch_compression_kernel_size": int(modality_cfg.get("patch_compression_kernel_size", 1)),
+        "token_dropout_prob": 0.0,
+    }
+    projector, metadata = build_projector_module(
+        repo_root=ROOT,
+        modality=modality,
+        block_cfg=block_cfg,
+        hidden_size=hidden_size,
+    )
+    model = OncoVLMVQASFTModel(
+        language_model=language_model,
+        projectors={modality: projector},
+        projector_metadata={modality: metadata},
+    )
+    projector_dtype = resolve_torch_dtype(demo_cfg.get("projector_dtype", "float32"))
+    model.move_projectors_to(device, dtype=projector_dtype)
+    if not bool(stage_cfg.get("load_in_8bit", False)):
+        model.language_model.to(device)
+    model.eval()
+    return model, block_cfg
+
+
+def _demo_prompt_with_prefix(modality: str) -> str:
+    return f"{prefix_placeholder_for_modality(modality)}\n\n{DEMO_PROMPT}"
+
+
+def _load_demo_feature_tensor(modality: str, modality_cfg: Any, feature_refs: list[str]) -> torch.Tensor:
+    block_cfg = {
+        "max_tokens": int(modality_cfg.get("max_feature_tokens", 32)),
+        "patch_compression_method": str(modality_cfg.get("patch_compression_method", "none")),
+        "patch_compression_kernel_size": int(modality_cfg.get("patch_compression_kernel_size", 1)),
+        "token_dropout_prob": 0.0,
+    }
+    row = {
+        "question_id": f"demo_{modality}",
+        "pathology_feature_paths": feature_refs if modality == "pathology" else [],
+        "radiology_feature_paths": feature_refs if modality == "radiology" else [],
+        "dnam_feature_path": feature_refs[0] if modality == "dnam" and feature_refs else "",
+        "rna_feature_path": feature_refs[0] if modality == "rna" and feature_refs else "",
+    }
+    return load_modality_feature_tensor(ROOT, row, modality, block_cfg)
+
+
+def _feature_kwargs_for_modality(
+    modality: str,
+    features: torch.Tensor,
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    modality_features = features.unsqueeze(0).to(device=device)
+    modality_feature_mask = torch.ones(modality_features.shape[:2], dtype=torch.long, device=device)
+    return {
+        f"{modality}_features": modality_features,
+        f"{modality}_feature_mask": modality_feature_mask,
+    }
+
+
+def _prepare_projector_training_mode_inputs(
+    *,
+    modality: str,
+    model: OncoVLMVQASFTModel,
+    tokenizer: Any,
+    features: torch.Tensor,
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    input_ids = _build_chat_prompt_input_ids(tokenizer, prompt_text=DEMO_PROMPT, device=device)
+    attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=device)
+    text_embeddings = model.language_model.get_input_embeddings()(input_ids)
+    feature_kwargs = _feature_kwargs_for_modality(modality, features, device)
+    prefix_outputs = model._prefix_outputs_from_inputs(
+        attention_mask=attention_mask,
+        **feature_kwargs,
+    )
+    projected_tokens, projected_attention = prefix_outputs[modality]
+    active_mask = projected_attention[0].to(device=projected_tokens.device).bool()
+    if not active_mask.any():
+        raise RuntimeError(f"{modality} projector produced no active prefix tokens.")
+    prefix_embeddings = projected_tokens[:, active_mask].to(device=text_embeddings.device, dtype=text_embeddings.dtype)
+    prefix_attention = torch.ones(
+        prefix_embeddings.shape[:2],
+        device=attention_mask.device,
+        dtype=attention_mask.dtype,
+    )
+
+    inputs_embeds = torch.cat([prefix_embeddings, text_embeddings], dim=1)
+    combined_attention = torch.cat([prefix_attention, attention_mask], dim=1)
+    prefix_input_ids = torch.zeros(
+        (input_ids.shape[0], prefix_embeddings.shape[1]),
+        device=input_ids.device,
+        dtype=input_ids.dtype,
+    )
+    combined_input_ids = torch.cat([prefix_input_ids, input_ids], dim=1)
+    position_ids = combined_attention.long().cumsum(dim=1) - 1
+    position_ids = position_ids.clamp_min(0)
+    position_ids = position_ids.masked_fill(combined_attention == 0, 0)
+
+    inputs = {
+        "input_ids": combined_input_ids,
+        "inputs_embeds": inputs_embeds,
+        "attention_mask": combined_attention,
+        "position_ids": position_ids,
+    }
+    per_layer_inputs = build_soft_prefix_per_layer_inputs(
+        model.language_model,
+        input_ids=input_ids,
+        prefix_length=prefix_embeddings.shape[1],
+        device=inputs_embeds.device,
+        dtype=inputs_embeds.dtype,
+    )
+    if per_layer_inputs is not None:
+        inputs["per_layer_inputs"] = per_layer_inputs
+    return inputs
+
+
+def _prepare_vqa_mode_inputs(
+    *,
+    modality: str,
+    model: OncoVLMVQASFTModel,
+    tokenizer: Any,
+    features: torch.Tensor,
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    prompt_text = _demo_prompt_with_prefix(modality)
+    input_ids = _build_chat_prompt_input_ids(tokenizer, prompt_text=prompt_text, device=device)
+    attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=device)
+    token_ids = input_ids[0].detach().cpu().tolist()
+    start, end = _find_placeholder_span(tokenizer, token_ids, prefix_placeholder_for_modality(modality))
+    prefix_spans = [[{"modality": modality, "start": start, "end": end}]]
+    feature_kwargs = _feature_kwargs_for_modality(modality, features, device)
+    return model.prepare_interleaved_generation_inputs(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        **feature_kwargs,
+        prefix_spans=prefix_spans,
+    )
+
+
+def _generate_single_modality_response(
+    *,
+    modality: str,
+    inference_mode: str,
+    model: OncoVLMVQASFTModel,
+    tokenizer: Any,
+    features: torch.Tensor,
+    device: torch.device,
+    max_new_tokens: int,
+    do_sample: bool,
+    temperature: float,
+    top_p: float,
+    autocast_dtype: torch.dtype,
+) -> str:
+    inference_mode = clean_text(inference_mode) or "vqa_mode"
+    if inference_mode not in SUPPORTED_INFERENCE_MODES:
+        raise ValueError(f"demo.inference_mode must be one of {sorted(SUPPORTED_INFERENCE_MODES)}, got {inference_mode!r}.")
+    use_autocast = device.type == "cuda" and autocast_dtype != torch.float32
+    with torch.no_grad(), torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
+        if inference_mode == "projector_training_mode":
+            inputs = _prepare_projector_training_mode_inputs(
+                modality=modality,
+                model=model,
+                tokenizer=tokenizer,
+                features=features,
+                device=device,
+            )
+        else:
+            inputs = _prepare_vqa_mode_inputs(
+                modality=modality,
+                model=model,
+                tokenizer=tokenizer,
+                features=features,
+                device=device,
+            )
+        generation_kwargs: dict[str, Any] = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+            "pad_token_id": tokenizer.pad_token_id,
+            "eos_token_id": tokenizer.eos_token_id,
+        }
+        if do_sample:
+            generation_kwargs["temperature"] = temperature
+            generation_kwargs["top_p"] = top_p
+        generated_ids = generate_language_model_with_soft_prefix(
+            model.language_model,
+            inputs=inputs,
+            generation_kwargs=generation_kwargs,
+        )
+    return tokenizer.decode(generated_ids[0], skip_special_tokens=True).strip()
+
+
 def _project_modality_tokens(
     *,
     model: PathologyQwenProjectorLM | DnamQwenProjectorLM | RnaQwenProjectorLM,
@@ -462,7 +724,7 @@ def _generate_response(
     temperature: float,
     top_p: float,
 ) -> str:
-    input_ids = _build_chat_prompt_input_ids(tokenizer, device=device)
+    input_ids = _build_chat_prompt_input_ids(tokenizer, prompt_text=DEMO_PROMPT, device=device)
     attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=device)
     text_embeddings = model.language_model.get_input_embeddings()(input_ids)
     projected, prefix_attention = _project_modality_tokens(
@@ -504,8 +766,10 @@ def _generate_response(
 def main() -> None:
     cfg = load_cfg()
     demo_cfg = cfg.demo
-    modality, modality_cfg = _selected_modality_cfg(cfg)
-    stage_cfg = _projector_cfg(cfg, modality)
+    model_key, modality, modality_cfg = _selected_modality_cfg(cfg)
+    inference_mode = clean_text(demo_cfg.get("inference_mode")) or "vqa_mode"
+    if inference_mode not in SUPPORTED_INFERENCE_MODES:
+        raise ValueError(f"demo.inference_mode must be one of {sorted(SUPPORTED_INFERENCE_MODES)}, got {inference_mode!r}.")
 
     sample_keys = _resolve_demo_sample_keys(demo_cfg, modality_cfg)
     checkpoint_path = _resolve_checkpoint_path(
@@ -516,6 +780,64 @@ def main() -> None:
         raise FileNotFoundError(f"Projector checkpoint not found: {checkpoint_path}")
 
     state = _load_projector_state(checkpoint_path)
+    if modality in SUPPORTED_MODALITIES:
+        device = _resolve_device(demo_cfg.get("device"))
+        model_name_or_path = clean_text(state.get("model_name_or_path")) or clean_text(demo_cfg.get("model_name_or_path"))
+        tokenizer = build_tokenizer(
+            model_name_or_path=model_name_or_path,
+            trust_remote_code=bool(demo_cfg.get("trust_remote_code", True)),
+        )
+        model, block_cfg = _load_single_modality_vqa_model(
+            modality=modality,
+            demo_cfg=demo_cfg,
+            modality_cfg=modality_cfg,
+            state=state,
+            checkpoint_path=checkpoint_path,
+            device=device,
+        )
+        labels_by_sample_key = _load_labels_by_sample_key(modality_cfg)
+        feature_refs_by_sample_key = _load_feature_refs_by_sample_key(modality_cfg)
+        autocast_dtype = resolve_torch_dtype(demo_cfg.get("autocast_dtype", "bfloat16")) or torch.bfloat16
+
+        print(f"Demo model: {model_key}")
+        print(f"Modality: {modality}")
+        print(f"Inference mode: {inference_mode}")
+        print(f"Model: {model_name_or_path}")
+        print(f"Checkpoint: {checkpoint_path}")
+        print(f"Prompt: {DEMO_PROMPT}")
+        print(f"Max feature tokens per ref: {block_cfg['max_tokens']}")
+        if str(demo_cfg.get("split_filter", "")).strip():
+            print(f"Split filter: {str(demo_cfg.get('split_filter')).strip()}")
+        print(f"Samples: {len(sample_keys)}")
+        for index, sample_key in enumerate(sample_keys, start=1):
+            feature_refs = feature_refs_by_sample_key.get(sample_key, [])
+            if not feature_refs:
+                raise FileNotFoundError(f"No {modality} feature refs found for sample '{sample_key}'.")
+            feature_tensor = _load_demo_feature_tensor(modality, modality_cfg, feature_refs)
+            response = _generate_single_modality_response(
+                modality=modality,
+                inference_mode=inference_mode,
+                model=model,
+                tokenizer=tokenizer,
+                features=feature_tensor,
+                device=device,
+                max_new_tokens=int(demo_cfg.max_new_tokens),
+                do_sample=bool(demo_cfg.do_sample),
+                temperature=float(demo_cfg.temperature),
+                top_p=float(demo_cfg.top_p),
+                autocast_dtype=autocast_dtype,
+            )
+            print(f"Sample {index}: {sample_key}")
+            project_label = labels_by_sample_key.get(sample_key)
+            if project_label:
+                print(f"TCGA project: {project_label}")
+            print("Response:")
+            print(response)
+            if index != len(sample_keys):
+                print()
+        return
+
+    stage_cfg = _projector_cfg(cfg, modality)
     model_name_or_path = str(state.get("model_name_or_path") or stage_cfg.model_name_or_path)
     device = _resolve_device(stage_cfg.get("device"))
     tokenizer = _build_tokenizer(
