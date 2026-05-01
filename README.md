@@ -113,7 +113,8 @@ uv run python scripts/03_dnam_proj/03_build_dnam_proj_train_qa.py
 uv run python scripts/03_dnam_proj/04_train_dnam_projectors.py
 uv run python scripts/05_vqa_question_generation/generate_gt_mcq.py
 uv run python scripts/06_vqa_train/train_vqa_lora.py
-uv run python scripts/07_vqa_evaluation/evaluate_vqa.py
+uv run python scripts/07_vqa_evaluation/generate_vqa_predictions.py
+uv run python scripts/07_vqa_evaluation/score_vqa_predictions.py
 ```
 
 Stage-scoped configs now live under:

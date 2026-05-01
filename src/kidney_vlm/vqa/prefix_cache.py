@@ -90,3 +90,36 @@ def prefix_cache_path(
         / projector_cache_dir_name(repo_root=repo_root, modality=modality, checkpoint_path=checkpoint_path)
         / feature_cache_relative_path(feature_ref)
     )
+
+
+def discover_prefix_cache_path(
+    *,
+    repo_root: Path,
+    cache_root: str | Path,
+    model_name_or_path: str,
+    modality: str,
+    feature_ref: str | Path,
+) -> Path:
+    relative_cache_root = repo_relative_path(repo_root, cache_root)
+    model_root = repo_root.resolve() / relative_cache_root / llm_cache_slug(model_name_or_path)
+    feature_path = feature_cache_relative_path(feature_ref)
+    candidates = sorted(
+        cache_dir / feature_path
+        for cache_dir in model_root.glob(f"{modality}__*")
+        if (cache_dir / feature_path).is_file()
+    )
+    if not candidates:
+        raise FileNotFoundError(
+            f"Cached {modality} prefix not found under {model_root} for feature reference {clean_text(feature_ref)!r}"
+        )
+    if len(candidates) > 1:
+        relative_candidates = []
+        for path in candidates:
+            try:
+                relative_candidates.append(path.relative_to(repo_root.resolve()).as_posix())
+            except ValueError:
+                relative_candidates.append(str(path))
+        raise ValueError(
+            f"Ambiguous cached {modality} prefix for feature reference {clean_text(feature_ref)!r}: {relative_candidates}"
+        )
+    return candidates[0]

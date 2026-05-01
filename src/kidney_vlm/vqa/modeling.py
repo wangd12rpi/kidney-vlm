@@ -11,6 +11,7 @@ from torch import nn
 from kidney_vlm.modeling.dnam_qwen_projector import DnamPrefixExpander
 from kidney_vlm.modeling.path_projectors import (
     ModalityProjector,
+    build_soft_prefix_per_layer_inputs,
     forward_language_model_with_soft_prefix,
     resolve_language_model_hidden_size,
 )
@@ -30,6 +31,190 @@ PROJECTOR_EMBEDDING_DIM_KEYS = {
     "dnam": "dnam_embedding_dim",
     "rna": "rna_embedding_dim",
 }
+
+
+def _text_config(language_model: nn.Module) -> Any:
+    config = getattr(language_model, "config", None)
+    get_text_config = getattr(config, "get_text_config", None)
+    if callable(get_text_config):
+        return get_text_config()
+    return getattr(config, "text_config", config)
+
+
+def _soft_prefix_generation_modules(language_model: nn.Module) -> tuple[nn.Module, nn.Module] | None:
+    lm_head = getattr(language_model, "lm_head", None)
+    outer_model = getattr(language_model, "model", None)
+    text_model = getattr(outer_model, "language_model", None)
+    if text_model is not None and lm_head is not None:
+        return text_model, lm_head
+    if outer_model is not None and lm_head is not None:
+        hidden_size_per_layer_input = int(getattr(outer_model, "hidden_size_per_layer_input", 0) or 0)
+        if hidden_size_per_layer_input <= 0:
+            config = getattr(outer_model, "config", None)
+            hidden_size_per_layer_input = int(getattr(config, "hidden_size_per_layer_input", 0) or 0)
+        if hidden_size_per_layer_input > 0:
+            return outer_model, lm_head
+    return None
+
+
+def _apply_final_logit_softcap(language_model: nn.Module, logits: torch.Tensor) -> torch.Tensor:
+    config = _text_config(language_model)
+    final_logit_softcapping = getattr(config, "final_logit_softcapping", None)
+    if final_logit_softcapping is None:
+        return logits
+    logits = logits / final_logit_softcapping
+    logits = torch.tanh(logits)
+    return logits * final_logit_softcapping
+
+
+def _eos_token_ids(value: Any) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, int):
+        return [int(value)]
+    if isinstance(value, (list, tuple, set)):
+        return [int(item) for item in value]
+    return [int(value)]
+
+
+def _sample_next_token(logits: torch.Tensor, generation_kwargs: Mapping[str, Any]) -> torch.Tensor:
+    do_sample = bool(generation_kwargs.get("do_sample", False))
+    if not do_sample:
+        return logits.argmax(dim=-1)
+
+    sampling_logits = logits.float()
+    temperature = generation_kwargs.get("temperature")
+    if temperature not in (None, "", "null"):
+        temperature = float(temperature)
+        if temperature <= 0:
+            raise ValueError("temperature must be positive when do_sample=true.")
+        sampling_logits = sampling_logits / temperature
+
+    top_p = generation_kwargs.get("top_p")
+    if top_p not in (None, "", "null"):
+        top_p = float(top_p)
+        if not 0 < top_p <= 1:
+            raise ValueError("top_p must be in (0, 1].")
+        sorted_logits, sorted_indices = torch.sort(sampling_logits, descending=True, dim=-1)
+        sorted_probs = torch.softmax(sorted_logits, dim=-1)
+        cumulative_probs = sorted_probs.cumsum(dim=-1)
+        sorted_indices_to_remove = cumulative_probs > top_p
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = False
+        sorted_logits = sorted_logits.masked_fill(sorted_indices_to_remove, -torch.inf)
+        sorted_probs = torch.softmax(sorted_logits, dim=-1)
+        sampled_sorted = torch.multinomial(sorted_probs, num_samples=1).squeeze(-1)
+        return sorted_indices.gather(dim=-1, index=sampled_sorted.unsqueeze(-1)).squeeze(-1)
+
+    probs = torch.softmax(sampling_logits, dim=-1)
+    return torch.multinomial(probs, num_samples=1).squeeze(-1)
+
+
+@torch.no_grad()
+def _generate_with_inner_text_model(
+    language_model: nn.Module,
+    *,
+    inputs: Mapping[str, torch.Tensor],
+    generation_kwargs: Mapping[str, Any],
+    text_model: nn.Module,
+    lm_head: nn.Module,
+) -> torch.Tensor:
+    max_new_tokens = int(generation_kwargs.get("max_new_tokens", 128))
+    if max_new_tokens <= 0:
+        raise ValueError("max_new_tokens must be positive.")
+
+    inputs_embeds = inputs["inputs_embeds"]
+    attention_mask = inputs["attention_mask"]
+    position_ids = inputs.get("position_ids")
+    per_layer_inputs = inputs.get("per_layer_inputs")
+    if per_layer_inputs is None:
+        raise ValueError("Gemma4-style soft-prefix generation requires per_layer_inputs.")
+
+    outputs = text_model(
+        per_layer_inputs=per_layer_inputs,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        inputs_embeds=inputs_embeds,
+        use_cache=True,
+        return_dict=True,
+    )
+    logits = lm_head(outputs.last_hidden_state[:, -1:, :])[:, -1, :]
+    logits = _apply_final_logit_softcap(language_model, logits)
+
+    eos_ids = _eos_token_ids(generation_kwargs.get("eos_token_id"))
+    pad_token_id = generation_kwargs.get("pad_token_id")
+    if pad_token_id is None:
+        pad_token_id = eos_ids[0] if eos_ids else 0
+    pad_token_id = int(pad_token_id)
+
+    batch_size = int(inputs_embeds.shape[0])
+    finished = torch.zeros((batch_size,), device=inputs_embeds.device, dtype=torch.bool)
+    generated: list[torch.Tensor] = []
+    past_key_values = outputs.past_key_values
+
+    for token_idx in range(max_new_tokens):
+        next_token = _sample_next_token(logits, generation_kwargs).to(device=inputs_embeds.device, dtype=torch.long)
+        if finished.any():
+            next_token = torch.where(finished, torch.full_like(next_token, pad_token_id), next_token)
+        generated.append(next_token)
+
+        if eos_ids:
+            eos_tensor = torch.tensor(eos_ids, device=next_token.device, dtype=next_token.dtype)
+            finished = finished | (next_token[:, None] == eos_tensor[None, :]).any(dim=1)
+            if finished.all():
+                break
+        if token_idx == max_new_tokens - 1:
+            break
+
+        attention_mask = torch.cat(
+            [
+                attention_mask,
+                torch.ones((batch_size, 1), device=attention_mask.device, dtype=attention_mask.dtype),
+            ],
+            dim=1,
+        )
+        next_input_ids = next_token.unsqueeze(1)
+        next_position_ids = attention_mask.long().cumsum(dim=1)[:, -1:] - 1
+        next_position_ids = next_position_ids.clamp_min(0)
+        outputs = text_model(
+            input_ids=next_input_ids,
+            attention_mask=attention_mask,
+            position_ids=next_position_ids,
+            past_key_values=past_key_values,
+            use_cache=True,
+            return_dict=True,
+        )
+        past_key_values = outputs.past_key_values
+        logits = lm_head(outputs.last_hidden_state[:, -1:, :])[:, -1, :]
+        logits = _apply_final_logit_softcap(language_model, logits)
+
+    if not generated:
+        return torch.empty((batch_size, 0), device=inputs_embeds.device, dtype=torch.long)
+    return torch.stack(generated, dim=1)
+
+
+@torch.no_grad()
+def generate_language_model_with_soft_prefix(
+    language_model: nn.Module,
+    *,
+    inputs: Mapping[str, torch.Tensor],
+    generation_kwargs: Mapping[str, Any],
+) -> torch.Tensor:
+    per_layer_inputs = inputs.get("per_layer_inputs")
+    inner_modules = _soft_prefix_generation_modules(language_model) if per_layer_inputs is not None else None
+    if inner_modules is not None:
+        text_model, lm_head = inner_modules
+        return _generate_with_inner_text_model(
+            language_model,
+            inputs=inputs,
+            generation_kwargs=generation_kwargs,
+            text_model=text_model,
+            lm_head=lm_head,
+        )
+
+    prompt_len = int(inputs["input_ids"].shape[1])
+    outputs = language_model.generate(**dict(inputs), **dict(generation_kwargs))
+    return outputs[:, prompt_len:] if outputs.shape[1] > prompt_len else outputs
 
 
 def set_module_trainable(module: nn.Module | None, trainable: bool) -> None:
@@ -636,12 +821,14 @@ class OncoVLMVQASFTModel(nn.Module):
         input_ids = assembled["input_ids"]
         inputs_embeds = assembled["inputs_embeds"]
         attention_mask = assembled["attention_mask"]
+        prefix_token_mask = assembled["prefix_token_mask"]
         if input_ids.shape[0] > 1:
             row_lengths = attention_mask.sum(dim=1).long()
             max_len = int(attention_mask.shape[1])
             left_input_ids = torch.zeros_like(input_ids)
             left_inputs_embeds = torch.zeros_like(inputs_embeds)
             left_attention_mask = torch.zeros_like(attention_mask)
+            left_prefix_token_mask = torch.zeros_like(prefix_token_mask)
             for row_idx, row_len_tensor in enumerate(row_lengths):
                 row_len = int(row_len_tensor.item())
                 if row_len == 0:
@@ -650,18 +837,31 @@ class OncoVLMVQASFTModel(nn.Module):
                 left_input_ids[row_idx, dst_start:] = input_ids[row_idx, :row_len]
                 left_inputs_embeds[row_idx, dst_start:] = inputs_embeds[row_idx, :row_len]
                 left_attention_mask[row_idx, dst_start:] = attention_mask[row_idx, :row_len]
+                left_prefix_token_mask[row_idx, dst_start:] = prefix_token_mask[row_idx, :row_len]
             input_ids = left_input_ids
             inputs_embeds = left_inputs_embeds
             attention_mask = left_attention_mask
+            prefix_token_mask = left_prefix_token_mask
         position_ids = attention_mask.long().cumsum(dim=1) - 1
         position_ids = position_ids.clamp_min(0)
         position_ids = position_ids.masked_fill(attention_mask == 0, 0)
-        return {
+        generation_inputs = {
             "input_ids": input_ids,
             "inputs_embeds": inputs_embeds,
             "attention_mask": attention_mask,
             "position_ids": position_ids,
         }
+        per_layer_inputs = build_soft_prefix_per_layer_inputs(
+            self.language_model,
+            input_ids=input_ids,
+            prefix_length=0,
+            device=inputs_embeds.device,
+            dtype=inputs_embeds.dtype,
+            prefix_token_mask=prefix_token_mask,
+        )
+        if per_layer_inputs is not None:
+            generation_inputs["per_layer_inputs"] = per_layer_inputs
+        return generation_inputs
 
     def forward(
         self,

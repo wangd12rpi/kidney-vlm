@@ -3,10 +3,10 @@ from __future__ import annotations
 
 # ruff: noqa: E402
 
-import json
 import base64
 import mimetypes
 import os
+import random
 import sys
 import time
 from collections.abc import Mapping
@@ -24,24 +24,23 @@ SRC = BOOTSTRAP_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from kidney_vlm.modeling.path_projectors import resolve_language_model_hidden_size
 from kidney_vlm.repo_root import find_repo_root
 from kidney_vlm.script_config import load_script_cfg
 from kidney_vlm.vqa.constants import MODALITIES
 from kidney_vlm.vqa.data import (
     _coerce_token_ids,
     _find_placeholder_span,
-    load_modality_feature_tensor,
-    pad_optional_feature_tensors,
+    filter_rows_with_prefix_cache,
+    load_row_cached_prefix_tensor,
+    pad_optional_prefix_tensors,
 )
 from kidney_vlm.vqa.eval_gpt import (
-    add_bertscore_columns,
     apply_group_sampling,
     build_eval_prompt,
-    build_flat_metric_records,
     collect_required_image_paths,
     enabled_model_configs,
     parse_model_response,
+    prompt_cfg_for_model,
     question_type_key,
     select_eval_rows,
 )
@@ -49,7 +48,7 @@ from kidney_vlm.vqa.modeling import (
     OncoVLMVQASFTModel,
     build_language_model,
     build_tokenizer,
-    load_projectors,
+    generate_language_model_with_soft_prefix,
     move_batch_to_device,
 )
 from kidney_vlm.vqa.prompts import (
@@ -63,12 +62,13 @@ from kidney_vlm.vqa.stage_config import as_bool, cfg_get, clean_text, resolve_to
 
 ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
+ONCOVLM_CACHE_BACKENDS = {"oncovlm_projector", "oncovlm_lora"}
 
 
 def load_cfg():
     return load_script_cfg(
         repo_root=ROOT,
-        config_relative_path="07_vqa_evaluation/evaluate_vqa_gpt.yaml",
+        config_relative_path="07_vqa_evaluation/generate_vqa_predictions.yaml",
         overrides=sys.argv[1:],
     )
 
@@ -179,9 +179,7 @@ def _call_azure_gpt(
     retry_sleep_seconds = float(cfg_get(azure_cfg, "retry_sleep_seconds", 2.0))
     reasoning_effort = clean_text(cfg_get(azure_cfg, "reasoning_effort"))
     verbosity = clean_text(cfg_get(azure_cfg, "verbosity"))
-    max_tokens = int(
-        cfg_get(azure_cfg, "max_completion_tokens", generation_kwargs.get("max_new_tokens", 256))
-    )
+    max_tokens = 1024
 
     last_error: Exception | None = None
     for attempt in range(1, retries + 1):
@@ -201,10 +199,21 @@ def _call_azure_gpt(
                 request_kwargs["reasoning_effort"] = reasoning_effort
             if verbosity:
                 request_kwargs["verbosity"] = verbosity
+            if "temperature" in generation_kwargs:
+                request_kwargs["temperature"] = float(generation_kwargs["temperature"])
+            if "top_p" in generation_kwargs:
+                request_kwargs["top_p"] = float(generation_kwargs["top_p"])
             response = client.chat.completions.create(**request_kwargs)
-            text = _extract_text_content(response.choices[0].message.content)
+            choice = response.choices[0]
+            text = _extract_text_content(choice.message.content)
             if not text:
-                raise RuntimeError("GPT returned an empty response.")
+                raise RuntimeError(
+                    "GPT returned an empty response. "
+                    f"finish_reason={getattr(choice, 'finish_reason', None)!r}; "
+                    f"usage={getattr(response, 'usage', None)!r}. "
+                    "If completion_tokens_details.reasoning_tokens equals max_completion_tokens, "
+                    "lower azure_openai.reasoning_effort or raise generation.max_new_tokens."
+                )
             return text
         except Exception as exc:
             last_error = exc
@@ -215,13 +224,33 @@ def _call_azure_gpt(
     )
 
 
-def _existing_prediction_ids(predictions_path: Path) -> set[int]:
+def _existing_prediction_keys(predictions_path: Path, *, model_display_name: str) -> set[tuple[int, int]]:
     if not predictions_path.exists():
         return set()
     existing = pd.read_parquet(predictions_path)
-    if "question_id" not in existing.columns:
+    required_columns = {"question_id", "model_display_name", "repeat_id"}
+    missing_columns = required_columns - set(existing.columns)
+    if missing_columns:
+        raise ValueError(f"Existing predictions parquet is missing repeat columns: {sorted(missing_columns)}")
+    existing = existing[existing["model_display_name"].astype(str) == str(model_display_name)]
+    return {
+        (int(question_id), int(repeat_id))
+        for question_id, repeat_id in zip(existing["question_id"], existing["repeat_id"], strict=True)
+    }
+
+
+def _prediction_keys(frame: pd.DataFrame) -> set[tuple[str, int, int]]:
+    if frame.empty:
         return set()
-    return {int(value) for value in existing["question_id"].dropna().tolist()}
+    return {
+        (str(model_name), int(question_id), int(repeat_id))
+        for model_name, question_id, repeat_id in zip(
+            frame["model_display_name"],
+            frame["question_id"],
+            frame["repeat_id"],
+            strict=True,
+        )
+    }
 
 
 def _write_predictions(
@@ -232,30 +261,43 @@ def _write_predictions(
     if generated.empty:
         if predictions_path.exists() and resume_existing:
             return pd.read_parquet(predictions_path)
-        generated.to_parquet(predictions_path, index=False)
+        _write_parquet_atomic(generated, predictions_path)
         return generated
 
     if predictions_path.exists() and resume_existing:
         existing = pd.read_parquet(predictions_path)
         if not existing.empty:
-            existing = existing[~existing["question_id"].isin(generated["question_id"])]
+            generated_keys = _prediction_keys(generated)
+            keep_mask = [
+                (str(model_name), int(question_id), int(repeat_id)) not in generated_keys
+                for model_name, question_id, repeat_id in zip(
+                    existing["model_display_name"],
+                    existing["question_id"],
+                    existing["repeat_id"],
+                    strict=True,
+                )
+            ]
+            existing = existing.loc[keep_mask]
             final = pd.concat([existing, generated], ignore_index=True)
         else:
             final = generated
     else:
         final = generated
     final = final.sort_values(
-        ["project_id", "case_id", "task_id", "question_id"]
+        ["model_display_name", "repeat_id", "project_id", "case_id", "task_id", "question_id"]
     ).reset_index(drop=True)
-    final.to_parquet(predictions_path, index=False)
+    _write_parquet_atomic(final, predictions_path)
     return final
 
 
-def _write_metrics(metrics_path: Path, metrics: dict[str, Any]) -> None:
-    metrics_path.parent.mkdir(parents=True, exist_ok=True)
-    metrics_path.write_text(
-        json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8"
-    )
+def _write_parquet_atomic(frame: pd.DataFrame, path: Path) -> None:
+    tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        frame.to_parquet(tmp_path, index=False)
+        tmp_path.replace(path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 def _resolve_device(device_value: Any) -> torch.device:
@@ -265,16 +307,25 @@ def _resolve_device(device_value: Any) -> torch.device:
     return torch.device(requested)
 
 
-def _model_output_dir(eval_cfg: Mapping[str, Any], model_cfg: Mapping[str, Any]) -> Path:
+def _run_output_dir(eval_cfg: Mapping[str, Any]) -> Path:
     run_cfg = dict(eval_cfg.get("run") or {})
     run_name = clean_text(run_cfg.get("name"))
     if not run_name:
         raise ValueError("vqa_evaluation.run.name must be populated.")
     output_root = _resolve_path(run_cfg.get("output_root", "results/vqa_eval"))
-    display_name = clean_text(model_cfg.get("display_name"))
-    if not display_name:
-        raise ValueError("Enabled VQA evaluation model is missing display_name.")
-    return output_root / run_name / display_name
+    return output_root / run_name
+
+
+def _run_filename(eval_cfg: Mapping[str, Any], key: str, default: str) -> str:
+    run_cfg = dict(eval_cfg.get("run") or {})
+    value = clean_text(run_cfg.get(key)) or default
+    if "/" in value or "\\" in value:
+        raise ValueError(f"vqa_evaluation.run.{key} must be a file name, got {value!r}.")
+    return value
+
+
+def _predictions_path(eval_cfg: Mapping[str, Any]) -> Path:
+    return _run_output_dir(eval_cfg) / _run_filename(eval_cfg, "prediction_filename", "predictions.parquet")
 
 
 def _model_name_or_path(model_cfg: Mapping[str, Any]) -> str:
@@ -303,6 +354,55 @@ def _generation_kwargs(eval_cfg: Mapping[str, Any], model_cfg: Mapping[str, Any]
     return kwargs
 
 
+def _repeat_cfg(eval_cfg: Mapping[str, Any]) -> dict[str, Any]:
+    if "repeats" not in eval_cfg:
+        raise ValueError("VQA generation config must define repeats.")
+    repeats_cfg = dict(eval_cfg.get("repeats") or {})
+    repeat_count = int(repeats_cfg.get("n", 1) or 1)
+    if repeat_count < 1:
+        raise ValueError(f"repeats.n must be >= 1, got {repeat_count}.")
+    repeats_cfg["n"] = repeat_count
+    repeats_cfg["seed"] = int(repeats_cfg.get("seed", 0) or 0)
+    combos = [
+        clean_text(item)
+        for item in repeats_cfg.get("repeat_modality_combination_names", [])
+        if clean_text(item)
+    ]
+    repeats_cfg["repeat_modality_combination_names"] = set(combos)
+    return repeats_cfg
+
+
+def _row_repeat_count(row: Mapping[str, Any], repeats_cfg: Mapping[str, Any]) -> int:
+    repeat_count = int(repeats_cfg["n"])
+    if repeat_count <= 1:
+        return 1
+    repeated_combos = set(repeats_cfg.get("repeat_modality_combination_names") or [])
+    modality_combo = clean_text(row.get("modality_combination_name"))
+    return repeat_count if modality_combo in repeated_combos else 1
+
+
+def _expand_repeat_rows(frame: pd.DataFrame, repeats_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
+    base_rows = frame.to_dict(orient="records")
+    max_repeats = int(repeats_cfg["n"])
+    expanded: list[dict[str, Any]] = []
+    for repeat_id in range(max_repeats):
+        for row in base_rows:
+            if repeat_id >= _row_repeat_count(row, repeats_cfg):
+                continue
+            out = dict(row)
+            out["repeat_id"] = repeat_id
+            expanded.append(out)
+    return expanded
+
+
+def _set_repeat_seed(repeats_cfg: Mapping[str, Any], repeat_id: int) -> None:
+    seed = int(repeats_cfg["seed"]) + int(repeat_id)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 def _model_batch_size(model_cfg: Mapping[str, Any]) -> int:
     raw_batch_size = model_cfg.get("batch_size", 1)
     if raw_batch_size in (None, "", "null"):
@@ -317,6 +417,92 @@ def _batched_records(records: list[dict[str, Any]], batch_size: int) -> list[lis
     return [records[start : start + batch_size] for start in range(0, len(records), batch_size)]
 
 
+def _batched_records_by_repeat(records: list[dict[str, Any]], batch_size: int) -> list[list[dict[str, Any]]]:
+    batches: list[list[dict[str, Any]]] = []
+    repeat_ids = sorted({int(record["repeat_id"]) for record in records})
+    for repeat_id in repeat_ids:
+        repeat_records = [record for record in records if int(record["repeat_id"]) == repeat_id]
+        batches.extend(_batched_records(repeat_records, batch_size))
+    return batches
+
+
+def _sort_generation_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame.copy()
+    type_order = {"qa": 0, "open_ended": 0, "open-ended": 0, "open ended": 0, "mcq": 1}
+    out["_generation_question_type_order"] = (
+        out["question_type"].fillna("").astype(str).str.strip().str.lower().map(type_order).fillna(2)
+    )
+    return (
+        out.sort_values(
+            [
+                "_generation_question_type_order",
+                "question_type",
+                "generation_type",
+                "task_category",
+                "task_id",
+                "project_id",
+                "case_id",
+                "question_id",
+            ]
+        )
+        .drop(columns=["_generation_question_type_order"])
+        .reset_index(drop=True)
+    )
+
+
+def _filter_missing_prefix_cache_rows(
+    frame: pd.DataFrame,
+    *,
+    model_cfg: Mapping[str, Any],
+    eval_cfg: Mapping[str, Any],
+) -> pd.DataFrame:
+    if clean_text(model_cfg.get("backend")) not in ONCOVLM_CACHE_BACKENDS:
+        return frame
+    stage_cfg = _oncovlm_stage_cfg(model_cfg, eval_cfg=eval_cfg)
+    prefix_cfg = dict(stage_cfg["prefix_cache"])
+    if not as_bool(prefix_cfg.get("scan_before_training", True)):
+        return frame.reset_index(drop=True)
+
+    filtered, skipped = filter_rows_with_prefix_cache(frame, root_dir=ROOT, stage_cfg=stage_cfg)
+    if not skipped:
+        return filtered
+
+    max_examples = int(prefix_cfg.get("max_missing_examples", 10) or 0)
+    for item in skipped[:max_examples]:
+        print(
+            "Warning: skipping VQA row "
+            f"qid={item.get('question_id')} model={clean_text(model_cfg.get('display_name'))}: "
+            f"missing cached prefix ({'; '.join(item.get('missing') or [])})."
+        )
+    if len(skipped) > max_examples:
+        print(
+            "Warning: skipped "
+            f"{len(skipped) - max_examples} additional VQA rows for model={clean_text(model_cfg.get('display_name'))} "
+            "because cached prefixes were missing."
+        )
+    if not as_bool(prefix_cfg.get("skip_missing_rows", True)):
+        raise FileNotFoundError(
+            f"Missing cached prefixes for {len(skipped)} rows for model={clean_text(model_cfg.get('display_name'))}."
+        )
+    return filtered
+
+
+def _should_generate_row(row: Mapping[str, Any], model_cfg: Mapping[str, Any]) -> bool:
+    missing: list[str] = []
+    if bool(row.get("use_dnam")) and not clean_text(row.get("dnam_text_summary")):
+        missing.append("dnam_text_summary")
+    if bool(row.get("use_rna")) and not clean_text(row.get("rna_text_summary")):
+        missing.append("rna_text_summary")
+    if not missing:
+        return True
+    print(
+        "Warning: skipping VQA row "
+        f"qid={row.get('question_id')} model={clean_text(model_cfg.get('display_name'))}: "
+        f"enabled DNAm/RNA has empty fallback text ({', '.join(missing)})."
+    )
+    return False
+
+
 def _print_first_n_outputs(run_cfg: Mapping[str, Any]) -> int:
     raw_value = run_cfg.get("print_first_n_outputs", 0)
     if raw_value in (None, "", "null"):
@@ -324,6 +510,16 @@ def _print_first_n_outputs(run_cfg: Mapping[str, Any]) -> int:
     count = int(raw_value)
     if count < 0:
         raise ValueError(f"run.print_first_n_outputs must be non-negative, got {count}.")
+    return count
+
+
+def _save_every_n_predictions(run_cfg: Mapping[str, Any]) -> int:
+    raw_value = run_cfg.get("save_every_n_predictions", 0)
+    if raw_value in (None, "", "null"):
+        return 0
+    count = int(raw_value)
+    if count < 0:
+        raise ValueError(f"run.save_every_n_predictions must be non-negative, got {count}.")
     return count
 
 
@@ -344,7 +540,7 @@ def _print_output_preview(
     print(
         f"\n[VQA preview {preview_index}/{preview_limit}] "
         f"model={clean_text(model_cfg.get('display_name'))} "
-        f"qid={row.get('question_id')}"
+        f"qid={row.get('question_id')} repeat={row.get('repeat_id')}"
     )
     print(f"Q: {clean_text(row.get('question'))}")
     print(
@@ -355,9 +551,9 @@ def _print_output_preview(
     )
 
 
-def _prompt_block_for_projector(row: Mapping[str, Any], eval_cfg: Mapping[str, Any]) -> dict[str, str]:
+def _prompt_block_for_projector(row: Mapping[str, Any], prompt_cfg: Mapping[str, Any]) -> dict[str, str]:
     key = question_type_key(row.get("question_type", ""))
-    prompts = eval_cfg.get("prompts") or {}
+    prompts = prompt_cfg.get("prompts") or {}
     block = prompts.get(key)
     if not isinstance(block, Mapping):
         raise ValueError(f"vqa_evaluation.prompts.{key} must be defined.")
@@ -512,7 +708,7 @@ class HFImageTextBackend:
             tokenize=True,
             return_dict=True,
             return_tensors="pt",
-            padding=True,
+            processor_kwargs={"padding": True},
         )
         inputs = inputs.to(getattr(self.model, "device", self.device))
         input_len = int(inputs["input_ids"].shape[1]) if "input_ids" in inputs else 0
@@ -522,23 +718,32 @@ class HFImageTextBackend:
         return [text.strip() for text in self.processor.batch_decode(generated, skip_special_tokens=True)]
 
 
-def _oncovlm_stage_cfg(model_cfg: Mapping[str, Any]) -> dict[str, Any]:
+def _oncovlm_stage_cfg(model_cfg: Mapping[str, Any], *, eval_cfg: Mapping[str, Any]) -> dict[str, Any]:
     stage_cfg = dict(model_cfg)
     stage_cfg["enable_thinking"] = as_bool(stage_cfg.get("enable_thinking", False))
-    projectors = dict(stage_cfg.get("projectors") or {})
-    missing = [modality for modality in MODALITIES if modality not in projectors]
-    if missing:
-        raise ValueError(f"oncovlm_projector model config must define all projectors. Missing: {missing}")
-    normalized_projectors: dict[str, dict[str, Any]] = {}
-    for modality in MODALITIES:
-        block = dict(projectors[modality] or {})
-        if not clean_text(block.get("checkpoint_path")):
-            raise ValueError(f"oncovlm_projector projectors.{modality}.checkpoint_path is required.")
-        block["enabled"] = True
-        block["trainable"] = False
-        normalized_projectors[modality] = block
-    stage_cfg["projectors"] = normalized_projectors
+    prefix_cfg = dict(eval_cfg.get("prefix_cache") or {})
+    if not prefix_cfg:
+        raise ValueError("VQA generation config must define prefix_cache for OncoVLM cache backends.")
+    if not as_bool(prefix_cfg.get("enabled", True)):
+        raise ValueError("OncoVLM evaluation is cache-only; prefix_cache.enabled must be true.")
+    prefix_cfg["enabled"] = True
+    stage_cfg["prefix_cache"] = prefix_cfg
+    stage_cfg.pop("projectors", None)
     return stage_cfg
+
+
+def _load_lora_adapter(language_model: torch.nn.Module, stage_cfg: Mapping[str, Any]) -> torch.nn.Module:
+    adapter_path_text = clean_text(stage_cfg.get("lora_adapter_path"))
+    if not adapter_path_text:
+        raise ValueError("oncovlm_lora model config must define lora_adapter_path.")
+    adapter_path = _resolve_path(adapter_path_text)
+    if not adapter_path.is_dir():
+        raise FileNotFoundError(f"LoRA adapter directory does not exist: {adapter_path}")
+    try:
+        from peft import PeftModel
+    except ImportError as exc:
+        raise RuntimeError("peft is required for oncovlm_lora evaluation.") from exc
+    return PeftModel.from_pretrained(language_model, str(adapter_path), is_trainable=False)
 
 
 def _pad_prompt_batch(tokenizer: Any, token_id_rows: list[list[int]]) -> dict[str, torch.Tensor]:
@@ -557,7 +762,7 @@ def _pad_prompt_batch(tokenizer: Any, token_id_rows: list[list[int]]) -> dict[st
     return {"input_ids": input_ids, "attention_mask": attention_mask}
 
 
-def _projector_rows_batch(
+def _cached_prefix_rows_batch(
     *,
     rows: list[Mapping[str, Any]],
     tokenizer: Any,
@@ -565,13 +770,12 @@ def _projector_rows_batch(
     stage_cfg: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[str]]:
     if not rows:
-        raise ValueError("OncoVLM projector evaluation received an empty row batch.")
+        raise ValueError("OncoVLM cached-prefix evaluation received an empty row batch.")
 
     token_id_rows: list[list[int]] = []
     prefix_spans: list[list[dict[str, int | str]]] = []
     prompt_texts: list[str] = []
-    modality_tensors: dict[str, list[torch.Tensor | None]] = {modality: [] for modality in MODALITIES}
-    projectors_cfg = stage_cfg["projectors"]
+    prefix_tensors: dict[str, list[torch.Tensor | None]] = {modality: [] for modality in MODALITIES}
     enable_thinking = as_bool(stage_cfg.get("enable_thinking", False))
 
     for row in rows:
@@ -587,14 +791,14 @@ def _projector_rows_batch(
 
         for modality in MODALITIES:
             if row_uses_modality(row, modality):
-                modality_tensors[modality].append(load_modality_feature_tensor(ROOT, row, modality, projectors_cfg[modality]))
+                prefix_tensors[modality].append(load_row_cached_prefix_tensor(ROOT, stage_cfg, row, modality))
             else:
-                modality_tensors[modality].append(None)
+                prefix_tensors[modality].append(None)
 
     batch = _pad_prompt_batch(tokenizer, token_id_rows)
     batch["prefix_spans"] = prefix_spans
-    for modality, tensors in modality_tensors.items():
-        batch.update(pad_optional_feature_tensors(modality, tensors))
+    for modality, tensors in prefix_tensors.items():
+        batch.update(pad_optional_prefix_tensors(modality, tensors))
     return batch, prompt_texts
 
 
@@ -602,12 +806,12 @@ class OncoVLMProjectorBackend:
     def __init__(self, model_cfg: Mapping[str, Any], *, eval_cfg: Mapping[str, Any], dry_run: bool):
         self.model_cfg = dict(model_cfg)
         self.eval_cfg = eval_cfg
-        self.stage_cfg = _oncovlm_stage_cfg(model_cfg)
+        self.stage_cfg = _oncovlm_stage_cfg(model_cfg, eval_cfg=eval_cfg)
         self.dry_run = dry_run
         self.device = _resolve_device(self.stage_cfg.get("device"))
         self.tokenizer = None
         self.model = None
-        self.projector_dtype = resolve_torch_dtype(self.stage_cfg.get("projector_dtype", "float32")) or torch.float32
+        self.prefix_dtype = None
         self.autocast_dtype = resolve_torch_dtype(self.stage_cfg.get("autocast_dtype", "bfloat16")) or torch.bfloat16
         if dry_run:
             return
@@ -616,18 +820,15 @@ class OncoVLMProjectorBackend:
             trust_remote_code=bool(self.stage_cfg.get("trust_remote_code", True)),
         )
         language_model = build_language_model(self.stage_cfg, device=self.device)
-        hidden_size = resolve_language_model_hidden_size(language_model)
-        projectors, projector_metadata = load_projectors(self.stage_cfg, repo_root=ROOT, hidden_size=hidden_size)
+        if clean_text(self.model_cfg.get("backend")) == "oncovlm_lora":
+            language_model = _load_lora_adapter(language_model, self.stage_cfg)
         self.model = OncoVLMVQASFTModel(
             language_model=language_model,
-            projectors=projectors,
-            projector_metadata=projector_metadata,
         )
         if not bool(self.stage_cfg.get("load_in_8bit", False)):
             self.model.to(self.device)
-        self.model.move_projectors_to(self.device, dtype=self.projector_dtype)
+        self.prefix_dtype = self.model.language_model.get_input_embeddings().weight.dtype
         self.model.eval()
-        self.model.set_frozen_projectors_eval()
 
     def generate(self, *, row: Mapping[str, Any], generation_kwargs: Mapping[str, Any]) -> tuple[str, str]:
         return self.generate_batch(rows=[row], generation_kwargs=generation_kwargs)[0]
@@ -635,40 +836,37 @@ class OncoVLMProjectorBackend:
     def generate_batch(self, *, rows: list[Mapping[str, Any]], generation_kwargs: Mapping[str, Any]) -> list[tuple[str, str]]:
         if self.dry_run:
             return [('{"answer": "", "rationale": "dry run"}', "") for _ in rows]
-        batch, prompt_texts = _projector_rows_batch(
+        batch, prompt_texts = _cached_prefix_rows_batch(
             rows=rows,
             tokenizer=self.tokenizer,
-            eval_cfg=self.eval_cfg,
+            eval_cfg=prompt_cfg_for_model(self.eval_cfg, self.model_cfg),
             stage_cfg=self.stage_cfg,
         )
-        batch = move_batch_to_device(batch, self.device, floating_dtype=self.projector_dtype)
+        batch = move_batch_to_device(batch, self.device, floating_dtype=self.prefix_dtype)
         use_autocast = self.device.type == "cuda" and self.autocast_dtype != torch.float32
         with torch.no_grad(), torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype, enabled=use_autocast):
             inputs = self.model.prepare_interleaved_generation_inputs(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
-                pathology_features=batch.get("pathology_features"),
-                pathology_feature_mask=batch.get("pathology_feature_mask"),
-                radiology_features=batch.get("radiology_features"),
-                radiology_feature_mask=batch.get("radiology_feature_mask"),
-                dnam_features=batch.get("dnam_features"),
-                dnam_feature_mask=batch.get("dnam_feature_mask"),
-                rna_features=batch.get("rna_features"),
-                rna_feature_mask=batch.get("rna_feature_mask"),
+                pathology_prefix_embeddings=batch.get("pathology_prefix_embeddings"),
+                pathology_prefix_mask=batch.get("pathology_prefix_mask"),
+                radiology_prefix_embeddings=batch.get("radiology_prefix_embeddings"),
+                radiology_prefix_mask=batch.get("radiology_prefix_mask"),
+                dnam_prefix_embeddings=batch.get("dnam_prefix_embeddings"),
+                dnam_prefix_mask=batch.get("dnam_prefix_mask"),
+                rna_prefix_embeddings=batch.get("rna_prefix_embeddings"),
+                rna_prefix_mask=batch.get("rna_prefix_mask"),
                 prefix_spans=batch["prefix_spans"],
             )
             generate_kwargs = dict(generation_kwargs)
             generate_kwargs.setdefault("pad_token_id", self.tokenizer.pad_token_id)
             if self.tokenizer.eos_token_id is not None:
                 generate_kwargs.setdefault("eos_token_id", self.tokenizer.eos_token_id)
-            prompt_len = int(inputs["input_ids"].shape[1])
-            try:
-                outputs = self.model.language_model.generate(**inputs, **generate_kwargs)
-                generated = outputs[:, prompt_len:] if outputs.shape[1] > prompt_len else outputs
-            except (TypeError, ValueError):
-                inputs_without_ids = {key: value for key, value in inputs.items() if key != "input_ids"}
-                outputs = self.model.language_model.generate(**inputs_without_ids, **generate_kwargs)
-                generated = outputs
+            generated = generate_language_model_with_soft_prefix(
+                self.model.language_model,
+                inputs=inputs,
+                generation_kwargs=generate_kwargs,
+            )
         decoded = self.tokenizer.batch_decode(generated, skip_special_tokens=True)
         return [(text.strip(), prompt_text) for text, prompt_text in zip(decoded, prompt_texts, strict=True)]
 
@@ -679,9 +877,9 @@ def _build_backend(model_cfg: Mapping[str, Any], *, eval_cfg: Mapping[str, Any],
         return AzureGPTBackend(model_cfg, dry_run=dry_run)
     if backend == "hf_image_text_to_text":
         return HFImageTextBackend(model_cfg, dry_run=dry_run)
-    if backend == "oncovlm_projector":
+    if backend in ONCOVLM_CACHE_BACKENDS:
         return OncoVLMProjectorBackend(model_cfg, eval_cfg=eval_cfg, dry_run=dry_run)
-    if backend in {"hf_causal_lm", "oncovlm_lora"}:
+    if backend in {"hf_causal_lm"}:
         raise NotImplementedError(f"VQA evaluation backend {backend!r} is intentionally not supported yet.")
     raise ValueError(f"Unsupported VQA evaluation backend: {backend!r}")
 
@@ -699,9 +897,14 @@ def _prediction_row(
     include_prompt: bool,
 ) -> dict[str, Any]:
     predicted_answer = clean_text(parsed.get("predicted_answer"))
-    correct = bool(predicted_answer and predicted_answer == clean_text(row.get("answer")))
+    correct = (
+        bool(predicted_answer and predicted_answer == clean_text(row.get("answer")))
+        if question_type_key(row.get("question_type", "")) == "mcq"
+        else None
+    )
     output = {
         "question_id": int(row["question_id"]),
+        "repeat_id": int(row["repeat_id"]),
         "base_question_id": int(row["base_question_id"]),
         "case_id": clean_text(row.get("case_id")),
         "project_id": clean_text(row.get("project_id")),
@@ -739,28 +942,6 @@ def _prediction_row(
     return output
 
 
-def _run_payload(
-    *,
-    eval_cfg: Mapping[str, Any],
-    model_cfg: Mapping[str, Any],
-    vqa_path: Path,
-    predictions_path: Path,
-    evaluated_at: str,
-) -> dict[str, Any]:
-    run_cfg = dict(eval_cfg.get("run") or {})
-    return {
-        "name": clean_text(run_cfg.get("name")),
-        "model_display_name": clean_text(model_cfg.get("display_name")),
-        "backend": clean_text(model_cfg.get("backend")),
-        "model_name_or_path": _model_name_or_path(model_cfg),
-        "vqa_parquet_path": str(vqa_path),
-        "predictions_path": str(predictions_path),
-        "evaluated_at": evaluated_at,
-        "filters": eval_cfg.get("filters", {}),
-        "sampling": eval_cfg.get("sampling", {}),
-    }
-
-
 def main() -> None:
     cfg = load_cfg()
     eval_cfg = cfg.vqa_evaluation
@@ -782,6 +963,7 @@ def main() -> None:
     validate_vqa_df(vqa_df)
     selected_df = select_eval_rows(vqa_df, eval_dict)
     selected_df = apply_group_sampling(selected_df, eval_dict.get("sampling", {}))
+    selected_df = _sort_generation_rows(selected_df)
     if selected_df.empty:
         raise RuntimeError(
             "No VQA rows selected for evaluation. Check filters in the YAML."
@@ -796,154 +978,161 @@ def main() -> None:
     dry_run = bool(run_cfg.get("dry_run", False))
     include_prompt = bool(run_cfg.get("include_prompt_in_predictions", False))
     print_first_n_outputs = _print_first_n_outputs(run_cfg)
+    save_every_n_predictions = _save_every_n_predictions(run_cfg)
+    repeats_cfg = _repeat_cfg(eval_dict)
+    predictions_path = _predictions_path(eval_dict)
+    print(f"Predictions path: {predictions_path}")
+    print(
+        "Repeats: "
+        f"n={repeats_cfg['n']} seed={repeats_cfg['seed']} "
+        f"multi-repeat combos={sorted(repeats_cfg['repeat_modality_combination_names'])}"
+    )
+    if predictions_path.exists() and not resume_existing:
+        predictions_path.unlink()
 
     for model_cfg in enabled_models:
-        model_dir = _model_output_dir(eval_dict, model_cfg)
-        predictions_path = model_dir / "predictions.parquet"
-        metrics_path = model_dir / "metrics.json"
-        existing_ids = (
-            _existing_prediction_ids(predictions_path)
+        model_selected_df = _filter_missing_prefix_cache_rows(
+            selected_df,
+            model_cfg=model_cfg,
+            eval_cfg=eval_dict,
+        )
+        existing_keys = (
+            _existing_prediction_keys(predictions_path, model_display_name=model_cfg["display_name"])
             if resume_existing
             else set()
         )
-        eval_df = selected_df[
-            ~selected_df["question_id"].astype(int).isin(existing_ids)
-        ].reset_index(drop=True)
+        repeated_records = _expand_repeat_rows(model_selected_df, repeats_cfg)
+        row_records = [
+            row
+            for row in repeated_records
+            if (int(row["question_id"]), int(row["repeat_id"])) not in existing_keys
+        ]
         evaluated_at = datetime.now(timezone.utc).isoformat()
-        print("\nVQA evaluation model")
+        print("\nVQA generation model")
         print(f"  Model: {model_cfg['display_name']}")
         print(f"  Backend: {model_cfg['backend']}")
-        print(f"  Rows skipped from existing predictions: {len(selected_df) - len(eval_df)}")
-        print(f"  Rows to evaluate: {len(eval_df)}")
+        print(f"  Rows skipped from missing cached prefixes: {len(selected_df) - len(model_selected_df)}")
+        print(f"  Prediction repeats selected: {len(repeated_records)}")
+        print(f"  Rows skipped from existing predictions: {len(repeated_records) - len(row_records)}")
+        print(f"  Rows to evaluate: {len(row_records)}")
         print(f"  Predictions path: {predictions_path}")
-        print(f"  Metrics path: {metrics_path}")
 
         backend = _build_backend(model_cfg, eval_cfg=eval_dict, dry_run=dry_run)
         prediction_rows: list[dict[str, Any]] = []
+        unsaved_prediction_rows = 0
         generation_kwargs = _generation_kwargs(eval_dict, model_cfg)
+        model_prompt_cfg = prompt_cfg_for_model(eval_dict, model_cfg)
         batch_size = _model_batch_size(model_cfg)
         print(f"  Batch size: {batch_size}")
-        row_records = eval_df.to_dict(orient="records")
+        print(f"  Save every N predictions: {save_every_n_predictions or 'disabled'}")
         previews_printed = 0
 
         progress = tqdm(
             total=len(row_records),
-            desc=f"Evaluating {model_cfg['display_name']}",
+            desc=f"Generating {model_cfg['display_name']}",
             unit="question",
         )
-        for row_batch in _batched_records(row_records, batch_size):
-            if clean_text(model_cfg["backend"]) == "oncovlm_projector":
-                raw_outputs = backend.generate_batch(
-                    rows=row_batch,
-                    generation_kwargs=generation_kwargs,
+        for row_batch in _batched_records_by_repeat(row_records, batch_size):
+            progress_count = len(row_batch)
+            row_batch = [row for row in row_batch if _should_generate_row(row, model_cfg)]
+            if row_batch:
+                repeat_id = int(row_batch[0]["repeat_id"])
+                _set_repeat_seed(repeats_cfg, repeat_id)
+                if clean_text(model_cfg["backend"]) in ONCOVLM_CACHE_BACKENDS:
+                    raw_outputs = backend.generate_batch(
+                        rows=row_batch,
+                        generation_kwargs=generation_kwargs,
+                    )
+                    for row, (raw_response, projector_prompt) in zip(row_batch, raw_outputs, strict=True):
+                        system_prompt, user_prompt = build_eval_prompt(row, model_prompt_cfg)
+                        if projector_prompt:
+                            user_prompt = projector_prompt
+                        parsed = parse_model_response(row, raw_response)
+                        if dry_run:
+                            parsed = {"predicted_answer": "", "predicted_answer_label": "", "parse_status": "dry_run"}
+                        if previews_printed < print_first_n_outputs:
+                            previews_printed += 1
+                            _print_output_preview(
+                                preview_index=previews_printed,
+                                preview_limit=print_first_n_outputs,
+                                row=row,
+                                raw_response=raw_response,
+                                parsed=parsed,
+                                model_cfg=model_cfg,
+                            )
+                        prediction_rows.append(
+                            _prediction_row(
+                                row=row,
+                                parsed=parsed,
+                                raw_response=raw_response,
+                                image_paths=[],
+                                model_cfg=model_cfg,
+                                evaluated_at=evaluated_at,
+                                system_prompt=system_prompt,
+                                user_prompt=user_prompt,
+                                include_prompt=include_prompt,
+                            )
+                        )
+                        unsaved_prediction_rows += 1
+                else:
+                    requests: list[dict[str, Any]] = []
+                    for row in row_batch:
+                        system_prompt, user_prompt = build_eval_prompt(row, model_prompt_cfg)
+                        image_paths = collect_required_image_paths(row, model_prompt_cfg, repo_root=ROOT)
+                        requests.append(
+                            {
+                                "row": row,
+                                "system_prompt": system_prompt,
+                                "user_prompt": user_prompt,
+                                "image_paths": image_paths,
+                            }
+                        )
+                    raw_responses = backend.generate_batch(
+                        requests=requests,
+                        generation_kwargs=generation_kwargs,
+                    )
+                    for request, raw_response in zip(requests, raw_responses, strict=True):
+                        row = request["row"]
+                        parsed = parse_model_response(row, raw_response)
+                        if dry_run:
+                            parsed = {"predicted_answer": "", "predicted_answer_label": "", "parse_status": "dry_run"}
+                        if previews_printed < print_first_n_outputs:
+                            previews_printed += 1
+                            _print_output_preview(
+                                preview_index=previews_printed,
+                                preview_limit=print_first_n_outputs,
+                                row=row,
+                                raw_response=raw_response,
+                                parsed=parsed,
+                                model_cfg=model_cfg,
+                            )
+                        prediction_rows.append(
+                            _prediction_row(
+                                row=row,
+                                parsed=parsed,
+                                raw_response=raw_response,
+                                image_paths=request["image_paths"],
+                                model_cfg=model_cfg,
+                                evaluated_at=evaluated_at,
+                                system_prompt=request["system_prompt"],
+                                user_prompt=request["user_prompt"],
+                                include_prompt=include_prompt,
+                            )
+                        )
+                        unsaved_prediction_rows += 1
+            if save_every_n_predictions and unsaved_prediction_rows >= save_every_n_predictions:
+                saved = _write_predictions(
+                    predictions_path, prediction_rows, resume_existing=True
                 )
-                for row, (raw_response, projector_prompt) in zip(row_batch, raw_outputs, strict=True):
-                    system_prompt, user_prompt = build_eval_prompt(row, eval_dict)
-                    if projector_prompt:
-                        user_prompt = projector_prompt
-                    parsed = parse_model_response(row, raw_response)
-                    if dry_run:
-                        parsed = {"predicted_answer": "", "predicted_answer_label": "", "parse_status": "dry_run"}
-                    if previews_printed < print_first_n_outputs:
-                        previews_printed += 1
-                        _print_output_preview(
-                            preview_index=previews_printed,
-                            preview_limit=print_first_n_outputs,
-                            row=row,
-                            raw_response=raw_response,
-                            parsed=parsed,
-                            model_cfg=model_cfg,
-                        )
-                    prediction_rows.append(
-                        _prediction_row(
-                            row=row,
-                            parsed=parsed,
-                            raw_response=raw_response,
-                            image_paths=[],
-                            model_cfg=model_cfg,
-                            evaluated_at=evaluated_at,
-                            system_prompt=system_prompt,
-                            user_prompt=user_prompt,
-                            include_prompt=include_prompt,
-                        )
-                    )
-            else:
-                requests: list[dict[str, Any]] = []
-                for row in row_batch:
-                    system_prompt, user_prompt = build_eval_prompt(row, eval_dict)
-                    image_paths = collect_required_image_paths(row, eval_dict, repo_root=ROOT)
-                    requests.append(
-                        {
-                            "row": row,
-                            "system_prompt": system_prompt,
-                            "user_prompt": user_prompt,
-                            "image_paths": image_paths,
-                        }
-                    )
-                raw_responses = backend.generate_batch(
-                    requests=requests,
-                    generation_kwargs=generation_kwargs,
-                )
-                for request, raw_response in zip(requests, raw_responses, strict=True):
-                    row = request["row"]
-                    parsed = parse_model_response(row, raw_response)
-                    if dry_run:
-                        parsed = {"predicted_answer": "", "predicted_answer_label": "", "parse_status": "dry_run"}
-                    if previews_printed < print_first_n_outputs:
-                        previews_printed += 1
-                        _print_output_preview(
-                            preview_index=previews_printed,
-                            preview_limit=print_first_n_outputs,
-                            row=row,
-                            raw_response=raw_response,
-                            parsed=parsed,
-                            model_cfg=model_cfg,
-                        )
-                    prediction_rows.append(
-                        _prediction_row(
-                            row=row,
-                            parsed=parsed,
-                            raw_response=raw_response,
-                            image_paths=request["image_paths"],
-                            model_cfg=model_cfg,
-                            evaluated_at=evaluated_at,
-                            system_prompt=request["system_prompt"],
-                            user_prompt=request["user_prompt"],
-                            include_prompt=include_prompt,
-                        )
-                    )
-            progress.update(len(row_batch))
+                print(f"  Saved {len(prediction_rows)} new prediction rows ({len(saved)} total).")
+                unsaved_prediction_rows = 0
+            progress.update(progress_count)
         progress.close()
 
         final_predictions = _write_predictions(
-            predictions_path, prediction_rows, resume_existing=resume_existing
+            predictions_path, prediction_rows, resume_existing=True
         )
-        final_predictions = add_bertscore_columns(
-            final_predictions,
-            dict(dict(eval_dict.get("metrics") or {}).get("bert_score") or {}),
-        )
-        final_predictions.to_parquet(predictions_path, index=False)
-        metric_records = build_flat_metric_records(
-            final_predictions,
-            model_display_name=clean_text(model_cfg.get("display_name")),
-            backend=clean_text(model_cfg.get("backend")),
-            model_name_or_path=_model_name_or_path(model_cfg),
-        )
-        payload = {
-            "run": _run_payload(
-                eval_cfg=eval_dict,
-                model_cfg=model_cfg,
-                vqa_path=vqa_path,
-                predictions_path=predictions_path,
-                evaluated_at=evaluated_at,
-            ),
-            "metrics": metric_records,
-            "errors": [],
-        }
-        _write_metrics(metrics_path, payload)
-        overall = next((item for item in metric_records if item["metric_group"] == "overall"), {})
         print(f"  Final prediction rows: {len(final_predictions)}")
-        print(f"  Overall metrics: {overall}")
 
         del backend
         if torch.cuda.is_available():

@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from kidney_vlm.vqa.eval_gpt import (
+    _patch_bert_score_tokenizer_max_length,
     add_bertscore_columns,
     apply_group_sampling,
     build_mcq_prompt,
@@ -16,6 +17,7 @@ from kidney_vlm.vqa.eval_gpt import (
     enabled_model_configs,
     parse_model_response,
     parse_mcq_response,
+    prompt_cfg_for_model,
     select_eval_rows,
 )
 
@@ -175,14 +177,13 @@ def test_select_eval_rows_uses_explicit_enabled_filter_blocks() -> None:
             "project_ids": {"enabled": True, "values": ["TCGA-BRCA"]},
             "task_ids": {"enabled": True, "values": ["mutation_tp53"]},
             "task_categories": {"enabled": False, "values": []},
-            "nonempty_enabled_genomics_text": {"enabled": True},
             "row_limit": {"enabled": False, "max_rows": 1},
         }
     }
 
     selected = select_eval_rows(frame, cfg)
 
-    assert selected["question_id"].tolist() == [1, 2]
+    assert selected["question_id"].tolist() == [1, 2, 4]
 
 
 def test_select_eval_rows_filters_allowed_modality_combos() -> None:
@@ -254,7 +255,6 @@ def test_select_eval_rows_disabled_filters_do_not_filter() -> None:
                 "enabled": False,
                 "values": [{"path": True, "rad": True, "dnam": True, "rna": True}],
             },
-            "nonempty_enabled_genomics_text": {"enabled": False},
             "row_limit": {"enabled": False, "max_rows": 1},
         }
     }
@@ -286,6 +286,32 @@ def test_build_prompt_selects_qa_prompt_without_options() -> None:
 
     assert "Answer concisely." in user_prompt
     assert "<choices>" not in user_prompt
+
+
+def test_prompt_cfg_for_model_selects_model_prompt_profile() -> None:
+    cfg = {
+        "image_inputs": {"enabled": True},
+        "prompts": {
+            "baseline": {
+                "mcq": {"system_prompt": "baseline system", "response_instruction": "baseline mcq"},
+                "qa": {"system_prompt": "baseline system", "response_instruction": "baseline qa"},
+            },
+            "tuned_oncovlm": {
+                "mcq": {"system_prompt": "tuned system", "response_instruction": "tuned mcq"},
+                "qa": {"system_prompt": "tuned system", "response_instruction": "Answer concisely."},
+            },
+        },
+    }
+
+    selected = prompt_cfg_for_model(cfg, {"prompt_profile": "tuned_oncovlm"})
+    system_prompt, user_prompt = build_mcq_prompt(
+        _row(question_type="qa", option_a="", option_b="", answer="free text"),
+        selected,
+    )
+
+    assert system_prompt == "tuned system"
+    assert "Answer concisely." in user_prompt
+    assert selected["image_inputs"] == {"enabled": True}
 
 
 def test_enabled_model_configs_returns_all_enabled_models() -> None:
@@ -432,7 +458,9 @@ def test_add_bertscore_columns_scores_open_ended_rows(monkeypatch) -> None:
     def fake_score(candidates, references, **kwargs):
         assert candidates == ["predicted free-text"]
         assert references == ["reference free-text"]
-        assert kwargs["model_type"] == "roberta-large"
+        assert kwargs["model_type"] == "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext"
+        assert kwargs["num_layers"] == 9
+        assert kwargs["rescale_with_baseline"] is False
         return torch.tensor([0.1]), torch.tensor([0.2]), torch.tensor([0.3])
 
     monkeypatch.setitem(sys.modules, "bert_score", SimpleNamespace(score=fake_score))
@@ -462,13 +490,40 @@ def test_add_bertscore_columns_scores_open_ended_rows(monkeypatch) -> None:
 
     scored = add_bertscore_columns(
         predictions,
-        {"enabled": True, "model_type": "roberta-large", "lang": "en"},
+        {
+            "enabled": True,
+            "model_type": "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext",
+            "num_layers": 9,
+            "lang": "en",
+            "max_length": 512,
+            "rescale_with_baseline": False,
+        },
     )
 
     assert scored.loc[0, "bertscore_precision"] == pytest.approx(0.1)
     assert scored.loc[0, "bertscore_recall"] == pytest.approx(0.2)
     assert scored.loc[0, "bertscore_f1"] == pytest.approx(0.3)
     assert scored.loc[1, "bertscore_f1"] is None
+
+
+def test_patch_bert_score_tokenizer_max_length(monkeypatch) -> None:
+    calls = []
+
+    def fake_get_tokenizer(model_type, use_fast=False):
+        calls.append((model_type, use_fast))
+        return SimpleNamespace(model_max_length=10**30)
+
+    fake_score_module = SimpleNamespace(get_tokenizer=fake_get_tokenizer)
+    monkeypatch.setitem(sys.modules, "bert_score.score", fake_score_module)
+
+    restore = _patch_bert_score_tokenizer_max_length(512)
+    tokenizer = fake_score_module.get_tokenizer("medical-model", use_fast=False)
+
+    assert tokenizer.model_max_length == 512
+    assert calls == [("medical-model", False)]
+
+    restore()
+    assert fake_score_module.get_tokenizer is fake_get_tokenizer
 
 
 def test_select_eval_rows_rejects_partial_modality_combo() -> None:

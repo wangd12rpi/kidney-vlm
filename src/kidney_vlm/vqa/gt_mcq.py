@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import os
 import random
 import re
 from collections.abc import Mapping, Sequence
@@ -365,6 +367,77 @@ def _first_parent_dir(row: Mapping[str, Any], column: str) -> str:
     return Path(path_value).parent.as_posix()
 
 
+def _repo_root_from_env() -> Path:
+    value = os.environ.get("KIDNEY_VLM_ROOT", "")
+    return Path(value).expanduser().resolve() if value else Path.cwd().resolve()
+
+
+def _resolve_repo_path(path_value: str | Path) -> Path:
+    path = Path(str(path_value)).expanduser()
+    if not path.is_absolute():
+        path = _repo_root_from_env() / path
+    return path.resolve()
+
+
+def _radiology_series_png_relative_dir(feature_ref: str) -> str:
+    token = "::series="
+    if token not in feature_ref:
+        return ""
+    series_path = feature_ref.split(token, 1)[1].strip().replace("\\", "/").strip("/")
+    png_marker = "/pngs/"
+    if png_marker in series_path:
+        series_path = series_path.split(png_marker, 1)[1]
+    return series_path.strip("/")
+
+
+def _evenly_spaced_items(items: Sequence[str], count: int) -> list[str]:
+    if count <= 0:
+        return []
+    values = list(items)
+    if len(values) <= count:
+        return values
+    if count == 1:
+        return [values[len(values) // 2]]
+    indices = [round(index * (len(values) - 1) / (count - 1)) for index in range(count)]
+    return [values[index] for index in indices]
+
+
+def _selected_radiology_png_paths(row: Mapping[str, Any], global_cfg: Mapping[str, Any]) -> list[str]:
+    max_images = int(global_cfg.get("max_test_radiology_images", 6) or 6)
+    if max_images <= 0:
+        return []
+    radiology_png_root = str(global_cfg.get("radiology_png_root", "data/radiology_png")).strip()
+    selected: list[str] = []
+    for feature_ref in _as_list(row.get("radiology_embedding_paths")):
+        series_rel_dir = _radiology_series_png_relative_dir(feature_ref)
+        if not series_rel_dir:
+            continue
+        series_dir = _resolve_repo_path(Path(radiology_png_root) / series_rel_dir)
+        if not series_dir.is_dir():
+            continue
+        png_paths = sorted(path for path in series_dir.glob("*.png") if path.is_file())
+        if not png_paths:
+            continue
+        remaining = max_images - len(selected)
+        if remaining <= 0:
+            break
+        for path in _evenly_spaced_items([path.as_posix() for path in png_paths], remaining):
+            rel_path = Path(path).resolve().relative_to(_repo_root_from_env()).as_posix()
+            if rel_path not in selected:
+                selected.append(rel_path)
+            if len(selected) >= max_images:
+                break
+    return selected
+
+
+def _radiology_png_artifact_value(row: Mapping[str, Any], global_cfg: Mapping[str, Any]) -> str:
+    existing_value = _clean_text(row.get("radiology_png_dirs"))
+    if existing_value:
+        return existing_value
+    selected_paths = _selected_radiology_png_paths(row, global_cfg)
+    return json.dumps(selected_paths) if selected_paths else ""
+
+
 def _normalize_modality_requirement(value: Any, *, key: str) -> str:
     text = str(value).strip()
     if text in MODALITY_REQUIREMENTS:
@@ -511,7 +584,7 @@ def _artifact_paths_for_variant(
         "pathology_roi_png_dir": _first_parent_dir(row, "pathology_png_roi_paths")
         if variant["use_pathology"]
         else "",
-        "radiology_view_png_dir": _clean_text(row.get("radiology_png_dirs"))
+        "radiology_view_png_dir": _radiology_png_artifact_value(row, global_cfg)
         if variant["use_radiology"]
         else "",
         "dnam_text_summary": dnam_summary,
@@ -543,6 +616,12 @@ def _required_test_artifacts_are_present(
         if (
             variant["use_rna"]
             and not str(artifacts.get("rna_text_summary", "")).strip()
+        ):
+            return False
+    if bool(global_cfg.get("require_test_radiology_view_png_dir", False)):
+        if (
+            variant["use_radiology"]
+            and not str(artifacts.get("radiology_view_png_dir", "")).strip()
         ):
             return False
     return True
@@ -1098,9 +1177,9 @@ def _selected_registry_frame(
     return out.reset_index(drop=True)
 
 
-def build_ground_truth_mcq_frame(
+def _build_ground_truth_mcq_frame_unsampled(
     registry_df: pd.DataFrame, cfg: Mapping[str, Any]
-) -> tuple[pd.DataFrame, dict[str, Any]]:
+) -> tuple[pd.DataFrame, dict[str, dict[str, int]], int]:
     selected = _selected_registry_frame(registry_df, cfg)
     generated_rows: list[dict[str, Any]] = []
     task_stats: dict[str, dict[str, int]] = {}
@@ -1134,18 +1213,39 @@ def build_ground_truth_mcq_frame(
         frame = frame.sort_values(
             ["split", "project_id", "case_id", "base_question_id", "question_id"]
         ).reset_index(drop=True)
-    frame, sampling_stats = _sample_generated_frame(frame, global_cfg=cfg)
+    validate_vqa_df(frame)
+    return frame, task_stats, int(len(selected))
+
+
+def build_ground_truth_mcq_frames(
+    registry_df: pd.DataFrame, cfg: Mapping[str, Any]
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    full_frame, task_stats, selected_rows = _build_ground_truth_mcq_frame_unsampled(
+        registry_df, cfg
+    )
+    frame, sampling_stats = _sample_generated_frame(full_frame, global_cfg=cfg)
     if not frame.empty:
         frame = frame.sort_values(
             ["split", "project_id", "case_id", "base_question_id", "question_id"]
         ).reset_index(drop=True)
     validate_vqa_df(frame)
-    return frame, {
-        "registry_rows_selected": int(len(selected)),
+    return frame, full_frame, {
+        "registry_rows_selected": selected_rows,
         "generated_rows": int(len(frame)),
         "semantic_questions": int(frame["base_question_id"].nunique())
         if not frame.empty
         else 0,
+        "full_generated_rows": int(len(full_frame)),
+        "full_semantic_questions": int(full_frame["base_question_id"].nunique())
+        if not full_frame.empty
+        else 0,
         "sampling": sampling_stats,
         "task_stats": task_stats,
     }
+
+
+def build_ground_truth_mcq_frame(
+    registry_df: pd.DataFrame, cfg: Mapping[str, Any]
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    frame, _, stats = build_ground_truth_mcq_frames(registry_df, cfg)
+    return frame, stats

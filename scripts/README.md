@@ -127,14 +127,21 @@
   - Training config lives in `conf/06_vqa_train/vqa_lora_sft.yaml`.
   - Example:
     - `uv run python scripts/06_vqa_train/train_vqa_lora.py projectors.pathology.checkpoint_path=/path/to/path.ckpt`
-- `scripts/07_vqa_evaluation/evaluate_vqa.py`
-  - Single-entry multi-model VQA benchmark runner. Every model with `enabled: true` in the YAML is evaluated sequentially.
+- `scripts/07_vqa_evaluation/generate_vqa_predictions.py`
+  - Multi-model VQA generation runner. Every model with `enabled: true` in the YAML is evaluated sequentially.
   - Supports Azure GPT, HF image-text VLMs, and the projector-only `oncovlm_qwen_no_finetune` baseline.
-  - Writes per-model predictions and flat metric records under `results/vqa_eval/<run.name>/<model.display_name>/`.
-  - Supports MCQ semantic option-text scoring and open-ended QA BERTScore scoring.
-  - Evaluation config lives in `conf/07_vqa_evaluation/evaluate_vqa_gpt.yaml`.
+  - Writes per-model raw predictions under `results/<run.name>/<model.display_name>/predictions.parquet`.
+  - Generation config lives in `conf/07_vqa_evaluation/generate_vqa_predictions.yaml`.
   - Example:
-    - `uv run python scripts/07_vqa_evaluation/evaluate_vqa.py`
+    - `uv run python scripts/07_vqa_evaluation/generate_vqa_predictions.py`
+- `scripts/07_vqa_evaluation/score_vqa_predictions.py`
+  - Reparses saved predictions and computes metrics without rerunning any model.
+  - Supports MCQ semantic option-text scoring and open-ended QA BERTScore scoring.
+  - Discovers every `predictions.parquet` under `results/<run.name>/*/` and reads model identity from the parquet.
+  - Writes `metrics.json` beside each model's prediction parquet.
+  - Scoring config lives in `conf/07_vqa_evaluation/score_vqa_predictions.yaml`.
+  - Example:
+    - `uv run python scripts/07_vqa_evaluation/score_vqa_predictions.py`
 
 ## VQA Parquet Schema
 `modality_combination_name` is the named input recipe that produced the row, while the `use_*` columns are the actual modality booleans for that row. For example, `all_available` means "use every enabled artifact that exists for this case", so a case without radiology can still have `modality_combination_name=all_available` and `use_radiology=false`. In contrast, `radiology_only` requires radiology and sets the other `use_*` columns false. Current GT MCQ defaults are `all_available`, `path_only`, and `radiology_only`, but task configs can override these names.

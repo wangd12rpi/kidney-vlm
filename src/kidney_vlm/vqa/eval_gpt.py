@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -203,18 +204,6 @@ def select_eval_rows(vqa_df: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFra
     if modality_combo_filter:
         out = out[_allowed_modality_combo_mask(out, modality_combo_filter)]
 
-    if _enabled_filter(filters, "nonempty_enabled_genomics_text"):
-        if "use_dnam" in out.columns:
-            out = out[
-                (~out["use_dnam"])
-                | out["dnam_text_summary"].fillna("").astype(str).str.strip().ne("")
-            ]
-        if "use_rna" in out.columns:
-            out = out[
-                (~out["use_rna"])
-                | out["rna_text_summary"].fillna("").astype(str).str.strip().ne("")
-            ]
-
     out = out.sort_values(
         ["project_id", "case_id", "task_id", "question_id"]
     ).reset_index(drop=True)
@@ -317,6 +306,17 @@ def enabled_model_configs(models_cfg: Mapping[str, Any] | Sequence[Any]) -> list
     if not enabled:
         raise RuntimeError("No enabled VQA evaluation models found.")
     return enabled
+
+
+def prompt_cfg_for_model(cfg: Mapping[str, Any], model_cfg: Mapping[str, Any]) -> dict[str, Any]:
+    prompts = cfg.get("prompts") or {}
+    if not isinstance(prompts, Mapping):
+        raise TypeError("vqa_evaluation.prompts must be a mapping.")
+    profile_name = str(model_cfg.get("prompt_profile", "baseline")).strip() or "baseline"
+    profile = prompts.get(profile_name)
+    if not isinstance(profile, Mapping):
+        raise ValueError(f"vqa_evaluation.prompts.{profile_name} must be defined.")
+    return {"prompts": dict(profile), "image_inputs": cfg.get("image_inputs", {})}
 
 
 def _prompt_block_for_row(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> dict[str, Any]:
@@ -452,6 +452,36 @@ def _collect_images_from_dir(
     return image_paths[:max_images]
 
 
+def _collect_images_from_file_list(
+    value: str,
+    *,
+    repo_root: Path,
+    max_images: int,
+    allowed_extensions: Sequence[str],
+    field_name: str,
+) -> list[Path]:
+    if not str(value).strip():
+        raise FileNotFoundError(f"Required image list field '{field_name}' is empty.")
+    parsed = json.loads(str(value))
+    if not isinstance(parsed, list):
+        raise ValueError(f"Image field '{field_name}' must be a JSON list.")
+
+    extensions = {str(ext).lower() for ext in allowed_extensions}
+    image_paths: list[Path] = []
+    for item in parsed:
+        path = _resolve_path(str(item), repo_root=repo_root)
+        if not path.exists():
+            raise FileNotFoundError(f"Required image file does not exist for '{field_name}': {path}")
+        if not path.is_file():
+            raise FileNotFoundError(f"Required image path is not a file for '{field_name}': {path}")
+        if path.suffix.lower() in extensions:
+            image_paths.append(path)
+
+    if not image_paths:
+        raise FileNotFoundError(f"No image files found in required image list '{field_name}'.")
+    return image_paths[:max_images]
+
+
 def collect_required_image_paths(
     row: Mapping[str, Any], cfg: Mapping[str, Any], *, repo_root: Path
 ) -> list[Path]:
@@ -479,7 +509,7 @@ def collect_required_image_paths(
         )
     if bool(row.get("use_radiology")):
         image_paths.extend(
-            _collect_images_from_dir(
+            _collect_images_from_file_list(
                 str(row.get("radiology_view_png_dir", "")),
                 repo_root=repo_root,
                 max_images=int(image_cfg.get("max_radiology_images", 4)),
@@ -632,19 +662,47 @@ def add_bertscore_columns(predictions_df: pd.DataFrame, bert_score_cfg: Mapping[
 
     candidates = qa_frame["predicted_answer"].fillna("").astype(str).tolist()
     references = qa_frame["answer"].fillna("").astype(str).tolist()
-    precision, recall, f1 = bert_score(
-        candidates,
-        references,
-        model_type=str(cfg.get("model_type", "roberta-large")),
-        lang=str(cfg.get("lang", "en")),
-        batch_size=int(cfg.get("batch_size", 8)),
-        rescale_with_baseline=bool(cfg.get("rescale_with_baseline", True)),
-    )
+    max_length = int(cfg.get("max_length", 512))
+    if max_length <= 0:
+        raise ValueError("metrics.bert_score.max_length must be positive.")
+    restore_tokenizer = _patch_bert_score_tokenizer_max_length(max_length)
+    try:
+        precision, recall, f1 = bert_score(
+            candidates,
+            references,
+            model_type=str(cfg.get("model_type", "roberta-large")),
+            num_layers=int(cfg["num_layers"]) if cfg.get("num_layers") is not None else None,
+            lang=str(cfg.get("lang", "en")),
+            batch_size=int(cfg.get("batch_size", 8)),
+            rescale_with_baseline=bool(cfg.get("rescale_with_baseline", True)),
+        )
+    finally:
+        restore_tokenizer()
     indices = qa_frame.index.tolist()
     out.loc[indices, "bertscore_precision"] = [float(value) for value in precision.detach().cpu().tolist()]
     out.loc[indices, "bertscore_recall"] = [float(value) for value in recall.detach().cpu().tolist()]
     out.loc[indices, "bertscore_f1"] = [float(value) for value in f1.detach().cpu().tolist()]
     return out
+
+
+def _patch_bert_score_tokenizer_max_length(max_length: int):
+    score_module = sys.modules.get("bert_score.score")
+    if score_module is None or not hasattr(score_module, "get_tokenizer"):
+        return lambda: None
+
+    original_get_tokenizer = score_module.get_tokenizer
+
+    def get_tokenizer_with_max_length(model_type: str, use_fast: bool = False):
+        tokenizer = original_get_tokenizer(model_type, use_fast=use_fast)
+        tokenizer.model_max_length = int(max_length)
+        return tokenizer
+
+    score_module.get_tokenizer = get_tokenizer_with_max_length
+
+    def restore() -> None:
+        score_module.get_tokenizer = original_get_tokenizer
+
+    return restore
 
 
 METRIC_DIMENSIONS = [
