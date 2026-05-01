@@ -1,0 +1,17 @@
+name: vqa_score_predictions
+
+run:
+  name: smoke_test
+  output_root: ${project.root_dir}/results
+  prediction_filename: predictions.parquet
+  metrics_filename: metrics.json
+
+metrics:
+  bert_score:
+    enabled: true
+    model_type: microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext
+    num_layers: 9
+    lang: en
+    batch_size: 8
+    max_length: 512
+    rescale_with_baseline: false

@@ -19,7 +19,7 @@ from kidney_vlm.training.collator import (
     _sample_sequence_features,
 )
 from kidney_vlm.vqa.constants import MODALITIES, MODALITY_FEATURE_COLUMNS, MODALITY_FLAG_COLUMNS
-from kidney_vlm.vqa.prefix_cache import prefix_cache_path
+from kidney_vlm.vqa.prefix_cache import discover_prefix_cache_path, prefix_cache_path
 from kidney_vlm.vqa.prompts import (
     build_vqa_prompt,
     is_open_ended_question_type,
@@ -228,12 +228,21 @@ def row_prefix_cache_path(root_dir: Path, stage_cfg: Any, modality: str, feature
     prefix_cfg = cfg_get(stage_cfg, "prefix_cache", {})
     projectors_cfg = cfg_get(stage_cfg, "projectors", {})
     block_cfg = cfg_get(projectors_cfg, modality, {})
+    checkpoint_path = cfg_get(block_cfg, "checkpoint_path")
+    if not clean_text(checkpoint_path):
+        return discover_prefix_cache_path(
+            repo_root=Path(root_dir),
+            cache_root=cfg_get(prefix_cfg, "cache_root", "data/vqa/prefix_cache"),
+            model_name_or_path=str(cfg_get(stage_cfg, "model_name_or_path")),
+            modality=modality,
+            feature_ref=feature_ref,
+        )
     return prefix_cache_path(
         repo_root=Path(root_dir),
         cache_root=cfg_get(prefix_cfg, "cache_root", "data/vqa/prefix_cache"),
         model_name_or_path=str(cfg_get(stage_cfg, "model_name_or_path")),
         modality=modality,
-        checkpoint_path=cfg_get(block_cfg, "checkpoint_path"),
+        checkpoint_path=checkpoint_path,
         feature_ref=feature_ref,
     )
 
@@ -248,7 +257,11 @@ def row_missing_prefix_cache_entries(root_dir: Path, stage_cfg: Any, row: Mappin
             missing.append(f"{modality}: <empty feature reference>")
             continue
         for ref in refs:
-            path = row_prefix_cache_path(root_dir, stage_cfg, modality, ref)
+            try:
+                path = row_prefix_cache_path(root_dir, stage_cfg, modality, ref)
+            except FileNotFoundError as exc:
+                missing.append(f"{modality}: {exc}")
+                continue
             if not path.exists():
                 try:
                     display_path = path.relative_to(Path(root_dir).resolve()).as_posix()

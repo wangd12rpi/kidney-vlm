@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
 import sys
 import json
 from pathlib import Path
@@ -20,6 +21,8 @@ ROOT = find_repo_root(Path(__file__))
 GT_VQA_PATH = ROOT / "data/vqa/gt_mcq_questions.parquet"
 CAPTION_VQA_PATH = ROOT / "data/vqa/captions_mcq_oe_questions.parquet"
 OUTPUT_VQA_PATH = ROOT / "data/vqa/merged_full_vqa.parquet"
+ARRAY_COLUMNS = ("pathology_feature_paths", "radiology_feature_paths")
+RADIOLOGY_PNG_ROOT = "data/radiology_png"
 
 
 def _string_value(value) -> str:
@@ -32,6 +35,69 @@ def _string_value(value) -> str:
     if isinstance(value, (list, tuple)):
         return json.dumps(list(value))
     return str(value)
+
+
+def _list_values(value) -> list[str]:
+    if value is None or value is pd.NA:
+        return []
+    if isinstance(value, float) and pd.isna(value):
+        return []
+    if isinstance(value, np.ndarray):
+        items = value.tolist()
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = ast.literal_eval(text)
+            items = parsed if isinstance(parsed, list) else [parsed]
+        else:
+            items = [text]
+    else:
+        items = [value]
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def _json_list_value(values: list[str]) -> str:
+    return json.dumps(values) if values else ""
+
+
+def _root_relative_radiology_png_value(value) -> str:
+    paths: list[str] = []
+    for item in _list_values(value):
+        if item.startswith(f"{RADIOLOGY_PNG_ROOT}/"):
+            path = item
+        elif item.startswith("data/"):
+            path = item
+        else:
+            path = f"{RADIOLOGY_PNG_ROOT}/{item.lstrip('/')}"
+        paths.append(path)
+    return _json_list_value(paths)
+
+
+def _pathology_roi_dir_value(value) -> str:
+    paths = _list_values(value)
+    if not paths:
+        return ""
+    first_path = Path(paths[0])
+    if first_path.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+        return str(first_path.parent)
+    return str(first_path)
+
+
+def _array_value(value) -> list[str]:
+    if value is None or value is pd.NA:
+        return []
+    if isinstance(value, float) and pd.isna(value):
+        return []
+    if isinstance(value, (np.ndarray, list, tuple)):
+        return _list_values(value)
+    raise ValueError(f"Expected list value in VQA array column, got {type(value).__name__}: {value!r}")
 
 
 def main() -> None:
@@ -54,8 +120,13 @@ def main() -> None:
             frame["base_question_id"].replace("", pd.NA),
             errors="raise",
         ).astype("Int64")
+        frame["base_question_id"] = frame["base_question_id"].fillna(frame["question_id"]).astype("Int64")
         frame["caption_id"] = frame["caption_id"].astype(str).replace({"<NA>": "", "nan": "", "None": ""})
-        frame["radiology_view_png_dir"] = frame["radiology_view_png_dir"].map(_string_value)
+        frame["pathology_roi_png_dir"] = frame["pathology_roi_png_dir"].map(_pathology_roi_dir_value)
+        frame["radiology_view_png_dir"] = frame["radiology_view_png_dir"].map(_root_relative_radiology_png_value)
+        frame["generation_type"] = frame["generation_type"].replace({"caption": "from_caption"})
+        for column in ARRAY_COLUMNS:
+            frame[column] = frame[column].map(_array_value)
 
     merged_df = pd.concat([gt_df, caption_df[gt_columns]], ignore_index=True)
     duplicate_question_ids = merged_df["question_id"].duplicated()

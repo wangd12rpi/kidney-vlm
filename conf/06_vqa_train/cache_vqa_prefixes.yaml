@@ -1,6 +1,6 @@
 name: vqa_prefix_cache
 
-model_name_or_path: Qwen/Qwen3.5-9B
+model_name_or_path: google/gemma-4-E4B-it
 device: cuda:0
 projector_dtype: float32
 cache_dtype: float16
@@ -28,16 +28,43 @@ feature_columns:
   rna: genomics_rna_bulk_feature_path
 
 batch_size:
-  pathology: 12
+  pathology: 16
   radiology: 64
   dnam: 64
   rna: 64
+
+# projectors:
+#   pathology:
+#     enabled: true
+#     trainable: false
+#     checkpoint_path: outputs/projectors/qwen3_5_9b/pathology/path_resampler_20260417_180638_EST/best.ckpt
+#     max_tokens: 20000
+#     patch_compression_method: none
+#     patch_compression_kernel_size: 1
+#     token_dropout_prob: 0.0
+#   radiology:
+#     enabled: true
+#     trainable: false
+#     checkpoint_path: outputs/projectors/qwen3_5_9b/radiology/radiology_remote_weights_20260423_000000_EST/best.ckpt
+#     max_tokens: 4000
+#     token_dropout_prob: 0.0
+#   dnam:
+#     enabled: true
+#     trainable: false
+#     checkpoint_path: outputs/projectors/qwen3_5_9b/dnam/dnam_mlp_20260420_025027_EST/best.ckpt
+#     max_tokens: 80
+#   rna:
+#     enabled: true
+#     trainable: false
+#     checkpoint_path: outputs/projectors/qwen3_5_9b/rna/rna_remote_weights_20260423_000000_EST/best.ckpt
+#     max_tokens: 80
+
 
 projectors:
   pathology:
     enabled: true
     trainable: false
-    checkpoint_path: outputs/projectors/qwen3_5_9b/pathology/path_resampler_20260417_180638_EST/best.ckpt
+    checkpoint_path: outputs/projectors/gemma_4_e4b_it/pathology/path_resampler_20260422_002758_EST/best.ckpt
     max_tokens: 20000
     patch_compression_method: none
     patch_compression_kernel_size: 1
@@ -45,16 +72,16 @@ projectors:
   radiology:
     enabled: true
     trainable: false
-    checkpoint_path: outputs/projectors/qwen3_5_9b/radiology/radiology_remote_weights_20260423_000000_EST/best.ckpt
+    checkpoint_path: outputs/projectors/gemma_4_e4b_it/radiology/best.ckpt
     max_tokens: 4000
     token_dropout_prob: 0.0
   dnam:
     enabled: true
     trainable: false
-    checkpoint_path: outputs/projectors/qwen3_5_9b/dnam/dnam_mlp_20260420_025027_EST/best.ckpt
+    checkpoint_path: outputs/projectors/gemma_4_e4b_it/dnam/dnam_mlp_20260423_012429_EST/best.ckpt
     max_tokens: 80
   rna:
     enabled: true
     trainable: false
-    checkpoint_path: outputs/projectors/qwen3_5_9b/rna/rna_remote_weights_20260423_000000_EST/best.ckpt
+    checkpoint_path: outputs/projectors/gemma_4_e4b_it/rna/best.ckpt
     max_tokens: 80

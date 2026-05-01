@@ -665,3 +665,116 @@ def test_vqa_generation_inputs_left_pad_batched_decoder_prompts() -> None:
         [0, 1, 2, 3, 4, 5],
         [0, 0, 0, 0, 1, 2],
     ]
+
+
+def test_vqa_generation_inputs_include_gemma4_per_layer_inputs() -> None:
+    from types import SimpleNamespace
+
+    from kidney_vlm.vqa.modeling import OncoVLMVQASFTModel
+
+    class DummyGemma4LikeLM(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=4, vocab_size=32, hidden_size_per_layer_input=3, num_hidden_layers=2)
+            self.hidden_size_per_layer_input = 3
+            self.embedding = nn.Embedding(256, 4)
+
+        def get_input_embeddings(self):
+            return self.embedding
+
+        def get_per_layer_inputs(self, input_ids, inputs_embeds):
+            assert inputs_embeds is None
+            base = input_ids.to(dtype=torch.float32).view(*input_ids.shape, 1, 1)
+            return base.expand(*input_ids.shape, 2, 3)
+
+    model = OncoVLMVQASFTModel(language_model=DummyGemma4LikeLM(), projectors={}, projector_metadata={})
+
+    generation_inputs = model.prepare_interleaved_generation_inputs(
+        input_ids=torch.tensor([[11, 12, 13, 14]], dtype=torch.long),
+        attention_mask=torch.ones((1, 4), dtype=torch.long),
+        pathology_prefix_embeddings=torch.ones((1, 2, 4), dtype=torch.float32),
+        pathology_prefix_mask=torch.ones((1, 2), dtype=torch.long),
+        prefix_spans=[[{"modality": "pathology", "start": 2, "end": 3}]],
+    )
+
+    assert tuple(generation_inputs["inputs_embeds"].shape) == (1, 5, 4)
+    assert tuple(generation_inputs["per_layer_inputs"].shape) == (1, 5, 2, 3)
+    assert torch.equal(generation_inputs["per_layer_inputs"][0, 2], torch.zeros((2, 3)))
+    assert torch.equal(generation_inputs["per_layer_inputs"][0, 0], torch.full((2, 3), 11.0))
+
+
+def test_soft_prefix_generation_uses_gemma4_inner_text_model() -> None:
+    from types import SimpleNamespace
+
+    from kidney_vlm.vqa.modeling import generate_language_model_with_soft_prefix
+
+    class DummyTextModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def forward(
+            self,
+            *,
+            input_ids=None,
+            inputs_embeds=None,
+            per_layer_inputs=None,
+            attention_mask=None,
+            position_ids=None,
+            past_key_values=None,
+            use_cache=None,
+            return_dict=None,
+        ):
+            self.calls.append(
+                {
+                    "input_ids": None if input_ids is None else tuple(input_ids.shape),
+                    "inputs_embeds": None if inputs_embeds is None else tuple(inputs_embeds.shape),
+                    "per_layer_inputs": None if per_layer_inputs is None else tuple(per_layer_inputs.shape),
+                    "attention_mask": tuple(attention_mask.shape),
+                }
+            )
+            batch_size = attention_mask.shape[0]
+            seq_len = inputs_embeds.shape[1] if inputs_embeds is not None else input_ids.shape[1]
+            hidden = torch.zeros((batch_size, seq_len, 4))
+            return SimpleNamespace(last_hidden_state=hidden, past_key_values=object())
+
+    class DummyHead(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def forward(self, hidden_states):
+            token = 5 if self.calls == 0 else 2
+            self.calls += 1
+            logits = torch.zeros((*hidden_states.shape[:2], 8))
+            logits[..., token] = 10.0
+            return logits
+
+    class DummyConditionalLM(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=4, text_config=SimpleNamespace())
+            self.model = SimpleNamespace(language_model=DummyTextModel())
+            self.lm_head = DummyHead()
+
+    language_model = DummyConditionalLM()
+    generated = generate_language_model_with_soft_prefix(
+        language_model,
+        inputs={
+            "input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
+            "inputs_embeds": torch.zeros((1, 3, 4)),
+            "attention_mask": torch.ones((1, 3), dtype=torch.long),
+            "position_ids": torch.tensor([[0, 1, 2]], dtype=torch.long),
+            "per_layer_inputs": torch.zeros((1, 3, 2, 3)),
+        },
+        generation_kwargs={"max_new_tokens": 2, "do_sample": False, "eos_token_id": 2, "pad_token_id": 0},
+    )
+
+    assert generated.tolist() == [[5, 2]]
+    text_calls = language_model.model.language_model.calls
+    assert text_calls[0]["input_ids"] is None
+    assert text_calls[0]["inputs_embeds"] == (1, 3, 4)
+    assert text_calls[0]["per_layer_inputs"] == (1, 3, 2, 3)
+    assert text_calls[1]["input_ids"] == (1, 1)
+    assert text_calls[1]["inputs_embeds"] is None
+    assert text_calls[1]["per_layer_inputs"] is None

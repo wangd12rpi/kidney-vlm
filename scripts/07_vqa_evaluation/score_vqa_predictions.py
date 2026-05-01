@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+# ruff: noqa: E402
+
+import json
+import os
+import sys
+from collections.abc import Mapping
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+from omegaconf import OmegaConf
+
+BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
+SRC = BOOTSTRAP_ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from kidney_vlm.repo_root import find_repo_root
+from kidney_vlm.script_config import load_script_cfg
+from kidney_vlm.vqa.eval_gpt import (
+    add_bertscore_columns,
+    build_flat_metric_records,
+    parse_model_response,
+    question_type_key,
+)
+from kidney_vlm.vqa.stage_config import clean_text
+
+ROOT = find_repo_root(Path(__file__))
+os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
+
+
+def load_cfg():
+    return load_script_cfg(
+        repo_root=ROOT,
+        config_relative_path="07_vqa_evaluation/score_vqa_predictions.yaml",
+        overrides=sys.argv[1:],
+    )
+
+
+def _resolve_path(path_value: str | Path) -> Path:
+    path = Path(str(path_value)).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    return path.resolve()
+
+
+def _run_root(score_cfg: Mapping[str, Any]) -> Path:
+    run_cfg = dict(score_cfg.get("run") or {})
+    run_name = clean_text(run_cfg.get("name"))
+    if not run_name:
+        raise ValueError("vqa_evaluation.run.name must be populated.")
+    output_root = _resolve_path(run_cfg.get("output_root", "results"))
+    return output_root / run_name
+
+
+def _run_filename(score_cfg: Mapping[str, Any], key: str, default: str) -> str:
+    run_cfg = dict(score_cfg.get("run") or {})
+    value = clean_text(run_cfg.get(key)) or default
+    if "/" in value or "\\" in value:
+        raise ValueError(f"vqa_evaluation.run.{key} must be a file name, got {value!r}.")
+    return value
+
+
+def _write_metrics(metrics_path: Path, metrics: dict[str, Any]) -> None:
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_text_atomic(metrics_path, json.dumps(metrics, indent=2, sort_keys=True))
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        tmp_path.write_text(text, encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def _prediction_path(score_cfg: Mapping[str, Any], prediction_filename: str) -> Path:
+    path = _run_root(score_cfg) / prediction_filename
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing VQA predictions parquet: {path}")
+    return path
+
+
+def _reparse_predictions(predictions_df: pd.DataFrame) -> pd.DataFrame:
+    if "raw_response" not in predictions_df.columns:
+        raise ValueError("Predictions parquet must contain a raw_response column.")
+
+    out = predictions_df.copy()
+    predicted_answers: list[str] = []
+    predicted_labels: list[str] = []
+    parse_statuses: list[str] = []
+    correct_values: list[bool | None] = []
+
+    for row in out.to_dict(orient="records"):
+        parsed = parse_model_response(row, clean_text(row.get("raw_response")))
+        predicted_answer = clean_text(parsed.get("predicted_answer"))
+        predicted_label = clean_text(parsed.get("predicted_answer_label"))
+        parse_status = clean_text(parsed.get("parse_status"))
+        predicted_answers.append(predicted_answer)
+        predicted_labels.append(predicted_label)
+        parse_statuses.append(parse_status)
+        correct_values.append(
+            bool(predicted_answer and predicted_answer == clean_text(row.get("answer")))
+            if question_type_key(row.get("question_type", "")) == "mcq"
+            else None
+        )
+
+    out["predicted_answer"] = predicted_answers
+    out["predicted_answer_label"] = predicted_labels
+    out["parse_status"] = parse_statuses
+    out["correct"] = correct_values
+    return out
+
+
+def _run_payload(
+    *,
+    score_cfg: Mapping[str, Any],
+    predictions_path: Path,
+    metrics_path: Path,
+    scored_at: str,
+    model_count: int,
+    repeat_count: int,
+) -> dict[str, Any]:
+    run_cfg = dict(score_cfg.get("run") or {})
+    return {
+        "name": clean_text(run_cfg.get("name")),
+        "predictions_path": str(predictions_path),
+        "metrics_path": str(metrics_path),
+        "scored_at": scored_at,
+        "model_count": int(model_count),
+        "repeat_count": int(repeat_count),
+    }
+
+
+def main() -> None:
+    cfg = load_cfg()
+    score_cfg = cfg.vqa_evaluation
+    score_dict = OmegaConf.to_container(score_cfg, resolve=True)
+    if not isinstance(score_dict, dict):
+        raise TypeError("Resolved VQA scoring config must be a mapping.")
+
+    prediction_filename = _run_filename(score_dict, "prediction_filename", "predictions.parquet")
+    metrics_filename = _run_filename(score_dict, "metrics_filename", "metrics.json")
+    predictions_path = _prediction_path(score_dict, prediction_filename)
+    metrics_path = _run_root(score_dict) / metrics_filename
+
+    print(f"Predictions path: {predictions_path}")
+    print(f"Metrics path: {metrics_path}")
+
+    predictions = pd.read_parquet(predictions_path)
+    if "repeat_id" not in predictions.columns:
+        raise ValueError("Predictions parquet must contain repeat_id. Regenerate predictions with the repeat-aware pipeline.")
+    scored_at = datetime.now(timezone.utc).isoformat()
+    scored_predictions = _reparse_predictions(predictions)
+    scored_predictions = add_bertscore_columns(
+        scored_predictions,
+        dict(dict(score_dict.get("metrics") or {}).get("bert_score") or {}),
+    )
+
+    metric_records: list[dict[str, Any]] = []
+    model_columns = ["model_display_name", "backend", "model_name_or_path", "repeat_id"]
+    for group_values, group in scored_predictions.groupby(model_columns, dropna=False, sort=True):
+        model_display_name = clean_text(group_values[0])
+        backend = clean_text(group_values[1])
+        model_name_or_path = clean_text(group_values[2])
+        repeat_id = int(group_values[3])
+        print("\nVQA scoring model")
+        print(f"  Model: {model_display_name}")
+        print(f"  Repeat: {repeat_id}")
+        print(f"  Prediction rows: {len(group)}")
+        records = build_flat_metric_records(
+            group,
+            model_display_name=model_display_name,
+            backend=backend,
+            model_name_or_path=model_name_or_path,
+        )
+        for record in records:
+            record["repeat_id"] = repeat_id
+        metric_records.extend(records)
+        overall = next((item for item in records if item["metric_group"] == "overall"), {})
+        print(f"  Overall metrics: {overall}")
+
+    payload = {
+        "run": _run_payload(
+            score_cfg=score_dict,
+            predictions_path=predictions_path,
+            metrics_path=metrics_path,
+            scored_at=scored_at,
+            model_count=int(scored_predictions["model_display_name"].nunique()),
+            repeat_count=int(scored_predictions["repeat_id"].nunique()),
+        ),
+        "metrics": metric_records,
+        "errors": [],
+    }
+    _write_metrics(metrics_path, payload)
+
+
+if __name__ == "__main__":
+    main()

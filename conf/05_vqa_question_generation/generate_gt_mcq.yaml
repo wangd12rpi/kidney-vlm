@@ -1,6 +1,7 @@
 name: vqa_question_generation_gt_mcq
 source_registry_path: ${data.unified_registry_path}
 output_parquet_path: ${project.root_dir}/data/vqa/gt_mcq_questions.parquet
+full_output_parquet_path: ${project.root_dir}/data/vqa/gt_mcq_questions_full.parquet
 print_first_n: 5
 first_n:
 allowed_project_ids: []
@@ -8,6 +9,9 @@ allowed_splits: []
 choice_count: 4
 min_semantic_questions_per_project_task: 20
 require_test_pathology_roi_png_dir: true
+require_test_radiology_view_png_dir: true
+radiology_png_root: data/radiology_png
+max_test_radiology_images: 6
 populate_test_genomics_text_summaries: true
 require_test_genomics_text_summaries: true
 dnam_text_summary_max_beta_values: 50000

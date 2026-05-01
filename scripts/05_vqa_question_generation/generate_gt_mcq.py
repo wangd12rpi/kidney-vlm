@@ -17,7 +17,7 @@ if str(SRC) not in sys.path:
 from kidney_vlm.data.registry_io import read_parquet_or_empty
 from kidney_vlm.repo_root import find_repo_root
 from kidney_vlm.script_config import load_script_cfg
-from kidney_vlm.vqa.gt_mcq import build_ground_truth_mcq_frame
+from kidney_vlm.vqa.gt_mcq import build_ground_truth_mcq_frames
 from kidney_vlm.vqa.schema import write_vqa_parquet
 
 ROOT = find_repo_root(Path(__file__))
@@ -74,19 +74,26 @@ def main() -> None:
 
     registry_path = _resolve_path(vqa_cfg.source_registry_path)
     output_path = _resolve_path(vqa_cfg.output_parquet_path)
+    full_output_path = _resolve_path(vqa_cfg.full_output_parquet_path)
 
     registry_df = read_parquet_or_empty(registry_path)
     if registry_df.empty:
         raise RuntimeError(f"Registry is empty: {registry_path}")
 
     generation_cfg = OmegaConf.to_container(vqa_cfg, resolve=True)
-    generated_df, stats = build_ground_truth_mcq_frame(registry_df, generation_cfg)
+    generated_df, full_generated_df, stats = build_ground_truth_mcq_frames(
+        registry_df, generation_cfg
+    )
     _validate_required_test_genomics_text(generated_df, generation_cfg)
 
+    write_vqa_parquet(full_generated_df, full_output_path)
     write_vqa_parquet(generated_df, output_path)
 
     print(f"Registry path: {registry_path}")
+    print(f"Full output path: {full_output_path}")
     print(f"Output path: {output_path}")
+    print(f"Full generated rows: {stats['full_generated_rows']}")
+    print(f"Full generated semantic questions: {stats['full_semantic_questions']}")
     print(f"Generated rows: {stats['generated_rows']}")
     print(f"Generated semantic questions: {stats['semantic_questions']}")
     sampling_stats = dict(stats.get("sampling") or {})

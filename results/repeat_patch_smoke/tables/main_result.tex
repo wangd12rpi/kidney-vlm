@@ -1,0 +1,43 @@
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.18}
+\newcommand{\cellmetric}[3]{\begin{tabular}{@{}c@{}}#1\\[-0.12em]\textcolor[HTML]{#3}{#2}\end{tabular}}
+\newcommand{\bertcell}[1]{#1}
+\begin{tabular}{lc}
+\toprule
+\rowcolor[HTML]{F3F6FA}
+\textbf{Task} & \textbf{GPT-5.4} \\
+\midrule
+\rowcolor[HTML]{EFF6FF}
+\multicolumn{2}{l}{\textbf{MCQ from ground truth} \textnormal{(Accuracy/\textcolor[HTML]{2563EB}{F1})}} \\
+Mutation & \cellmetric{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{2563EB} \\
+AJCC stage & \cellmetric{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{2563EB} \\
+AJCC T/N/M & \cellmetric{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{2563EB} \\
+\rowcolor[HTML]{F8FAFC}
+\textbf{Mean} & \cellmetric{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{2563EB} \\
+\addlinespace[0.35em]
+\rowcolor[HTML]{EFF6FF}
+\multicolumn{2}{l}{\textbf{MCQ from caption} \textnormal{(Accuracy/\textcolor[HTML]{2563EB}{F1})}} \\
+Concordance & \cellmetric{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{2563EB} \\
+Integrated diagnosis & \cellmetric{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{2563EB} \\
+Molecular pathway & \cellmetric{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{2563EB} \\
+Pathology feature & \cellmetric{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{2563EB} \\
+Radiology characterization & \cellmetric{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{2563EB} \\
+\rowcolor[HTML]{F8FAFC}
+\textbf{Mean} & \cellmetric{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{\textbf{0.0\,{\scriptsize $\pm$ 0.0}}}{2563EB} \\
+\addlinespace[0.35em]
+\rowcolor[HTML]{EFF6FF}
+\multicolumn{2}{l}{\textbf{Open-ended from caption} \textnormal{(BERT-F1)}} \\
+Concordance + uncertainty & \bertcell{--} \\
+Cross-modal synthesis & \bertcell{--} \\
+Pathology description & \bertcell{--} \\
+Radiology description & \bertcell{--} \\
+\rowcolor[HTML]{F8FAFC}
+\textbf{Mean} & \bertcell{--} \\
+\bottomrule
+\end{tabular}
+\caption{Main VQA benchmark results by task category on the all-available modality setting. MCQ cells report accuracy and macro-F1; open-ended cells report BERTScore F1. Values are mean $\pm$ standard deviation over inference repeats when available.}
+\label{tab:main_result}
+\end{table}
