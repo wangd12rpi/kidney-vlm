@@ -200,29 +200,33 @@ def _validate_keep_ratio(value: Any, *, label: str) -> float:
     return ratio
 
 
-def _task_keep_ratio(
+def _sampling_keep_ratio(
     *,
-    task_id: str,
     task_category: str,
+    modality_combination_name: str,
     sampling_cfg: Mapping[str, Any],
 ) -> float:
-    task_id = str(task_id).strip()
-    task_category = str(task_category).strip()
-    task_id_ratios = dict(sampling_cfg.get("task_id_keep_ratios") or {})
-    if task_id in task_id_ratios:
-        return _validate_keep_ratio(
-            task_id_ratios[task_id],
-            label=f"task_id_keep_ratios.{task_id}",
+    ratios_by_task = sampling_cfg.get("task_category_modality_keep_ratios")
+    if not isinstance(ratios_by_task, Mapping):
+        raise ValueError("sampling.task_category_modality_keep_ratios must be a mapping.")
+    category = str(task_category).strip()
+    task_ratios = ratios_by_task.get(category)
+    if not isinstance(task_ratios, Mapping):
+        raise ValueError(
+            f"sampling.task_category_modality_keep_ratios.{category} must be a mapping."
         )
-    task_category_ratios = dict(sampling_cfg.get("task_category_keep_ratios") or {})
-    if task_category in task_category_ratios:
-        return _validate_keep_ratio(
-            task_category_ratios[task_category],
-            label=f"task_category_keep_ratios.{task_category}",
+    combo = str(modality_combination_name).strip()
+    if combo not in {"all_available", "path_only", "radiology_only"}:
+        raise ValueError(
+            f"Unsupported modality combination for modality-aware sampling: {combo!r}"
+        )
+    if combo not in task_ratios:
+        raise ValueError(
+            f"sampling.task_category_modality_keep_ratios.{category}.{combo} is required."
         )
     return _validate_keep_ratio(
-        sampling_cfg.get("default_keep_ratio", 1.0),
-        label="default_keep_ratio",
+        task_ratios[combo],
+        label=f"task_category_modality_keep_ratios.{category}.{combo}",
     )
 
 
@@ -249,64 +253,75 @@ def _sample_generated_frame(
     splits = _sampling_splits(sampling_cfg)
     protect_radiology = bool(sampling_cfg.get("protect_radiology_questions", True))
     seed = int(sampling_cfg.get("seed", 42))
-    grouped: dict[tuple[str, str, str], list[tuple[int, int]]] = {}
-    keep_base_question_ids: set[int] = set()
-    row_counts_by_base_id: dict[int, int] = {}
+    grouped: dict[tuple[str, str, str, str], list[tuple[int, int]]] = {}
+    keep_question_ids: set[int] = set()
+    question_to_base_id = {
+        int(row["question_id"]): int(row["base_question_id"])
+        for _, row in frame[["question_id", "base_question_id"]].iterrows()
+    }
 
     for base_question_id, group in frame.groupby("base_question_id", sort=False):
-        base_id = int(base_question_id)
-        row_counts_by_base_id[base_id] = int(len(group))
         first = group.iloc[0]
         split = _clean_text(first.get("split")).casefold()
         if split not in splits:
-            keep_base_question_ids.add(base_id)
+            keep_question_ids.update(
+                int(value) for value in group["question_id"].tolist()
+            )
             continue
         if protect_radiology and bool(group["use_radiology"].astype(bool).any()):
-            keep_base_question_ids.add(base_id)
+            keep_question_ids.update(
+                int(value) for value in group["question_id"].tolist()
+            )
             stats["sampling_protected_radiology_questions"] += 1
             continue
         task_category = _clean_text(first.get("task_category"))
         task_id = _clean_text(first.get("task_id"))
-        ratio = _task_keep_ratio(
-            task_id=task_id,
-            task_category=task_category,
-            sampling_cfg=sampling_cfg,
-        )
-        if ratio >= 1.0:
-            keep_base_question_ids.add(base_id)
-            continue
-        grouped.setdefault(
-            (
-                split,
-                task_category,
-                task_id,
-            ),
-            [],
-        ).append((base_id, row_counts_by_base_id[base_id]))
+        for _, row in group.iterrows():
+            combo = _clean_text(row.get("modality_combination_name"))
+            ratio = _sampling_keep_ratio(
+                task_category=task_category,
+                modality_combination_name=combo,
+                sampling_cfg=sampling_cfg,
+            )
+            question_id = int(row["question_id"])
+            if ratio >= 1.0:
+                keep_question_ids.add(question_id)
+                continue
+            grouped.setdefault(
+                (
+                    split,
+                    task_category,
+                    task_id,
+                    combo,
+                ),
+                [],
+            ).append((question_id, 1))
 
     for group_key, group_records in grouped.items():
-        _, task_category, task_id = group_key
-        ratio = _task_keep_ratio(
-            task_id=task_id,
+        _, task_category, task_id, combo = group_key
+        ratio = _sampling_keep_ratio(
             task_category=task_category,
+            modality_combination_name=combo,
             sampling_cfg=sampling_cfg,
         )
         keep_count = int(math.ceil(len(group_records) * ratio)) if ratio > 0 else 0
         if keep_count >= len(group_records):
-            keep_base_question_ids.update(base_id for base_id, _ in group_records)
+            keep_question_ids.update(question_id for question_id, _ in group_records)
             continue
         rng = random.Random(stable_int_id("semantic_record_sample", seed, *group_key))
         selected_indices = set(rng.sample(range(len(group_records)), keep_count))
-        for index, (base_id, row_count) in enumerate(group_records):
+        for index, (question_id, row_count) in enumerate(group_records):
             if index in selected_indices:
-                keep_base_question_ids.add(base_id)
+                keep_question_ids.add(question_id)
             else:
-                stats["sampled_out_semantic_questions"] += 1
                 stats["sampled_out_rows"] += row_count
 
-    sampled = frame[frame["base_question_id"].isin(keep_base_question_ids)].reset_index(
+    sampled = frame[frame["question_id"].isin(keep_question_ids)].reset_index(
         drop=True
     )
+    original_base_ids = set(int(value) for value in frame["base_question_id"].unique())
+    kept_base_ids = {question_to_base_id[question_id] for question_id in keep_question_ids}
+    stats["sampled_out_semantic_questions"] = len(original_base_ids - kept_base_ids)
     return sampled, stats
 
 
@@ -768,6 +783,12 @@ def _semantic_project_task_key(record: Mapping[str, Any]) -> tuple[str, str]:
     )
 
 
+def _semantic_project_task_split_key(record: Mapping[str, Any]) -> tuple[str, str, str]:
+    project_id, task_id = _semantic_project_task_key(record)
+    split = _clean_text(record["row"].get("split")).casefold()
+    return project_id, task_id, split
+
+
 def _filter_semantic_records_by_minimum(
     records: list[dict[str, Any]],
     *,
@@ -1008,41 +1029,36 @@ def _downsample_boolean_records(
     max_false_ratio: Any,
     stats: dict[str, int],
 ) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str], list[tuple[bool, dict[str, Any]]]] = {}
+    if max_false_ratio is None:
+        return [record for _, record in records]
+
+    ratio = float(max_false_ratio)
+    if ratio < 0:
+        raise ValueError(f"max_false_per_true must be non-negative, got {ratio}")
+
+    grouped: dict[tuple[str, str, str], list[tuple[bool, dict[str, Any]]]] = {}
     for value, record in records:
-        grouped.setdefault(_semantic_project_task_key(record), []).append(
+        grouped.setdefault(_semantic_project_task_split_key(record), []).append(
             (value, record)
         )
 
     generated: list[dict[str, Any]] = []
     for group_key, group_records in grouped.items():
-        train_positives = [
-            record
-            for value, record in group_records
-            if value and _clean_text(record["row"].get("split")).casefold() == "train"
-        ]
-        train_negatives = [
-            record
-            for value, record in group_records
-            if not value
-            and _clean_text(record["row"].get("split")).casefold() == "train"
-        ]
-        non_train_records = [
-            record
-            for _, record in group_records
-            if _clean_text(record["row"].get("split")).casefold() != "train"
-        ]
-        if max_false_ratio is not None and train_positives:
-            max_false = int(math.ceil(len(train_positives) * float(max_false_ratio)))
-            if len(train_negatives) > max_false:
-                rng = random.Random(
-                    stable_int_id("boolean_false_downsample_train", *group_key)
-                )
-                stats["downsampled_false"] += len(train_negatives) - max_false
-                train_negatives = rng.sample(train_negatives, max_false)
-        generated.extend(train_positives)
-        generated.extend(train_negatives)
-        generated.extend(non_train_records)
+        positives = [record for value, record in group_records if value]
+        negatives = [record for value, record in group_records if not value]
+        if not positives:
+            stats["downsampled_false"] += len(negatives)
+            stats["dropped_false_without_positive"] += len(negatives)
+            continue
+
+        max_false = int(math.ceil(len(positives) * ratio))
+        if len(negatives) > max_false:
+            rng = random.Random(stable_int_id("boolean_false_downsample", *group_key))
+            stats["downsampled_false"] += len(negatives) - max_false
+            negatives = rng.sample(negatives, max_false)
+
+        generated.extend(positives)
+        generated.extend(negatives)
     return generated
 
 
@@ -1074,6 +1090,7 @@ def _build_boolean_task_rows(
         "candidate_rows": 0,
         "skipped_empty_answer": 0,
         "downsampled_false": 0,
+        "dropped_false_without_positive": 0,
         "skipped_minimum": 0,
         "generated_semantic_questions": 0,
         "generated_rows": 0,
@@ -1153,6 +1170,237 @@ def _build_boolean_task_rows(
     return generated_rows, stats
 
 
+def _task_cfg_by_task_id(global_cfg: Mapping[str, Any], task_id: str) -> dict[str, Any]:
+    target = str(task_id).strip()
+    for task_cfg in _config_list(global_cfg, "categorical_tasks"):
+        task = dict(task_cfg or {})
+        if str(task.get("task_id", "")).strip() == target:
+            return task
+    raise ValueError(f"Could not find categorical task_id for joint profile task: {target}")
+
+
+def _boolean_task_cfg_by_category(
+    global_cfg: Mapping[str, Any], task_category: str
+) -> dict[str, Any]:
+    target = str(task_category).strip()
+    for task_cfg in _config_list(global_cfg, "boolean_tasks"):
+        task = dict(task_cfg or {})
+        if str(task.get("task_category", "")).strip() == target:
+            return task
+    raise ValueError(
+        f"Could not find boolean task_category for joint profile task: {target}"
+    )
+
+
+def _joint_profile_task_id(source_column: str, task_cfg: Mapping[str, Any]) -> str:
+    template = str(task_cfg.get("task_id_template", "stage_{source_column}")).strip()
+    gene = _display_label_from_source_column(source_column, task_cfg)
+    return _format_template(
+        template,
+        {
+            "source_column": source_column,
+            "gene": gene,
+            "gene_lower": gene.lower(),
+        },
+    )
+
+
+def _deterministic_shuffled_choices(choices: list[str], *seed_parts: object) -> list[str]:
+    shuffled = list(choices)
+    rng = random.Random(stable_int_id("joint_profile_choice_shuffle", *seed_parts))
+    rng.shuffle(shuffled)
+    return shuffled
+
+
+def _wrong_stage_choice(
+    *,
+    stage: str,
+    stage_options: list[str],
+    seed_parts: Sequence[object],
+) -> str:
+    candidates = [option for option in stage_options if option != stage]
+    if not candidates:
+        raise ValueError("Joint profile task needs at least two stage options.")
+    rng = random.Random(stable_int_id("joint_profile_wrong_stage", *seed_parts))
+    return candidates[rng.randrange(len(candidates))]
+
+
+def _limit_records_per_case(
+    records: list[dict[str, Any]],
+    *,
+    max_questions_per_case: Any,
+    seed_label: str,
+) -> tuple[list[dict[str, Any]], int]:
+    if max_questions_per_case is None or str(max_questions_per_case).strip() == "":
+        return records, 0
+    limit = int(max_questions_per_case)
+    if limit <= 0:
+        raise ValueError(f"max_questions_per_case must be positive, got {limit}")
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        grouped.setdefault(_case_id(record["row"]), []).append(record)
+
+    kept: list[dict[str, Any]] = []
+    skipped = 0
+    for case_id, case_records in grouped.items():
+        if len(case_records) <= limit:
+            kept.extend(case_records)
+            continue
+        rng = random.Random(stable_int_id(seed_label, case_id))
+        selected_indices = sorted(rng.sample(range(len(case_records)), limit))
+        selected = set(selected_indices)
+        skipped += len(case_records) - limit
+        kept.extend(record for index, record in enumerate(case_records) if index in selected)
+    return kept, skipped
+
+
+def _build_joint_profile_task_rows(
+    *,
+    registry_df: pd.DataFrame,
+    task_cfg: Mapping[str, Any],
+    global_cfg: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    stage_task = _task_cfg_by_task_id(
+        global_cfg, str(task_cfg.get("stage_task_id", "pathologic_stage"))
+    )
+    mutation_task = _boolean_task_cfg_by_category(
+        global_cfg, str(task_cfg.get("mutation_task_category", "mutation"))
+    )
+    stage_source_column = str(stage_task.get("source_column", "")).strip()
+    if not stage_source_column:
+        raise ValueError("Joint profile stage task is missing source_column.")
+    if stage_source_column not in registry_df.columns:
+        raise ValueError(
+            f"Joint profile stage source column not found in registry: {stage_source_column}"
+        )
+
+    sources_by_project = _boolean_sources_by_project(
+        registry_df=registry_df, task_cfg=mutation_task
+    )
+    stage_options = _fixed_options(
+        stage_task,
+        task_name=f"Joint profile stage task {stage_task.get('task_id')}",
+    )
+    stage_option_set = set(stage_options)
+    question_template = str(task_cfg.get("question_template", "")).strip()
+    if not question_template:
+        raise ValueError("Joint profile task is missing question_template.")
+    true_answer_template = str(
+        mutation_task.get("true_answer_template", "{label} mutation present")
+    ).strip()
+    false_answer_template = str(
+        mutation_task.get("false_answer_template", "{label} mutation absent")
+    ).strip()
+    stage_skip_values = _skip_values(global_cfg, stage_task)
+    semantic_records: list[dict[str, Any]] = []
+    stats = {
+        "candidate_rows": 0,
+        "skipped_empty_stage": 0,
+        "skipped_stage_not_in_options": 0,
+        "skipped_empty_mutation": 0,
+        "skipped_case_question_limit": 0,
+        "skipped_minimum": 0,
+        "generated_semantic_questions": 0,
+        "generated_rows": 0,
+    }
+
+    for row in _registry_records(
+        registry_df,
+        global_cfg=global_cfg,
+        desc=f"Building {task_cfg.get('task_category', 'joint_profile')} MCQs",
+    ):
+        raw_stage = _clean_text(row.get(stage_source_column))
+        if not raw_stage or _is_skipped_value(raw_stage, stage_skip_values):
+            stats["skipped_empty_stage"] += 1
+            continue
+        stage = _map_value(raw_stage, stage_task)
+        if not stage or _is_skipped_value(stage, stage_skip_values):
+            stats["skipped_empty_stage"] += 1
+            continue
+        if stage not in stage_option_set:
+            stats["skipped_stage_not_in_options"] += 1
+            continue
+
+        project_id = _project_id(row)
+        for source_column, label in sources_by_project.get(project_id, []):
+            value = _bool_value(row.get(source_column), mutation_task)
+            if value is None:
+                stats["skipped_empty_mutation"] += 1
+                continue
+
+            task_id = _joint_profile_task_id(source_column, task_cfg)
+            task_row_cfg = dict(task_cfg)
+            task_row_cfg["task_id"] = task_id
+            context = _base_context(
+                row,
+                task_row_cfg,
+                extra={
+                    "stage": stage,
+                    "raw_stage": raw_stage,
+                    "stage_source_column": stage_source_column,
+                    "source_column": source_column,
+                    "label": label,
+                    "gene": label,
+                },
+            )
+            present_answer = _format_template(
+                true_answer_template, {"label": label, "gene": label}
+            )
+            absent_answer = _format_template(
+                false_answer_template, {"label": label, "gene": label}
+            )
+            mutation_answer = present_answer if value else absent_answer
+            wrong_stage = _wrong_stage_choice(
+                stage=stage,
+                stage_options=stage_options,
+                seed_parts=[context["case_id"], task_id, source_column, stage],
+            )
+            choices = [
+                f"{stage} + {present_answer}",
+                f"{stage} + {absent_answer}",
+                f"{wrong_stage} + {present_answer}",
+                f"{wrong_stage} + {absent_answer}",
+            ]
+            answer = f"{stage} + {mutation_answer}"
+            choices = _deterministic_shuffled_choices(
+                choices, context["case_id"], task_id, source_column
+            )
+            stats["candidate_rows"] += 1
+            semantic_records.append(
+                {
+                    "row": row,
+                    "task_cfg": task_row_cfg,
+                    "question": _format_template(question_template, context),
+                    "answer": answer,
+                    "choices": choices,
+                    "ground_truth_source": f"{stage_source_column}|{source_column}",
+                    "base_id_seed_parts": [
+                        context["case_id"],
+                        task_id,
+                        stage_source_column,
+                        source_column,
+                    ],
+                }
+            )
+
+    semantic_records, skipped_case_limit = _limit_records_per_case(
+        semantic_records,
+        max_questions_per_case=task_cfg.get("max_questions_per_case", None),
+        seed_label="joint_profile_case_limit",
+    )
+    stats["skipped_case_question_limit"] = skipped_case_limit
+    semantic_records, skipped_minimum = _filter_semantic_records_by_minimum(
+        semantic_records,
+        minimum_count=_minimum_semantic_questions(global_cfg, task_cfg),
+    )
+    stats["skipped_minimum"] = skipped_minimum
+    stats["generated_semantic_questions"] = len(semantic_records)
+    generated_rows = _expand_semantic_records(semantic_records, global_cfg=global_cfg)
+    stats["generated_rows"] = len(generated_rows)
+    return generated_rows, stats
+
+
 def _selected_registry_frame(
     registry_df: pd.DataFrame, cfg: Mapping[str, Any]
 ) -> pd.DataFrame:
@@ -1205,6 +1453,16 @@ def _build_ground_truth_mcq_frame_unsampled(
         )
         generated_rows.extend(rows)
         task_stats[str(task.get("task_category", "boolean"))] = stats
+
+    for task_cfg in _config_list(cfg, "joint_profile_tasks"):
+        task = dict(task_cfg or {})
+        if not bool(task.get("enabled", True)):
+            continue
+        rows, stats = _build_joint_profile_task_rows(
+            registry_df=selected, task_cfg=task, global_cfg=cfg
+        )
+        generated_rows.extend(rows)
+        task_stats[str(task.get("task_id", task.get("task_category", "joint_profile")))] = stats
 
     frame = normalize_vqa_df(
         pd.DataFrame(generated_rows) if generated_rows else empty_vqa_frame()

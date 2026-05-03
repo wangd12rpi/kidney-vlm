@@ -1,7 +1,7 @@
 name: vqa_generate_predictions
 
 run:
-  name: gemma_debug_rna_only
+  name: experiment_new_condensed_mcq
   output_root: ${project.root_dir}/results
   resume_existing: true
   prediction_filename: predictions.parquet
@@ -11,7 +11,7 @@ run:
   dry_run: false
 
 data:
-  vqa_parquet_path: ${project.root_dir}/data/vqa/merged_full_vqa.parquet
+  vqa_parquet_path: ${project.root_dir}/data/vqa/merged_vqa.parquet
 
 prefix_cache:
   enabled: true
@@ -21,15 +21,15 @@ prefix_cache:
   skip_missing_rows: true
   max_missing_examples: 10
   max_prefix_tokens:
-    pathology: 1
-    radiology: 1
-    dnam: 1
+    pathology: 512
+    radiology: 256
+    dnam: 64
     rna: 64
 
 
 models:
   oncovlm_qwen_lora: 
-    enabled: false
+    enabled: true
     backend: oncovlm_lora
     model_name_or_path: Qwen/Qwen3.5-9B
     lora_adapter_path: outputs/oncovlm/qwen3_5_9b_merged_full_vqa_n90422_r8_projfrozen_20260429_185618_est/lora_adapter
@@ -44,10 +44,10 @@ models:
     enable_thinking: false
 
 
-  gpt_5_4_mini:
-    enabled: false
+  gpt_5_4:
+    enabled: true
     backend: azure_openai_gpt
-    model_name_or_path: gpt-5.4-mini
+    model_name_or_path: gpt-5.4
     prompt_profile: baseline
     batch_size: 1
     azure_openai:
@@ -64,7 +64,7 @@ models:
       top_p: 1.0
 
   medgemma-4b-it:
-    enabled: false
+    enabled: true
     backend: hf_image_text_to_text
     model_name_or_path: google/medgemma-4b-it
     prompt_profile: baseline
@@ -76,7 +76,7 @@ models:
     batch_size: 8
 
   oncovlm_qwen_no_finetune:
-    enabled: false
+    enabled: true
     backend: oncovlm_projector
     model_name_or_path: Qwen/Qwen3.5-9B
     prompt_profile: baseline
@@ -91,7 +91,7 @@ models:
 
 
   oncovlm_gemma4_no_finetune:
-    enabled: true
+    enabled: false
     backend: oncovlm_projector
     model_name_or_path: google/gemma-4-E4B-it
     prompt_profile: baseline
@@ -109,13 +109,13 @@ filters:
     enabled: true
     value: test
   project_ids:
-    enabled: true
+    enabled: false
     values: [TCGA-BRCA]
   question_types:
-    enabled: true
+    enabled: false
     values: [mcq]
   generation_types:
-    enabled: true
+    enabled: false
     values: [from_caption]
   # task_categories:
   #   enabled: false
@@ -123,13 +123,13 @@ filters:
   # task_ids:
   #   enabled: false
   #   values: []
-  allowed_modality_combo:
-    enabled: true
-    values:
-      - path: true
-        rad: true
-        dnam: true
-        rna: true
+  # allowed_modality_combo:
+  #   enabled: true
+  #   values:
+  #     - path: true
+  #       rad: true
+  #       dnam: true
+  #       rna: true
   # row_limit:
   #   enabled: false
   #   max_rows: 20
@@ -139,7 +139,7 @@ filters:
 sampling:
   enabled: true
   ratio: 0.001
-  min_per_group: 20
+  min_per_group: 1
   seed: 42
   group_by:
     - question_type
@@ -180,7 +180,7 @@ prompts:
         Answer concisely.
 
 generation:
-  max_new_tokens: 48
+  max_new_tokens: 64
   do_sample: true
   temperature: 0.2
   top_p: 0.9

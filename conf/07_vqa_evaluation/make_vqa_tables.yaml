@@ -7,6 +7,14 @@ run:
   tables_dirname: tables
 
 display_names:
+  question_groups:
+    mcq_from_ground_truth: MCQ from ground truth
+    mcq_from_caption: MCQ from caption
+    qa_from_caption: Open-ended from caption
+  modality_combinations:
+    all_available: All available
+    path_only: Pathology only
+    radiology_only: Radiology only
   models:
     gpt_5_4:
       name: GPT-5.4
@@ -42,6 +50,24 @@ display_names:
     cross_modal_synthesis: Cross-modal synthesis
     pathology_description: Pathology description
     radiology_description: Radiology description
+  project_ids:
+    TCGA-BRCA: Breast (BRCA)
+    # TCGA-GBM: Brain (GBM)
+    TCGA-KIRC: Kidney (KIRC)
+    TCGA-KIRP: Kidney (KIRP)
+    TCGA-LGG: Brain (LGG)
+    TCGA-LUAD: Lung (LUAD)
+    # TCGA-OV: Ovary (OV)
+    TCGA-UCEC: Uterus (UCEC)
+
+colors:
+  f1: 2563EB
+  bert: 7C3AED
+  header_bg: F3F6FA
+  group_bg: EFF6FF
+  mean_bg: F8FAFC
+  stdev: 64748B
+  rule: "000000"
 
 tables:
   main_result:
@@ -54,11 +80,23 @@ tables:
       - _vrule
       - oncovlm_qwen_lora
 
-    colors:
-      f1: 2563EB
-      bert: 7C3AED
-      header_bg: F3F6FA
-      group_bg: EFF6FF
-      mean_bg: F8FAFC
-      stdev: 64748B
-      rule: "000000"
+  cancer_result:
+    modality_combination_name: all_available
+    model_order:
+      - gpt_5_4
+      - medgemma-4b-it
+      - oncovlm_qwen_no_finetune
+      - oncovlm_gemma4_no_finetune
+      - _vrule
+      - oncovlm_qwen_lora
+
+  modality_ablation:
+    model_display_name: oncovlm_qwen_lora
+    task_categories:
+      - grade
+      - stage
+      - stage_component
+    modality_combination_names:
+      - all_available
+      - path_only
+      - radiology_only

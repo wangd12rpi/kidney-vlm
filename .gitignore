@@ -38,7 +38,7 @@ external/SAMPath/weights/*.pth
 external/SAMPath/weights/*.ckpt
 external/CpGPT/
 data/external/cpgpt_files/
-
+scripts/mcq_from_caption_gen_ahnaf
 **/wandb/run*
 **/wandb/latest-run
 

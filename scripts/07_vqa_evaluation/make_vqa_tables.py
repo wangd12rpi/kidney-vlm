@@ -29,19 +29,22 @@ VRULE_TOKEN = "_vrule"
 
 MAIN_GROUPS = [
     {
-        "label": "MCQ from ground truth",
+        "id": "mcq_from_ground_truth",
+        "default_label": "MCQ from ground truth",
         "question_type": "mcq",
         "generation_type": "from_ground_truth",
         "metric": "mcq",
     },
     {
-        "label": "MCQ from caption",
+        "id": "mcq_from_caption",
+        "default_label": "MCQ from caption",
         "question_type": "mcq",
         "generation_type": "from_caption",
         "metric": "mcq",
     },
     {
-        "label": "Open-ended from caption",
+        "id": "qa_from_caption",
+        "default_label": "Open-ended from caption",
         "question_type": "qa",
         "generation_type": "from_caption",
         "metric": "qa",
@@ -125,7 +128,7 @@ def _model_metadata(model_display: Mapping[str, Any], model: str) -> dict[str, s
     backbone = clean_text(raw.get("backbone")) or "--"
     finetuned_raw = raw.get("finetuned")
     if isinstance(finetuned_raw, bool):
-        finetuned = "Yes" if finetuned_raw else "No"
+        finetuned = r"\faCheckCircle" if finetuned_raw else r"\faMinusCircle"
     else:
         finetuned = clean_text(finetuned_raw) or "--"
     return {"name": name, "backbone": backbone, "finetuned": finetuned}
@@ -134,8 +137,26 @@ def _model_metadata(model_display: Mapping[str, Any], model: str) -> dict[str, s
 def _model_metadata_row(label: str, key: str, models: list[str], model_display: Mapping[str, Any]) -> str:
     cells = [r"\textbf{" + _latex_escape(label) + r"}"]
     for model in models:
-        cells.append(_latex_escape(_model_metadata(model_display, model)[key]))
+        value = _model_metadata(model_display, model)[key]
+        cells.append(value if key == "finetuned" else _latex_escape(value))
     return " & ".join(cells) + r" \\"
+
+
+def _model_metadata_row_two_label_columns(label: str, key: str, models: list[str], model_display: Mapping[str, Any]) -> str:
+    cells = [r"\multicolumn{2}{l}{\textbf{" + _latex_escape(label) + r"}}"]
+    for model in models:
+        value = _model_metadata(model_display, model)[key]
+        cells.append(value if key == "finetuned" else _latex_escape(value))
+    return " & ".join(cells) + r" \\"
+
+
+def _group_label(group: Mapping[str, str], display_cfg: Mapping[str, Any]) -> str:
+    group_labels = dict(display_cfg.get("question_groups") or {})
+    return clean_text(group_labels.get(clean_text(group.get("id")))) or clean_text(group.get("default_label"))
+
+
+def _global_colors(cfg: Mapping[str, Any]) -> dict[str, str]:
+    return dict(cfg.get("colors") or {})
 
 
 def _fmt_metric(value: float | None) -> str:
@@ -217,13 +238,24 @@ def _metric_cell(
     *,
     bold_first: bool = False,
     bold_second: bool = False,
+    show_stdev: bool = True,
 ) -> str:
     if metrics is None:
         return r"\multicolumn{1}{c}{--}"
     std_color = clean_text(colors.get("stdev", "64748B"))
     if metric_kind == "mcq":
-        acc = _fmt_metric_summary(metrics.get("accuracy"), metrics.get("accuracy_stdev"), std_color, bold=bold_first)
-        f1 = _fmt_metric_summary(metrics.get("f1_macro"), metrics.get("f1_macro_stdev"), std_color, bold=bold_second)
+        acc = _fmt_metric_summary(
+            metrics.get("accuracy"),
+            metrics.get("accuracy_stdev") if show_stdev else None,
+            std_color,
+            bold=bold_first,
+        )
+        f1 = _fmt_metric_summary(
+            metrics.get("f1_macro"),
+            metrics.get("f1_macro_stdev") if show_stdev else None,
+            std_color,
+            bold=bold_second,
+        )
         return (
             r"\cellmetric{"
             + f"{acc}"
@@ -235,7 +267,7 @@ def _metric_cell(
         )
     bert = _fmt_metric_summary(
         metrics.get("bertscore_f1_mean"),
-        metrics.get("bertscore_f1_mean_stdev"),
+        metrics.get("bertscore_f1_mean_stdev") if show_stdev else None,
         std_color,
         bold=bold_first,
     )
@@ -267,12 +299,29 @@ def _column_spec(model_count: int, vrules_after: set[int]) -> str:
     return "".join(parts)
 
 
+def _two_label_column_spec(model_count: int, vrules_after: set[int]) -> str:
+    parts = ["l", "l", "|"]
+    for model_index in range(1, model_count + 1):
+        parts.append("c")
+        if model_index in vrules_after:
+            parts.append("|")
+    return "".join(parts)
+
+
 def _colored_hline(colors: Mapping[str, str]) -> str:
     return (
         r"\arrayrulecolor[HTML]{"
         + clean_text(colors.get("rule", "CBD5E1"))
         + r"}\hline\arrayrulecolor{black}"
     )
+
+
+def _spaced_colored_hline(colors: Mapping[str, str], *, before: str = "0.24em", after: str = "0.24em") -> list[str]:
+    return [
+        r"\noalign{\vskip " + before + r"}",
+        _colored_hline(colors),
+        r"\noalign{\vskip " + after + r"}",
+    ]
 
 
 def _task_order(metrics: list[Mapping[str, Any]], display_names: Mapping[str, Any]) -> list[str]:
@@ -295,7 +344,7 @@ def _slice_records(
     return [
         record
         for record in metrics
-        if record.get("metric_group") == "core_slice"
+        if record.get("metric_group") == "main_table"
         and clean_text(record.get("model_display_name")) == model
         and clean_text(record.get("task_category")) == task_category
         and clean_text(record.get("question_type")) == question_type
@@ -328,12 +377,57 @@ def _group_task_categories(
     return out
 
 
+def _cancer_records(
+    metrics: list[Mapping[str, Any]],
+    *,
+    model: str,
+    project_id: str,
+    question_type: str,
+    generation_type: str | None,
+    modality_combination_name: str,
+) -> list[Mapping[str, Any]]:
+    return [
+        record
+        for record in metrics
+        if record.get("metric_group") == "cancer_table"
+        and clean_text(record.get("model_display_name")) == model
+        and clean_text(record.get("project_id")) == project_id
+        and clean_text(record.get("question_type")) == question_type
+        and (generation_type is None or clean_text(record.get("generation_type")) == generation_type)
+        and clean_text(record.get("modality_combination_name")) == modality_combination_name
+    ]
+
+
+def _group_project_ids(
+    metrics: list[Mapping[str, Any]],
+    *,
+    group: Mapping[str, str],
+    project_order: list[str],
+    modality_combination_name: str,
+) -> list[str]:
+    out: list[str] = []
+    for project_id in project_order:
+        if any(
+            _cancer_records(
+                metrics,
+                model=clean_text(record.get("model_display_name")),
+                project_id=project_id,
+                question_type=group["question_type"],
+                generation_type=group["generation_type"],
+                modality_combination_name=modality_combination_name,
+            )
+            for record in metrics
+        ):
+            out.append(project_id)
+    return out
+
+
 def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) -> str:
     metrics = list(metrics_blob.get("metrics") or [])
     if any("repeat_id" in record for record in metrics):
         raise ValueError("metrics.json is in the old repeat-level format. Rerun score_vqa_predictions.py.")
     table_cfg = dict(dict(cfg.get("tables") or {}).get("main_result") or {})
-    colors = dict(table_cfg.get("colors") or {})
+    colors = _global_colors(cfg)
     modality_combination_name = clean_text(table_cfg.get("modality_combination_name")) or "all_available"
     display_cfg = dict(cfg.get("display_names") or {})
     model_display = dict(display_cfg.get("models") or {})
@@ -347,12 +441,14 @@ def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) 
     column_spec = _column_spec(len(models), vrules_after)
     lines = [
         r"\begin{table}[t]",
+        r"\caption{Main VQA benchmark results by task category on the all-available modality setting. MCQ cells report accuracy and macro-F1; open-ended cells report BERTScore F1. Values are mean $\pm$ standard deviation over inference repeats when available.}",
+        r"\label{tab:main_result}",
         r"\centering",
         r"\small",
         r"\setlength{\tabcolsep}{5pt}",
         r"\renewcommand{\arraystretch}{1.18}",
-        r"\newcommand{\cellmetric}[3]{\begin{tabular}{@{}c@{}}#1\\[-0.12em]\textcolor[HTML]{#3}{#2}\end{tabular}}",
-        r"\newcommand{\bertcell}[1]{#1}",
+        r"\providecommand{\cellmetric}[3]{\begin{tabular}{@{}c@{}}#1\\[-0.12em]\textcolor[HTML]{#3}{#2}\end{tabular}}",
+        r"\providecommand{\bertcell}[1]{#1}",
         r"\begin{tabular}{"
         + column_spec
         + r"}",
@@ -393,7 +489,7 @@ def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) 
                 r"\multicolumn{"
                 + str(num_columns)
                 + r"}{l}{\rule[-0.8ex]{0pt}{3.2ex}\textbf{"
-                + _latex_escape(group["label"])
+                + _latex_escape(_group_label(group, display_cfg))
                 + r"}"
                 + (
                     r" \textnormal{("
@@ -497,8 +593,377 @@ def _main_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) 
         [
             r"\bottomrule",
             r"\end{tabular}",
-            r"\caption{Main VQA benchmark results by task category on the all-available modality setting. MCQ cells report accuracy and macro-F1; open-ended cells report BERTScore F1. Values are mean $\pm$ standard deviation over inference repeats when available.}",
-            r"\label{tab:main_result}",
+            r"\end{table}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _cancer_result_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) -> str:
+    metrics = list(metrics_blob.get("metrics") or [])
+    if any("repeat_id" in record for record in metrics):
+        raise ValueError("metrics.json is in the old repeat-level format. Rerun score_vqa_predictions.py.")
+    table_cfg = dict(dict(cfg.get("tables") or {}).get("cancer_result") or {})
+    if not table_cfg:
+        return ""
+    colors = _global_colors(cfg)
+    modality_combination_name = clean_text(table_cfg.get("modality_combination_name")) or "all_available"
+    display_cfg = dict(cfg.get("display_names") or {})
+    model_display = dict(display_cfg.get("models") or {})
+    project_display = dict(display_cfg.get("project_ids") or {})
+    models, vrules_after = _model_order_and_vrules(metrics, table_cfg)
+    if not models:
+        raise RuntimeError("No models found in metrics.json.")
+    project_order = [clean_text(key) for key in project_display.keys() if clean_text(key)]
+    if not project_order:
+        project_order = sorted(
+            {
+                clean_text(record.get("project_id"))
+                for record in metrics
+                if record.get("metric_group") == "cancer_table" and clean_text(record.get("project_id")) not in {"", "ALL"}
+            }
+        )
+
+    column_spec = _two_label_column_spec(len(models), vrules_after)
+    lines = [
+        r"\begin{table}[t]",
+        r"\caption{VQA benchmark results by cancer type on the all-available modality setting. Each cancer is split into MCQ and open-ended QA rows. MCQ cells report accuracy and macro-F1; QA cells report BERTScore F1. Values are mean $\pm$ standard deviation over inference repeats when available.}",
+        r"\label{tab:cancer_result}",
+        r"\centering",
+        r"\small",
+        r"\setlength{\tabcolsep}{5pt}",
+        r"\renewcommand{\arraystretch}{1.18}",
+        r"\providecommand{\cellmetric}[3]{\begin{tabular}{@{}c@{}}#1\\[-0.12em]\textcolor[HTML]{#3}{#2}\end{tabular}}",
+        r"\providecommand{\bertcell}[1]{#1}",
+        r"\begin{tabular}{"
+        + column_spec
+        + r"}",
+        r"\toprule",
+        r"\rowcolor[HTML]{"
+        + clean_text(colors.get("header_bg", "F3F6FA"))
+        + r"}",
+        _model_metadata_row_two_label_columns("Name", "name", models, model_display),
+        r"\rowcolor[HTML]{"
+        + clean_text(colors.get("header_bg", "F3F6FA"))
+        + r"}",
+        _model_metadata_row_two_label_columns("Backbone", "backbone", models, model_display),
+        r"\rowcolor[HTML]{"
+        + clean_text(colors.get("header_bg", "F3F6FA"))
+        + r"}",
+        _model_metadata_row_two_label_columns("Finetuned", "finetuned", models, model_display),
+        *_spaced_colored_hline(colors, before="0.12em", after="0.20em"),
+        r"\rowcolor[HTML]{"
+        + clean_text(colors.get("group_bg", "EFF6FF"))
+        + r"}",
+        r"\textbf{Cancer} & \textbf{Question} & \multicolumn{"
+        + str(len(models))
+        + r"}{c}{\textbf{Performance by model}} \\",
+        *_spaced_colored_hline(colors, before="0.20em", after="0.28em"),
+    ]
+
+    question_rows = [("mcq", "MCQ", "mcq"), ("qa", "QA", "qa")]
+    rendered_project_count = 0
+    for project_id in project_order:
+        project_records = [
+            record
+            for record in metrics
+            if record.get("metric_group") == "cancer_table"
+            and clean_text(record.get("project_id")) == project_id
+            and clean_text(record.get("modality_combination_name")) == modality_combination_name
+        ]
+        if not project_records:
+            continue
+
+        project_rows: list[tuple[str, str, dict[str, dict[str, Any] | None]]] = []
+        for row_index, (question_type, row_label, metric_kind) in enumerate(question_rows):
+            row_aggregates: dict[str, dict[str, Any] | None] = {}
+            for model in models:
+                records = _cancer_records(
+                    metrics,
+                    model=model,
+                    project_id=project_id,
+                    question_type=question_type,
+                    generation_type=None,
+                    modality_combination_name=modality_combination_name,
+                )
+                row_aggregates[model] = _aggregate_records(records, metric_kind)
+            if all(aggregate is None for aggregate in row_aggregates.values()):
+                continue
+            project_rows.append((row_label, metric_kind, row_aggregates))
+        if not project_rows:
+            continue
+
+        if rendered_project_count > 0:
+            lines.extend(_spaced_colored_hline(colors, before="0.30em", after="0.30em"))
+        rendered_project_count += 1
+
+        row_count = len(project_rows)
+        for row_index, (row_label, metric_kind, row_aggregates) in enumerate(project_rows):
+            cells = [
+                (
+                    r"\multirow[c]{"
+                    + str(row_count)
+                    + r"}{*}{\textbf{"
+                    + _latex_escape(project_display.get(project_id, project_id))
+                    + r"}}"
+                    if row_index == 0 and row_count > 1
+                    else r"\textbf{" + _latex_escape(project_display.get(project_id, project_id)) + r"}"
+                    if row_index == 0
+                    else ""
+                ),
+                _latex_escape(row_label),
+            ]
+            if metric_kind == "mcq":
+                acc_values = [_metric_value(row_aggregates[model], "accuracy") for model in models]
+                f1_values = [_metric_value(row_aggregates[model], "f1_macro") for model in models]
+                for model in models:
+                    aggregate = row_aggregates[model]
+                    cells.append(
+                        _metric_cell(
+                            aggregate,
+                            metric_kind,
+                            colors,
+                            bold_first=_is_row_best(_metric_value(aggregate, "accuracy"), acc_values),
+                            bold_second=_is_row_best(_metric_value(aggregate, "f1_macro"), f1_values),
+                        )
+                    )
+            else:
+                bert_values = [_metric_value(row_aggregates[model], "bertscore_f1_mean") for model in models]
+                for model in models:
+                    aggregate = row_aggregates[model]
+                    cells.append(
+                        _metric_cell(
+                            aggregate,
+                            metric_kind,
+                            colors,
+                            bold_first=_is_row_best(_metric_value(aggregate, "bertscore_f1_mean"), bert_values),
+                        )
+                    )
+            lines.append(" & ".join(cells) + r" \\")
+
+    lines.extend(
+        [
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"\end{table}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _group_modality_records(
+    metrics: list[Mapping[str, Any]],
+    *,
+    model: str,
+    task_category: str,
+    question_type: str,
+    generation_type: str,
+    modality_combination_name: str,
+) -> list[Mapping[str, Any]]:
+    return [
+        record
+        for record in metrics
+        if record.get("metric_group") == "modality_ablation"
+        and clean_text(record.get("model_display_name")) == model
+        and clean_text(record.get("task_category")) == task_category
+        and clean_text(record.get("question_type")) == question_type
+        and clean_text(record.get("generation_type")) == generation_type
+        and clean_text(record.get("modality_combination_name")) == modality_combination_name
+    ]
+
+
+def _group_modality_task_categories(
+    metrics: list[Mapping[str, Any]],
+    *,
+    model: str,
+    group: Mapping[str, str],
+    task_order: list[str],
+    modality_names: list[str],
+) -> list[str]:
+    out: list[str] = []
+    for task in task_order:
+        if any(
+            _group_modality_records(
+                metrics,
+                model=model,
+                task_category=task,
+                question_type=group["question_type"],
+                generation_type=group["generation_type"],
+                modality_combination_name=modality_name,
+            )
+            for modality_name in modality_names
+        ):
+            out.append(task)
+    return out
+
+
+def _modality_ablation_table(metrics_blob: Mapping[str, Any], cfg: Mapping[str, Any]) -> str:
+    metrics = list(metrics_blob.get("metrics") or [])
+    if any("repeat_id" in record for record in metrics):
+        raise ValueError("metrics.json is in the old repeat-level format. Rerun score_vqa_predictions.py.")
+    all_tables_cfg = dict(cfg.get("tables") or {})
+    table_cfg = dict(all_tables_cfg.get("modality_ablation") or {})
+    if not table_cfg:
+        return ""
+    colors = _global_colors(cfg)
+    display_cfg = dict(cfg.get("display_names") or {})
+    model_display = dict(display_cfg.get("models") or {})
+    task_display = dict(display_cfg.get("task_categories") or {})
+    modality_display = dict(display_cfg.get("modality_combinations") or {})
+    model = clean_text(table_cfg.get("model_display_name"))
+    if not model:
+        raise ValueError("tables.modality_ablation.model_display_name must be populated.")
+    model_label = _model_metadata(model_display, model)["name"]
+    modality_names = [clean_text(key) for key in table_cfg.get("modality_combination_names", []) if clean_text(key)]
+    if not modality_names:
+        modality_names = [clean_text(key) for key in modality_display.keys() if clean_text(key)]
+    task_order = [clean_text(key) for key in table_cfg.get("task_categories", []) if clean_text(key)]
+    if not task_order:
+        task_order = _task_order(metrics, task_display)
+
+    group_blocks: list[tuple[Mapping[str, str], list[str]]] = []
+    for group in MAIN_GROUPS:
+        group_tasks = _group_modality_task_categories(
+            metrics,
+            model=model,
+            group=group,
+            task_order=task_order,
+            modality_names=modality_names,
+        )
+        if group_tasks:
+            group_blocks.append((group, group_tasks))
+    if not group_blocks:
+        return ""
+
+    column_spec = "l|" + "|".join("c" * len(tasks) for _, tasks in group_blocks)
+    group_header_cells: list[str] = [r"\multicolumn{1}{l}{}"]
+    task_header_cells: list[str] = [r"\textbf{Modality}"]
+    for block_index, (group, tasks) in enumerate(group_blocks):
+        metric_label = (
+            r"Accuracy/"
+            + r"\textcolor[HTML]{"
+            + clean_text(colors.get("f1", "2563EB"))
+            + r"}{F1}"
+            if group["metric"] == "mcq"
+            else r"BERT-F1"
+        )
+        group_header_cells.append(
+            r"\multicolumn{"
+            + str(len(tasks))
+            + r"}{c}{\textbf{"
+            + _latex_escape(_group_label(group, display_cfg))
+            + r"} \textnormal{("
+            + metric_label
+            + r")}}"
+        )
+        task_header_cells.extend(r"\textbf{" + _latex_escape(task_display.get(task, task)) + r"}" for task in tasks)
+
+    lines = [
+        r"\begin{table}[t]",
+        r"\caption{VQA modality ablation for "
+        + _latex_escape(model_label)
+        + r" on matched base questions from cases with pathology and radiology features. MCQ cells report accuracy and macro-F1; open-ended cells report BERTScore F1.}",
+        r"\label{tab:modality_ablation}",
+        r"\centering",
+        r"\small",
+        r"\setlength{\tabcolsep}{5pt}",
+        r"\renewcommand{\arraystretch}{1.18}",
+        r"\providecommand{\cellmetric}[3]{\begin{tabular}{@{}c@{}}#1\\[-0.12em]\textcolor[HTML]{#3}{#2}\end{tabular}}",
+        r"\providecommand{\bertcell}[1]{#1}",
+        r"\begin{tabular}{"
+        + column_spec
+        + r"}",
+        r"\toprule",
+        r"\rowcolor[HTML]{"
+        + clean_text(colors.get("header_bg", "F3F6FA"))
+        + r"}",
+        " & ".join(group_header_cells) + r" \\",
+        r"\rowcolor[HTML]{"
+        + clean_text(colors.get("header_bg", "F3F6FA"))
+        + r"}",
+        " & ".join(task_header_cells) + r" \\",
+        _colored_hline(colors),
+        r"\noalign{\vskip 0.28em}",
+    ]
+
+    for modality_name in modality_names:
+        cells = [r"\textbf{" + _latex_escape(modality_display.get(modality_name, modality_name)) + r"}"]
+        for group, group_tasks in group_blocks:
+            task_aggregates: dict[str, dict[str, Any] | None] = {}
+            for task in group_tasks:
+                records = _group_modality_records(
+                    metrics,
+                    model=model,
+                    task_category=task,
+                    question_type=group["question_type"],
+                    generation_type=group["generation_type"],
+                    modality_combination_name=modality_name,
+                )
+                task_aggregates[task] = _aggregate_records(records, group["metric"])
+            if group["metric"] == "mcq":
+                for task in group_tasks:
+                    modality_aggregates = {
+                        candidate_modality: _aggregate_records(
+                            _group_modality_records(
+                                metrics,
+                                model=model,
+                                task_category=task,
+                                question_type=group["question_type"],
+                                generation_type=group["generation_type"],
+                                modality_combination_name=candidate_modality,
+                            ),
+                            group["metric"],
+                        )
+                        for candidate_modality in modality_names
+                    }
+                    acc_values = [_metric_value(aggregate, "accuracy") for aggregate in modality_aggregates.values()]
+                    f1_values = [_metric_value(aggregate, "f1_macro") for aggregate in modality_aggregates.values()]
+                    aggregate = task_aggregates[task]
+                    cells.append(
+                        _metric_cell(
+                            aggregate,
+                            group["metric"],
+                            colors,
+                            bold_first=_is_row_best(_metric_value(aggregate, "accuracy"), acc_values),
+                            bold_second=_is_row_best(_metric_value(aggregate, "f1_macro"), f1_values),
+                            show_stdev=False,
+                        )
+                    )
+            else:
+                for task in group_tasks:
+                    modality_aggregates = {
+                        candidate_modality: _aggregate_records(
+                            _group_modality_records(
+                                metrics,
+                                model=model,
+                                task_category=task,
+                                question_type=group["question_type"],
+                                generation_type=group["generation_type"],
+                                modality_combination_name=candidate_modality,
+                            ),
+                            group["metric"],
+                        )
+                        for candidate_modality in modality_names
+                    }
+                    bert_values = [_metric_value(aggregate, "bertscore_f1_mean") for aggregate in modality_aggregates.values()]
+                    aggregate = task_aggregates[task]
+                    cells.append(
+                        _metric_cell(
+                            aggregate,
+                            group["metric"],
+                            colors,
+                            bold_first=_is_row_best(_metric_value(aggregate, "bertscore_f1_mean"), bert_values),
+                            show_stdev=False,
+                        )
+                    )
+        lines.append(" & ".join(cells) + r" \\")
+
+    lines.extend(
+        [
+            r"\bottomrule",
+            r"\end{tabular}",
             r"\end{table}",
             "",
         ]
@@ -522,7 +987,9 @@ def _preview_document(table_files: list[str]) -> str:
             r"\usepackage{booktabs}",
             r"\usepackage[table]{xcolor}",
             r"\usepackage{array}",
+            r"\usepackage{fontawesome5}",
             r"\usepackage{graphicx}",
+            r"\usepackage{multirow}",
             r"\usepackage{caption}",
             r"\begin{document}",
             *imports,
@@ -561,15 +1028,30 @@ def main() -> None:
 
     metrics_blob = json.loads(metrics_path.read_text(encoding="utf-8"))
     main_table = _main_result_table(metrics_blob, table_dict)
+    cancer_table = _cancer_result_table(metrics_blob, table_dict)
+    modality_ablation_table = _modality_ablation_table(metrics_blob, table_dict)
     main_table_path = tables_dir / "main_result.tex"
+    cancer_table_path = tables_dir / "cancer_result.tex"
+    modality_ablation_path = tables_dir / "modality_ablation.tex"
     preview_path = tables_dir / "preview_tables.tex"
     _write_text_atomic(main_table_path, main_table)
-    _write_text_atomic(preview_path, _preview_document([main_table_path.name]))
+    table_files = [main_table_path.name]
+    if cancer_table:
+        _write_text_atomic(cancer_table_path, cancer_table)
+        table_files.append(cancer_table_path.name)
+    if modality_ablation_table:
+        _write_text_atomic(modality_ablation_path, modality_ablation_table)
+        table_files.append(modality_ablation_path.name)
+    _write_text_atomic(preview_path, _preview_document(table_files))
     _render_preview_pdf(preview_path)
 
     print(f"Metrics path: {metrics_path}")
     print(f"Tables dir: {tables_dir}")
     print(f"Wrote: {main_table_path}")
+    if cancer_table:
+        print(f"Wrote: {cancer_table_path}")
+    if modality_ablation_table:
+        print(f"Wrote: {modality_ablation_path}")
     print(f"Wrote: {preview_path}")
     print(f"Rendered: {preview_path.with_suffix('.pdf')}")
 

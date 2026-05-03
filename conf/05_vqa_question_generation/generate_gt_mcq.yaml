@@ -30,16 +30,33 @@ sampling:
   seed: 42
   splits:
     - train
-  # Radiology-bearing cases are rare; when enabled, keep any base question whose
-  # source case has radiology features, then sample only from the no-radiology majority.
+    - val
+  # Radiology-bearing cases are rare; when enabled, keep any semantic question
+  # that has a radiology row, then sample only from the no-radiology majority.
   protect_radiology_questions: true
-  default_keep_ratio: 1.0
-  task_category_keep_ratios:
-    mutation: 0.6
-    pathologic_t: 0.4
-    pathologic_n: 0.4
-    stage: 0.6
-  task_id_keep_ratios: {}
+  # Ratios apply independently per task category and modality combination.
+  # Supported modality combinations are all_available, path_only, radiology_only.
+  task_category_modality_keep_ratios:
+    mutation:
+      all_available: 0.8
+      path_only: 0.3
+      radiology_only: 1
+    stage:
+      all_available: 0.7
+      path_only: 0.3
+      radiology_only: 1
+    grade:
+      all_available: 1.0
+      path_only: 0.4
+      radiology_only: 1
+    stage_component:
+      all_available: 0.5
+      path_only: 0.2
+      radiology_only: 1
+    joint_profile:
+      all_available: 0.6
+      path_only: 0.3
+      radiology_only: 1
 
 default_modality_combinations:
   - name: all_available
@@ -240,16 +257,16 @@ boolean_tasks:
     true_answer_template: "{gene} mutation present"
     false_answer_template: "{gene} mutation absent"
     choice_count: 2
+    # Applies within each project/gene/split. Keeps at most this many
+    # mutation-absent questions per mutation-present question in train/val/test.
     max_false_per_true: 1.0
-    modality_combination_overrides:
-      - name: all_available
-        use_pathology: must_have             # path must have, other use if avail
-        use_radiology: use_if_avail
-        use_dnam: use_if_avail
-        use_rna: use_if_avail
 
-      - name: path_only
-        use_pathology: must_have             # path must have
-        use_radiology: not_include
-        use_dnam: not_include
-        use_rna: not_include
+joint_profile_tasks:
+  - enabled: true
+    task_category: joint_profile
+    task_id: stage_mutation
+    task_id_template: "stage_{source_column}"
+    stage_task_id: pathologic_stage
+    mutation_task_category: mutation
+    max_questions_per_case: 2
+    question_template: Which combined AJCC pathologic stage and mutation profile matches this case?
