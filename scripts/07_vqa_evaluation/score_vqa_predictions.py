@@ -22,6 +22,8 @@ if str(SRC) not in sys.path:
 from kidney_vlm.repo_root import find_repo_root
 from kidney_vlm.script_config import load_script_cfg
 from kidney_vlm.vqa.eval_gpt import (
+    _base_metric_record,
+    _metric_values,
     add_bertscore_columns,
     build_flat_metric_records,
     parse_model_response,
@@ -31,6 +33,9 @@ from kidney_vlm.vqa.stage_config import clean_text
 
 ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
+
+MODALITY_ABLATION_COMBOS = ("all_available", "path_only", "radiology_only")
+UNIFIED_PATH = ROOT / "data/registry/unified.parquet"
 
 METRIC_ID_COLUMNS = [
     "metric_group",
@@ -140,6 +145,78 @@ def _reparse_predictions(predictions_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _artifact_populated(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple, set)):
+        return any(clean_text(item) for item in value)
+    if hasattr(value, "tolist"):
+        return _artifact_populated(value.tolist())
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    text = clean_text(value)
+    return bool(text) and text.lower() not in {"none", "nan", "null", "[]"}
+
+
+def _path_radiology_patient_ids() -> set[str]:
+    columns = ["patient_id", "pathology_tile_embedding_paths", "radiology_embedding_paths"]
+    unified = pd.read_parquet(UNIFIED_PATH, columns=columns)
+    mask = unified["pathology_tile_embedding_paths"].map(_artifact_populated) & unified[
+        "radiology_embedding_paths"
+    ].map(_artifact_populated)
+    return set(unified.loc[mask, "patient_id"].astype(str))
+
+
+def _modality_ablation_rows(predictions_df: pd.DataFrame, path_radiology_patient_ids: set[str]) -> pd.DataFrame:
+    frame = predictions_df[
+        predictions_df["case_id"].astype(str).isin(path_radiology_patient_ids)
+        & predictions_df["modality_combination_name"].astype(str).isin(MODALITY_ABLATION_COMBOS)
+    ].copy()
+    frame["base_question_id"] = frame["base_question_id"].astype(str)
+    frame["modality_combination_name"] = frame["modality_combination_name"].astype(str)
+
+    matched_groups: list[pd.DataFrame] = []
+    for _, group in frame.groupby(["question_type", "generation_type", "task_category"], dropna=False, sort=True):
+        combo_sets = group.groupby("base_question_id")["modality_combination_name"].agg(set)
+        matched_base_ids = combo_sets[
+            combo_sets.map(lambda combos: set(MODALITY_ABLATION_COMBOS).issubset(combos))
+        ].index
+        if len(matched_base_ids):
+            matched_groups.append(group[group["base_question_id"].isin(matched_base_ids)])
+    if not matched_groups:
+        return frame.iloc[0:0].copy()
+    return pd.concat(matched_groups, ignore_index=True)
+
+
+def build_modality_ablation_records(
+    predictions_df: pd.DataFrame,
+    *,
+    model_display_name: str,
+    backend: str,
+    path_radiology_patient_ids: set[str],
+) -> list[dict[str, Any]]:
+    frame = _modality_ablation_rows(predictions_df, path_radiology_patient_ids)
+    records: list[dict[str, Any]] = []
+    group_columns = ["question_type", "generation_type", "task_category", "modality_combination_name"]
+    for group_values, group in frame.groupby(group_columns, dropna=False, sort=True):
+        dimension_values = {
+            column: str(value)
+            for column, value in zip(group_columns, group_values, strict=True)
+        }
+        record = _base_metric_record(
+            metric_group="modality_ablation",
+            model_display_name=model_display_name,
+            backend=backend,
+            values=dimension_values,
+        )
+        record.update(_metric_values(group))
+        records.append(record)
+    return records
+
+
 def _run_payload(
     *,
     score_cfg: Mapping[str, Any],
@@ -238,6 +315,7 @@ def main() -> None:
         scored_predictions,
         dict(dict(score_dict.get("metrics") or {}).get("bert_score") or {}),
     )
+    path_radiology_patient_ids = _path_radiology_patient_ids()
 
     per_repeat_records: list[dict[str, Any]] = []
     model_columns = ["model_display_name", "backend", "repeat_id"]
@@ -253,6 +331,14 @@ def main() -> None:
             group,
             model_display_name=model_display_name,
             backend=backend,
+        )
+        records.extend(
+            build_modality_ablation_records(
+                group,
+                model_display_name=model_display_name,
+                backend=backend,
+                path_radiology_patient_ids=path_radiology_patient_ids,
+            )
         )
         for record in records:
             record["repeat_id"] = repeat_id

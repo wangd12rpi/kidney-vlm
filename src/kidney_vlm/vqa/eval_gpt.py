@@ -782,8 +782,12 @@ def build_flat_metric_records(
         ("by_modality_combination_name", ["modality_combination_name"]),
         ("by_project_id", ["project_id"]),
         (
-            "core_slice",
+            "main_table",
             ["question_type", "generation_type", "task_category", "modality_combination_name"],
+        ),
+        (
+            "cancer_table",
+            ["question_type", "generation_type", "project_id", "modality_combination_name"],
         ),
     ]
     for metric_group, group_columns in group_specs:

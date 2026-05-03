@@ -1,0 +1,66 @@
+name: caption_condensed_mcq_vqa
+source_registry_path: ${project.root_dir}/data/registry/unified.parquet
+condensed_caption_path: ${project.root_dir}/data/vqa/condensed_caption.parquet
+output_parquet_path: ${project.root_dir}/data/vqa/caption_condensed_mcq_questions.parquet
+full_output_parquet_path: ${project.root_dir}/data/vqa/caption_condensed_mcq_questions_full.parquet
+seed: 42
+print_first_n: 5
+show_progress: true
+
+radiology_png_root: data/radiology_png
+max_test_radiology_images: 6
+populate_test_genomics_text_summaries: true
+require_test_pathology_roi_png_dir: true
+require_test_radiology_view_png_dir: true
+require_test_genomics_text_summaries: true
+dnam_text_summary_max_beta_values: 50000
+rna_text_summary_max_top_genes: 8
+
+distractors:
+  pool_mode: same_project       # same_project | global
+  use_bertscore: false
+  candidate_pull_count: 6
+  required_wrong_options: 3
+
+sampling:
+  enabled: true
+  seed: 42
+  split: train
+  modality_keep_ratios:
+    all_available: 0.7
+    path_only: 0.3
+    radiology_only: 0.3
+
+bert_score:
+  model_type: microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext
+  num_layers: 9
+  lang: en
+  batch_size: 8
+  max_length: 512
+  rescale_with_baseline: false
+  use_fast_tokenizer: true
+
+tasks:
+  - enabled: true
+    section_key: radiology_findings
+    task_category: caption_radiology
+    task_id: radiology_findings
+    question: Which radiology finding best matches this case?
+
+  - enabled: true
+    section_key: pathology_findings
+    task_category: caption_pathology
+    task_id: pathology_findings
+    question: Which pathology finding best matches this case?
+
+  - enabled: true
+    section_key: genomic_findings
+    task_category: caption_genomics
+    task_id: genomic_findings
+    question: Which genomic finding best matches this case?
+
+  - enabled: true
+    section_key: integrated_interpretation
+    task_category: caption_integrated
+    task_id: integrated_interpretation
+    question: Which integrated interpretation best matches this case?

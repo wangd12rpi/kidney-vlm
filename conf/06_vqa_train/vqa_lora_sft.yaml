@@ -15,7 +15,7 @@ ddp: false
 seed: 42
 
 dataset:
-  vqa_parquet_path: ${project.root_dir}/data/vqa/merged_full_vqa.parquet
+  vqa_parquet_path: ${project.root_dir}/data/vqa/merged_vqa.parquet
   train_split: train
   validation_split: val
   # Empty lists mean "all values". Modality-dropout rows are kept as long as

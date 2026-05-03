@@ -1,0 +1,67 @@
+run:
+  resume: true
+  overwrite: false
+  save_every: 10
+
+data:
+  input_parquet_path: scripts/mcq_from_caption_gen_ahnaf/caption_all.parquet
+  output_parquet_path: data/vqa/condensed_caption.parquet
+
+filters:
+  split:
+    enabled: false
+    values:
+      - test
+  project_id:
+    enabled: false
+    values:
+      - TCGA-BRCA
+  caption_contains:
+    enabled: false
+    values: []
+  first_n:
+    enabled: false
+    value: 20
+
+
+
+azure:
+  endpoint: "https://azurefoundry-dannong.cognitiveservices.azure.com/"
+  api_key_env: AZURE_OPENAI_API_KEY
+  api_version: "2025-04-01-preview"
+  deployment: "gpt-5.4"
+  max_completion_tokens: 800
+  temperature: 1
+  reasoning_effort: minimal
+  max_retries: 1
+  retry_sleep_seconds: 2.0
+
+prompt:
+  max_words_per_section: 20
+  contrast_examples:
+    count: 3
+  system_prompt: |
+    You extract contrastive oncology case fingerprints.
+    Return strict JSON only.
+  user_template: |
+    Target case {case_id} is from {project_id}.
+    The three other captions are different cases from the same TCGA project.
+
+    Use the other cases only as contrast examples. Do not summarize them.
+    For each output key, write the target-case finding that is most unique relative to the other three cases.
+    Prefer concrete location, extent, enhancement pattern, architecture, necrosis, inflammation, named mutations, subtype calls, and pathway signals.
+    Omit diagnosis-level or boilerplate facts if they also appear in the other cases.
+    Omit uncertainty, limitations, absent-modality statements, and "not enough information" phrases.
+    Each value must be at most {max_words} words.
+    If the target caption has no concrete finding for a key, return an empty string for that key.
+    
+    Return exactly these JSON keys:
+    radiology_findings, pathology_findings, genomic_findings, integrated_interpretation
+
+    Target caption:
+    ```text
+    {target_caption}
+    ```
+
+    Other same-project captions for contrast only:
+    {other_case_captions}

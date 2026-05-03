@@ -1,0 +1,26 @@
+name: fix_caption_qa
+source_legacy_vqa_path: ${project.root_dir}/data/vqa_legacy/captions_mcq_oe_questions.parquet
+source_registry_path: ${project.root_dir}/data/registry/unified.parquet
+output_parquet_path: ${project.root_dir}/data/vqa/caption_qa_questions.parquet
+full_output_parquet_path: ${project.root_dir}/data/vqa/caption_qa_questions_full.parquet
+seed: 42
+print_first_n: 5
+show_progress: true
+
+radiology_png_root: data/radiology_png
+max_test_radiology_images: 6
+populate_test_genomics_text_summaries: true
+require_test_pathology_roi_png_dir: true
+require_test_radiology_view_png_dir: true
+require_test_genomics_text_summaries: true
+dnam_text_summary_max_beta_values: 50000
+rna_text_summary_max_top_genes: 8
+
+sampling:
+  enabled: true
+  seed: 42
+  split: train
+  modality_keep_ratios:
+    all_available: 1.0
+    path_only: 0.4
+    radiology_only: 0.4
