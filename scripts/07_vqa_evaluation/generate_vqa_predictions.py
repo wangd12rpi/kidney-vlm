@@ -10,6 +10,7 @@ import random
 import sys
 import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -381,6 +382,49 @@ def _row_repeat_count(row: Mapping[str, Any], repeats_cfg: Mapping[str, Any]) ->
     return repeat_count if modality_combo in repeated_combos else 1
 
 
+def _modality_ablation_cfg(eval_cfg: Mapping[str, Any]) -> dict[str, Any]:
+    cfg = dict(eval_cfg.get("modality_ablation") or {})
+    if not bool(cfg.get("enabled", False)):
+        return {"enabled": False, "modality_combination_names": set(), "model_display_names": set()}
+    modality_names = {
+        clean_text(item)
+        for item in cfg.get("modality_combination_names", [])
+        if clean_text(item)
+    }
+    model_names = {
+        clean_text(item)
+        for item in cfg.get("model_display_names", [])
+        if clean_text(item)
+    }
+    if not modality_names:
+        raise ValueError("modality_ablation.modality_combination_names must be populated when enabled.")
+    if not model_names:
+        raise ValueError("modality_ablation.model_display_names must be populated when enabled.")
+    return {
+        "enabled": True,
+        "modality_combination_names": modality_names,
+        "model_display_names": model_names,
+    }
+
+
+def _filter_model_modality_ablation_rows(
+    frame: pd.DataFrame,
+    *,
+    model_cfg: Mapping[str, Any],
+    eval_cfg: Mapping[str, Any],
+) -> pd.DataFrame:
+    cfg = _modality_ablation_cfg(eval_cfg)
+    if not bool(cfg["enabled"]):
+        return frame.reset_index(drop=True)
+    model_name = clean_text(model_cfg.get("display_name"))
+    if model_name in cfg["model_display_names"]:
+        return frame.reset_index(drop=True)
+    ablation_names = set(cfg["modality_combination_names"])
+    return frame[
+        ~frame["modality_combination_name"].astype(str).isin(ablation_names)
+    ].reset_index(drop=True)
+
+
 def _expand_repeat_rows(frame: pd.DataFrame, repeats_cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
     base_rows = frame.to_dict(orient="records")
     max_repeats = int(repeats_cfg["n"])
@@ -624,8 +668,13 @@ class AzureGPTBackend:
     def generate_batch(self, *, requests: list[Mapping[str, Any]], generation_kwargs: Mapping[str, Any]) -> list[str]:
         if self.dry_run:
             return ['{"answer": "", "rationale": "dry run"}' for _ in requests]
-        return [
-            _call_azure_gpt(
+        if not requests:
+            return []
+
+        max_workers = min(len(requests), int(self.model_cfg.get("batch_size", 1) or 1))
+
+        def _generate_one(request: Mapping[str, Any]) -> str:
+            return _call_azure_gpt(
                 client=self.client,
                 azure_cfg=self.azure_cfg,
                 system_prompt=clean_text(request.get("system_prompt")),
@@ -633,8 +682,9 @@ class AzureGPTBackend:
                 image_paths=list(request.get("image_paths", [])),
                 generation_kwargs=generation_kwargs,
             )
-            for request in requests
-        ]
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            return list(executor.map(_generate_one, requests))
 
 
 class HFImageTextBackend:
@@ -988,6 +1038,7 @@ def main() -> None:
     print_first_n_outputs = _print_first_n_outputs(run_cfg)
     save_every_n_predictions = _save_every_n_predictions(run_cfg)
     repeats_cfg = _repeat_cfg(eval_dict)
+    modality_ablation_cfg = _modality_ablation_cfg(eval_dict)
     predictions_path = _predictions_path(eval_dict)
     print(f"Predictions path: {predictions_path}")
     print(
@@ -995,12 +1046,23 @@ def main() -> None:
         f"n={repeats_cfg['n']} seed={repeats_cfg['seed']} "
         f"multi-repeat combos={sorted(repeats_cfg['repeat_modality_combination_names'])}"
     )
+    if modality_ablation_cfg["enabled"]:
+        print(
+            "Model-specific modality ablation: "
+            f"combos={sorted(modality_ablation_cfg['modality_combination_names'])} "
+            f"models={sorted(modality_ablation_cfg['model_display_names'])}"
+    )
     if predictions_path.exists() and not resume_existing:
         predictions_path.unlink()
 
     for model_cfg in enabled_models:
-        model_selected_df = _filter_missing_prefix_cache_rows(
+        model_base_df = _filter_model_modality_ablation_rows(
             selected_df,
+            model_cfg=model_cfg,
+            eval_cfg=eval_dict,
+        )
+        model_selected_df = _filter_missing_prefix_cache_rows(
+            model_base_df,
             model_cfg=model_cfg,
             eval_cfg=eval_dict,
         )
@@ -1019,7 +1081,8 @@ def main() -> None:
         print("\nVQA generation model")
         print(f"  Model: {model_cfg['display_name']}")
         print(f"  Backend: {model_cfg['backend']}")
-        print(f"  Rows skipped from missing cached prefixes: {len(selected_df) - len(model_selected_df)}")
+        print(f"  Rows skipped by model ablation filter: {len(selected_df) - len(model_base_df)}")
+        print(f"  Rows skipped from missing cached prefixes: {len(model_base_df) - len(model_selected_df)}")
         print(f"  Prediction repeats selected: {len(repeated_records)}")
         print(f"  Rows skipped from existing predictions: {len(repeated_records) - len(row_records)}")
         print(f"  Rows to evaluate: {len(row_records)}")
