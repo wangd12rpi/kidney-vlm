@@ -1,4 +1,4 @@
-name: vqa_generate_predictions
+name: final_run
 
 run:
   name: experiment_new_condensed_mcq
@@ -28,11 +28,26 @@ prefix_cache:
 
 
 models:
+
+  gemma-4-e4b:
+    enabled: true
+    backend: hf_image_text_to_text
+    model_name_or_path: google/gemma-4-E4B-it
+    prompt_profile: baseline
+    trust_remote_code: true
+    load_in_8bit: true
+    torch_dtype: bfloat16
+    autocast_dtype: float16
+    attn_implementation: sdpa
+    device: cuda:0
+    batch_size: 6
+    enable_thinking: false
+
   oncovlm_qwen_lora: 
     enabled: true
     backend: oncovlm_lora
     model_name_or_path: Qwen/Qwen3.5-9B
-    lora_adapter_path: outputs/oncovlm/qwen3_5_9b_merged_full_vqa_n90422_r8_projfrozen_20260429_185618_est/lora_adapter
+    lora_adapter_path: outputs/oncovlm/qwen3_5_9b_merged_vqa_n90641_r8_projfrozen_20260503_213331_est/lora_adapter
     prompt_profile: tuned_oncovlm
     trust_remote_code: true
     load_in_8bit: true
@@ -44,24 +59,6 @@ models:
     enable_thinking: false
 
 
-  gpt_5_4:
-    enabled: true
-    backend: azure_openai_gpt
-    model_name_or_path: gpt-5.4
-    prompt_profile: baseline
-    batch_size: 1
-    azure_openai:
-      endpoint: "https://azurefoundry-dannong.cognitiveservices.azure.com/"
-      deployment: "gpt-5.4"
-      api_version: 2024-12-01-preview
-      api_key_env: AZURE_OPENAI_API_KEY
-      max_retries: 3
-      retry_sleep_seconds: 1.0
-      reasoning_effort: none
-      verbosity: low
-    generation:
-      temperature: 1.0
-      top_p: 1.0
 
   medgemma-4b-it:
     enabled: true
@@ -73,7 +70,7 @@ models:
     torch_dtype: bfloat16
     attn_implementation: sdpa
     device: cuda:0
-    batch_size: 8
+    batch_size: 10
 
   oncovlm_qwen_no_finetune:
     enabled: true
@@ -89,20 +86,26 @@ models:
     batch_size: 16
     enable_thinking: false
 
-
-  oncovlm_gemma4_no_finetune:
-    enabled: false
-    backend: oncovlm_projector
-    model_name_or_path: google/gemma-4-E4B-it
+  gpt_5_4:
+    enabled: true
+    backend: azure_openai_gpt
+    model_name_or_path: gpt-5.4
     prompt_profile: baseline
-    trust_remote_code: true
-    load_in_8bit: true
-    torch_dtype: bfloat16
-    autocast_dtype: float16
-    attn_implementation: sdpa
-    device: cuda:0
-    batch_size: 16
-    enable_thinking: false
+    batch_size: 8
+    azure_openai:
+      endpoint: "https://azurefoundry-dannong.cognitiveservices.azure.com/"
+      deployment: "gpt-5.4"
+      api_version: 2024-12-01-preview
+      api_key_env: AZURE_OPENAI_API_KEY
+      max_retries: 3
+      retry_sleep_seconds: 1.0
+      reasoning_effort: none
+      verbosity: low
+    generation:
+      temperature: 1.0
+      top_p: 1.0
+
+
 
 filters:
   split:
@@ -137,19 +140,30 @@ filters:
   #   sample_seed: 17
 
 sampling:
-  enabled: true
-  ratio: 0.001
-  min_per_group: 1
+  enabled: false
+  ratio: 0.4
+  min_per_group: 16
   seed: 42
+  protect_radiology_available_cases: true
+  protect_split: test
   group_by:
     - question_type
     - generation_type
     - task_category
-    - task_id
-    - modality_combination_name
+    # - task_id
+    # - modality_combination_name
+    - project_id
+
+modality_ablation:
+  enabled: true
+  modality_combination_names:
+    - path_only
+    - radiology_only
+  model_display_names:
+    - oncovlm_qwen_lora
 
 repeats:
-  n: 1
+  n: 3
   seed: 42
   repeat_modality_combination_names:
     - all_available

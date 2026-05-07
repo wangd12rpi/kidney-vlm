@@ -1,16 +1,19 @@
 name: vqa_make_tables
 
 run:
-  name: actual_run
+  name: experiment_new_condensed_mcq
   output_root: ${project.root_dir}/results
   metrics_filename: metrics.json
+  prediction_filename: predictions.parquet
   tables_dirname: tables
 
 display_names:
   question_groups:
-    mcq_from_ground_truth: MCQ from ground truth
-    mcq_from_caption: MCQ from caption
-    qa_from_caption: Open-ended from caption
+    mcq_from_ground_truth: Universal MCQ
+    mcq_from_caption: Case-specific MCQ
+    qa_from_caption: Case specific open-ended
+    mcq_all: MCQ
+    qa_all: Open-ended
   modality_combinations:
     all_available: All available
     path_only: Pathology only
@@ -18,85 +21,339 @@ display_names:
   models:
     gpt_5_4:
       name: GPT-5.4
-      backbone: GPT-5.4
+      backbone: ""
       finetuned: false
+      use_projector: false
     medgemma-4b-it:
       name: MedGemma
-      backbone: MedGemma-4B
+      backbone: 4B
       finetuned: false
+      use_projector: false
+    gemma-4-e4b:
+      name: Gemma-4
+      backbone: "E4B"
+      finetuned: false
+      use_projector: false
     oncovlm_qwen_no_finetune:
-      name: OncoVLM-base
+      name: OncoVLM
       backbone: Qwen-3.5-9B
       finetuned: false
+      use_projector: true
     oncovlm_qwen_lora:
       name: OncoVLM
       backbone: Qwen-3.5-9B
       finetuned: true
-    oncovlm_gemma4_no_finetune:
-      name: OncoVLM-base
-      backbone: Gemma-4-E4B
-      finetuned: false
+      use_projector: true
+
   task_categories:
     mutation: Mutation
     grade: Tumor grade
     stage: Tumor stage
     stage_component: AJCC T/N
+    joint_profile: Joint profile
     concordance: Concordance
     integrated_dx: Integrated diagnosis
     molecular_pathway: Molecular pathway
     path_feature: Pathology feature
     rad_characterization: Radiology characterization
+    caption_radiology: Radiology findings   # do not change names of the caption_* tasks
+    caption_pathology: Pathology findings
+    caption_genomics: Genomics findings
+    caption_integrated: Integrated findings
     concordance_uncertainty: Concordance + uncertainty
     cross_modal_synthesis: Cross-modal synthesis
     pathology_description: Pathology description
     radiology_description: Radiology description
-  project_ids:
+  projects:
+    TCGA-ACC: Adrenal cortex (ACC)
+    TCGA-BLCA: Bladder (BLCA)
     TCGA-BRCA: Breast (BRCA)
-    # TCGA-GBM: Brain (GBM)
+    TCGA-CESC: Cervix (CESC)
+    TCGA-CHOL: Bile duct (CHOL)
+    TCGA-COAD: Colon (COAD)
+    TCGA-DLBC: Lymphoma (DLBC)
+    TCGA-ESCA: Esophagus (ESCA)
+    TCGA-GBM: Brain (GBM)
+    TCGA-HNSC: Head and neck (HNSC)
+    TCGA-KICH: Kidney (KICH)
     TCGA-KIRC: Kidney (KIRC)
     TCGA-KIRP: Kidney (KIRP)
     TCGA-LGG: Brain (LGG)
+    TCGA-LIHC: Liver (LIHC)
     TCGA-LUAD: Lung (LUAD)
-    # TCGA-OV: Ovary (OV)
+    TCGA-LUSC: Lung (LUSC)
+    TCGA-MESO: Mesothelioma (MESO)
+    TCGA-OV: Ovary (OV)
+    TCGA-PAAD: Pancreas (PAAD)
+    TCGA-PCPG: Adrenal neuroendocrine (PCPG)
+    TCGA-PRAD: Prostate (PRAD)
+    TCGA-READ: Rectum (READ)
+    TCGA-SARC: Sarcoma (SARC)
+    TCGA-SKCM: Melanoma (SKCM)
+    TCGA-STAD: Stomach (STAD)
+    TCGA-TGCT: Testis (TGCT)
+    TCGA-THCA: Thyroid (THCA)
+    TCGA-THYM: Thymus (THYM)
     TCGA-UCEC: Uterus (UCEC)
+    TCGA-UCS: Uterine carcinosarcoma (UCS)
+    TCGA-UVM: Uveal melanoma (UVM)
 
 colors:
-  f1: 2563EB
-  bert: 7C3AED
-  header_bg: F3F6FA
-  group_bg: EFF6FF
-  mean_bg: F8FAFC
+  f1: 3661AB
+  bert: "000000"
+  model_header_bg: F3F5FC
+
+  subheading_bg: F3F5FC
+  os_baseline_model_bg: EFF1FC
+  selected_model_bg: EBEEFC
+
   stdev: 64748B
   rule: "000000"
+
+layout:
+  selected_models:
+    - oncovlm_qwen_lora
 
 tables:
   main_result:
     modality_combination_name: all_available
+    caption: >-
+      OncoTriad-QA benchmark results by task category on the all-available modality setting.
+      Values are mean and standard deviation over 3 separate run, and using different seeds on non-GPT model. 
+    task_column_width: fill
+    result_column_width: 1.9cm
     model_order:
       - gpt_5_4
       - medgemma-4b-it
+      - gemma-4-e4b
       - oncovlm_qwen_no_finetune
-      - oncovlm_gemma4_no_finetune
-      - _vrule
       - oncovlm_qwen_lora
 
   cancer_result:
     modality_combination_name: all_available
+    caption: >-
+      VQA benchmark results by cancer type on the all-available modality setting.
+      Each cancer is split into MCQ and open-ended rows.
+      MCQ cells report Accuracy\% and macro-F1; open-ended cells report BERTScore F1 and ROUGE-L F1.
+      Values are mean and standard deviation over inference repeats when available.
+    cancer_column_width: fill
+    group_column_width: 1.1cm
+    result_column_width: 1.8cm
+    # Unique cases in the current predictions parquet, sorted largest to smallest.
+    # Comment/uncomment entries here to choose which cancer rows appear in Table 2.
+    projects_to_show:
+      - TCGA-BRCA  # n=67
+      - TCGA-KIRC  # n=53
+      - TCGA-LGG   # n=49
+      # - TCGA-UCEC  # n=43
+      # - TCGA-LUSC  # n=41
+      # - TCGA-GBM   # n=36
+      - TCGA-THCA  # n=33
+      # - TCGA-LUAD  # n=31
+      # - TCGA-PRAD  # n=31
+      - TCGA-LIHC  # n=30
+      # - TCGA-HNSC  # n=30
+      # - TCGA-SKCM  # n=28
+      # - TCGA-SARC  # n=26
+      # - TCGA-BLCA  # n=26
+      # - TCGA-KIRP  # n=21
+      # - TCGA-COAD  # n=19
+      # - TCGA-CESC  # n=18
+      # - TCGA-STAD  # n=15
+      # - TCGA-OV    # n=13
+      # - TCGA-THYM  # n=11
+      # - TCGA-PAAD  # n=11
+      # - TCGA-ACC   # n=9
+      # - TCGA-TGCT  # n=8
+      # - TCGA-KICH  # n=7
+      # - TCGA-ESCA  # n=6
+      # - TCGA-READ  # n=6
+      # - TCGA-UVM   # n=5
+      # - TCGA-MESO  # n=4
+      # - TCGA-PCPG  # n=4
+      # - TCGA-UCS   # n=3
+      # - TCGA-CHOL  # n=2
+      # - TCGA-DLBC  # n=2
     model_order:
       - gpt_5_4
       - medgemma-4b-it
+      - gemma-4-e4b
       - oncovlm_qwen_no_finetune
-      - oncovlm_gemma4_no_finetune
-      - _vrule
       - oncovlm_qwen_lora
+
+
+  appendix_task_cancer_results:
+    enabled: true
+    modality_combination_name: all_available
+    caption: >-
+      Comprehensive {group_label} results by task and cancer on the all-available modality setting.
+      Each task includes up to the top {top_n_projects} cancer projects with at least {min_questions_per_cancer} questions; remaining projects are pooled as Other.
+      Cells report {metric_label}. Values are mean and standard deviation over inference repeats when available.
+    top_n_projects: 10
+    min_questions_per_cancer: 12
+    other_label: Other
+    project_column_width: fill
+    # Display order. Projects are filtered by min_questions_per_cancer, truncated by
+    # top_n_projects, and remaining projects are pooled into Other.
+    projects_by_case_count:
+      - TCGA-BRCA  # n=67
+      - TCGA-KIRC  # n=53
+      - TCGA-LGG   # n=49
+      - TCGA-UCEC  # n=43
+      - TCGA-LUSC  # n=41
+      - TCGA-GBM   # n=36
+      - TCGA-THCA  # n=33
+      - TCGA-LUAD  # n=31
+      - TCGA-PRAD  # n=31
+      - TCGA-LIHC  # n=30
+      - TCGA-HNSC  # n=30
+      - TCGA-SKCM  # n=28
+      - TCGA-SARC  # n=26
+      - TCGA-BLCA  # n=26
+      - TCGA-KIRP  # n=21
+      - TCGA-COAD  # n=19
+      - TCGA-CESC  # n=18
+      - TCGA-STAD  # n=15
+      - TCGA-OV    # n=13
+      - TCGA-THYM  # n=11
+      - TCGA-PAAD  # n=11
+      - TCGA-ACC   # n=9
+      - TCGA-TGCT  # n=8
+      - TCGA-KICH  # n=7
+      - TCGA-ESCA  # n=6
+      - TCGA-READ  # n=6
+      - TCGA-UVM   # n=5
+      - TCGA-MESO  # n=4
+      - TCGA-PCPG  # n=4
+      - TCGA-UCS   # n=3
+      - TCGA-CHOL  # n=2
+      - TCGA-DLBC  # n=2
+    model_order:
+      - gpt_5_4
+      - medgemma-4b-it
+      - gemma-4-e4b
+      - oncovlm_qwen_no_finetune
+      - oncovlm_qwen_lora
+
 
   modality_ablation:
     model_display_name: oncovlm_qwen_lora
-    task_categories:
-      - grade
-      - stage
-      - stage_component
+    caption: >-
+      VQA modality ablation for {model_label} on cases with pathology and radiology features.
+      MCQ cells report Accuracy\% and macro-F1; open-ended cells report BERTScore F1 and ROUGE-L F1.
+    modality_column_width: fill
+    modality_header_label: Input
+    result_column_width: 1.32cm
+    modality_label_overrides:
+      all_available: All
+      path_only: Path. only
+      radiology_only: Rad. only
+    # Only tasks listed here appear in Table 3.
+    task_label_overrides:
+      mutation: Mutation
+      grade: Grade
+      # stage: Stage
+      # stage_component: AJCC T/N
+      # joint_profile: Joint profile
+      caption_pathology: Path. findings
+      # caption_genomics: Genomics find.
+      caption_radiology: Rad. findings
+      caption_integrated: Integrated findings
+
+      # concordance_uncertainty: Uncert.
+      pathology_description: Path. desc.
+      radiology_description: Rad. desc.
+      cross_modal_synthesis: X-modal synth.
+
+    # task_categories:
+    #   - grade
+    #   - stage
+    #   - stage_component
     modality_combination_names:
       - all_available
       - path_only
       - radiology_only
+
+  qualitative_open_ended:
+    enabled: true
+    label: tab:qualitative_open_ended
+    caption: >-
+      Representative open-ended examples comparing GPT-5.4 and finetuned OncoVLM.
+      Red spans mark incorrect or weak GPT evidence, green spans mark OncoVLM evidence aligned with the case,
+      and green underlines mark the corresponding ground-truth evidence.
+    gpt_model: gpt_5_4
+    our_model: oncovlm_qwen_lora
+    gpt_column_label: GPT-5.4
+    our_column_label: OncoVLM
+    column_widths:
+      question: 2cm
+      gpt: 3.75cm
+      our: 3.75cm
+      gt: 3.75cm
+    tabcolsep: 4.5pt
+    arraystretch: 1.08
+    row_gap: 0.28em
+    max_chars:
+      question: 150
+      output: 260
+      gt: 260
+    colors:
+      header_bg: F3F5FC
+      question_bg: F3F5FC
+      gpt_highlight: FEE2E2
+      our_highlight: B9EDDD
+      gt_highlight: 60CAA9
+    candidates:
+      - question_id: 3840373996621070009
+        repeat_id: 0
+        task_category: cross_modal_synthesis
+        modality_combination_name: all_available
+        question_text: Synthesize pathology and genomics.
+        text_spans:
+          gpt:
+            start: spindle-cell neoplasm
+            end: gland formation
+          our:
+            start: aggressive diffuse glial
+            end: Genomically
+          gt:
+            start: high-grade diffuse glioma
+            end: reported glioma driver alterations
+        gpt_highlights:
+          - spindle-cell
+          - bland cytology
+        our_highlights:
+          - diffuse glial
+          - necrosis
+          - microvascular proliferation
+        gt_highlights:
+          - diffuse glioma
+          - necrosis
+          - microvascular proliferation
+
+      - question_id: 5005347787372600609
+        repeat_id: 1
+        task_category: pathology_description
+        modality_combination_name: all_available
+        question_text: Describe dominant histology.
+        text_spans:
+          gpt:
+            start: overall low-power appearance
+            end: infiltrate
+          our:
+            start: papillary urothelial neoplasm
+            end: examined fields
+          gt:
+            start: papillary to nested urothelial neoplasm
+            end: focal stromal
+        gpt_highlights:
+          - poorly differentiated
+          - scant
+        our_highlights:
+          - papillary urothelial neoplasm
+          - branching fronds
+          - fibrovascular cores
+        gt_highlights:
+          - papillary to nested urothelial neoplasm
+          - epithelial fronds
+          - fibrovascular stroma

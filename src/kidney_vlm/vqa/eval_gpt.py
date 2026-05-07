@@ -118,6 +118,42 @@ def _as_bool(value: Any, *, context: str) -> bool:
     raise ValueError(f"{context} must be true or false.")
 
 
+def _artifact_populated(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, float) and math.isnan(value):
+        return False
+    if isinstance(value, (list, tuple, set)):
+        return len(value) > 0
+    if hasattr(value, "tolist") and not isinstance(value, str):
+        converted = value.tolist()
+        if isinstance(converted, list):
+            return len(converted) > 0
+    text = str(value).strip()
+    return bool(text) and text.lower() not in {"none", "nan", "null", "[]"}
+
+
+def _radiology_available_case_ids(frame: pd.DataFrame, sampling_cfg: Mapping[str, Any]) -> set[str]:
+    split_name = str(sampling_cfg.get("protect_split", "test")).strip() or "test"
+    required_columns = {"case_id", "split", "use_radiology", "radiology_feature_paths", "radiology_view_png_dir"}
+    missing_columns = sorted(required_columns - set(frame.columns))
+    if missing_columns:
+        raise ValueError(
+            "sampling.protect_radiology_available_cases requires VQA columns: "
+            f"{missing_columns}"
+        )
+
+    split_frame = frame[frame["split"].astype(str).eq(split_name)]
+    if split_frame.empty:
+        return set()
+    radiology_mask = (
+        split_frame["use_radiology"].astype(bool)
+        | split_frame["radiology_feature_paths"].map(_artifact_populated)
+        | split_frame["radiology_view_png_dir"].map(_artifact_populated)
+    )
+    return set(split_frame.loc[radiology_mask, "case_id"].astype(str))
+
+
 def _allowed_modality_combo_mask(
     frame: pd.DataFrame, block: Mapping[str, Any]
 ) -> pd.Series:
@@ -255,16 +291,32 @@ def apply_group_sampling(frame: pd.DataFrame, sampling_cfg: Mapping[str, Any] | 
     if missing_columns:
         raise ValueError(f"sampling.group_by columns are missing from VQA frame: {missing_columns}")
 
+    protected_case_ids: set[str] = set()
+    if bool(cfg.get("protect_radiology_available_cases", False)):
+        protected_case_ids = _radiology_available_case_ids(frame, cfg)
+
     sampled_groups: list[pd.DataFrame] = []
     grouped = frame.groupby(group_by, sort=False, dropna=False)
     for group_index, (_, group) in enumerate(grouped):
         group = group.reset_index(drop=True)
         target = max(min_per_group, int(math.ceil(len(group) * ratio)))
         target = min(len(group), target)
-        if target >= len(group):
+        protected = (
+            group[group["case_id"].astype(str).isin(protected_case_ids)].reset_index(drop=True)
+            if protected_case_ids
+            else group.head(0)
+        )
+        candidates = (
+            group[~group["case_id"].astype(str).isin(protected_case_ids)].reset_index(drop=True)
+            if protected_case_ids
+            else group
+        )
+        candidate_target = max(0, target - len(protected))
+        if candidate_target >= len(candidates):
             sampled_groups.append(group)
             continue
-        sampled_groups.append(group.sample(n=target, random_state=seed + group_index))
+        sampled = candidates.sample(n=candidate_target, random_state=seed + group_index)
+        sampled_groups.append(pd.concat([protected, sampled], ignore_index=True))
     if not sampled_groups:
         return frame.head(0).reset_index(drop=True)
     return pd.concat(sampled_groups, ignore_index=True).sort_values(
@@ -697,6 +749,71 @@ def add_bertscore_columns(predictions_df: pd.DataFrame, bert_score_cfg: Mapping[
     return out
 
 
+def _rouge_l_tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+(?:[-_][a-z0-9]+)?", text.casefold())
+
+
+def _lcs_length(left: Sequence[str], right: Sequence[str]) -> int:
+    if not left or not right:
+        return 0
+    previous = [0] * (len(right) + 1)
+    for left_token in left:
+        current = [0] * (len(right) + 1)
+        for index, right_token in enumerate(right, start=1):
+            if left_token == right_token:
+                current[index] = previous[index - 1] + 1
+            else:
+                current[index] = max(previous[index], current[index - 1])
+        previous = current
+    return previous[-1]
+
+
+def _rouge_l_scores(candidate: str, reference: str) -> dict[str, float]:
+    candidate_tokens = _rouge_l_tokens(candidate)
+    reference_tokens = _rouge_l_tokens(reference)
+    if not candidate_tokens or not reference_tokens:
+        return {"rouge_l_precision": 0.0, "rouge_l_recall": 0.0, "rouge_l_f1": 0.0}
+    lcs = _lcs_length(candidate_tokens, reference_tokens)
+    precision = lcs / len(candidate_tokens)
+    recall = lcs / len(reference_tokens)
+    f1 = (2.0 * precision * recall / (precision + recall)) if precision + recall else 0.0
+    return {
+        "rouge_l_precision": float(precision),
+        "rouge_l_recall": float(recall),
+        "rouge_l_f1": float(f1),
+    }
+
+
+def add_rouge_l_columns(predictions_df: pd.DataFrame, rouge_l_cfg: Mapping[str, Any]) -> pd.DataFrame:
+    out = predictions_df.copy()
+    for column in ["rouge_l_precision", "rouge_l_recall", "rouge_l_f1"]:
+        if column not in out.columns:
+            out[column] = None
+
+    cfg = dict(rouge_l_cfg or {})
+    if not bool(cfg.get("enabled", True)):
+        return out
+    qa_mask = out["question_type"].astype(str).map(question_type_key).eq("qa")
+    qa_frame = out[qa_mask]
+    if qa_frame.empty:
+        return out
+
+    reference_series = qa_frame["answer"].fillna("").astype(str)
+    empty_reference_mask = reference_series.str.strip().eq("")
+    if bool(empty_reference_mask.any()):
+        bad_ids = qa_frame.loc[empty_reference_mask, "question_id"].astype(str).head(10).tolist()
+        raise ValueError(f"ROUGE-L references are empty for question_id(s): {bad_ids}")
+
+    for index, row in qa_frame.iterrows():
+        scores = _rouge_l_scores(
+            str(row.get("predicted_answer", "")).strip(),
+            str(row.get("answer", "")).strip(),
+        )
+        for column, value in scores.items():
+            out.at[index, column] = value
+    return out
+
+
 def _patch_bert_score_tokenizer_max_length(max_length: int):
     score_module = sys.modules.get("bert_score.score")
     if score_module is None or not hasattr(score_module, "get_tokenizer"):
@@ -758,12 +875,18 @@ def _metric_values(frame: pd.DataFrame) -> dict[str, Any]:
     precision_values = [float(value) for value in frame["bertscore_precision"].dropna().tolist()]
     recall_values = [float(value) for value in frame["bertscore_recall"].dropna().tolist()]
     f1_values = [float(value) for value in frame["bertscore_f1"].dropna().tolist()]
+    rouge_precision_values = [float(value) for value in frame["rouge_l_precision"].dropna().tolist()]
+    rouge_recall_values = [float(value) for value in frame["rouge_l_recall"].dropna().tolist()]
+    rouge_f1_values = [float(value) for value in frame["rouge_l_f1"].dropna().tolist()]
     return {
         "n": int(len(frame)),
         "parse_failed": int(frame["parse_status"].astype(str).eq("failed").sum()),
         "bertscore_precision_mean": _safe_mean(precision_values),
         "bertscore_recall_mean": _safe_mean(recall_values),
         "bertscore_f1_mean": _safe_mean(f1_values),
+        "rouge_l_precision_mean": _safe_mean(rouge_precision_values),
+        "rouge_l_recall_mean": _safe_mean(rouge_recall_values),
+        "rouge_l_f1_mean": _safe_mean(rouge_f1_values),
     }
 
 
@@ -788,6 +911,10 @@ def build_flat_metric_records(
         (
             "cancer_table",
             ["question_type", "generation_type", "project_id", "modality_combination_name"],
+        ),
+        (
+            "task_cancer_table",
+            ["question_type", "generation_type", "task_category", "project_id", "modality_combination_name"],
         ),
     ]
     for metric_group, group_columns in group_specs:

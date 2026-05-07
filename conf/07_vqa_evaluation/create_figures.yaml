@@ -1,0 +1,93 @@
+name: vqa_create_figures
+
+run:
+  name: experiment_new_condensed_mcq
+  output_root: ${project.root_dir}/results
+  metrics_filename: metrics.json
+  tables_dirname: tables
+
+figures:
+  radar:
+    output_name: task_radar
+    modality_combination_name: all_available
+    metric_group: main_table
+    selected_metrics:
+      mcq: f1_macro # accuracy | f1_macro | f1_weighted
+      qa: bertscore_f1_mean # bertscore_f1_mean | rouge_l_f1_mean
+    width_inches: 7.6
+    height_inches: 8
+    dpi: 320
+    radial_min: 0.0
+    radial_max: 1.0
+    radial_ticks: [0.2, 0.4, 0.6, 0.8, 1.0]
+    label_wrap_chars: 14
+    label_radius: 0.565
+    task_label_font_size: 18
+    tick_label_font_size: 10.0
+    legend_font_size: 18
+    legend_linewidth: 4
+    legend_columns: 3
+    transparent_background: true
+    font_family: Inter
+
+    models:
+      gpt_5_4:
+        name: GPT-5.4
+        color: "D4E682"
+        linewidth: 1.6
+        alpha: 0.70
+        fill_alpha: 0.00
+        zorder: 4
+      medgemma-4b-it:
+        name: MedGemma
+        color: "CE9BDC"
+        linewidth: 1.6
+        alpha: 0.62
+        fill_alpha: 0.00
+        zorder: 3
+      gemma-4-e4b:
+        name: Gemma-4
+        color: "60CAA9"
+        linewidth: 1.6
+        alpha: 0.50
+        fill_alpha: 0.00
+        zorder: 2
+      oncovlm_qwen_no_finetune:
+        name: OncoVLM-base
+        color: "3661AB"
+        linewidth: 1.6
+        alpha: 0.44
+        fill_alpha: 0.04
+        zorder: 5
+      oncovlm_qwen_lora:
+        name: OncoVLM
+        color: "3661AB"
+        linewidth: 2.0
+        alpha: 0.96
+        fill_alpha: 0.13
+        zorder: 8
+
+    task_categories:
+      mutation: Mutation
+      grade: Tumor grade
+      stage: Tumor stage
+      stage_component: AJCC T/N
+      joint_profile: Joint profile
+      caption_genomics: Genomics findings 
+      caption_integrated: Integrated findings 
+      caption_pathology: Pathology findings
+      caption_radiology: Radiology findings
+      concordance_uncertainty: Concordance + uncertainty (OE)
+      cross_modal_synthesis: Cross-modal synthesis (OE)
+      pathology_description: Pathology description (OE)
+      radiology_description: Radiology description (OE)
+
+colors:
+  background: F7F9FD
+  panel: FFFFFF
+  grid: D8E0EC
+  grid_emphasis: ADBBD1
+  label: 111827
+  muted_label: 64748B
+  accent_ring: 7C3AED
+  marker_edge: FFFFFF

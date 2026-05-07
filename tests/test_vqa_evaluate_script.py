@@ -424,6 +424,38 @@ def test_write_predictions_uses_resume_existing_as_single_switch(tmp_path) -> No
     assert pd.read_parquet(predictions_path)["question_id"].tolist() == [3]
 
 
+def test_model_modality_ablation_filter_only_keeps_ablation_for_listed_models() -> None:
+    module = _load_generate_script()
+    frame = pd.DataFrame(
+        [
+            {"question_id": 1, "modality_combination_name": "all_available"},
+            {"question_id": 2, "modality_combination_name": "path_only"},
+            {"question_id": 3, "modality_combination_name": "radiology_only"},
+        ]
+    )
+    eval_cfg = {
+        "modality_ablation": {
+            "enabled": True,
+            "modality_combination_names": ["path_only", "radiology_only"],
+            "model_display_names": ["oncovlm_qwen_lora"],
+        }
+    }
+
+    lora_rows = module._filter_model_modality_ablation_rows(
+        frame,
+        model_cfg={"display_name": "oncovlm_qwen_lora"},
+        eval_cfg=eval_cfg,
+    )
+    baseline_rows = module._filter_model_modality_ablation_rows(
+        frame,
+        model_cfg={"display_name": "medgemma-4b-it"},
+        eval_cfg=eval_cfg,
+    )
+
+    assert lora_rows["question_id"].tolist() == [1, 2, 3]
+    assert baseline_rows["question_id"].tolist() == [1]
+
+
 def test_should_generate_row_skips_missing_genomics_text_with_one_line_warning(capsys) -> None:
     module = _load_generate_script()
 

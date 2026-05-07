@@ -25,6 +25,7 @@ from kidney_vlm.vqa.eval_gpt import (
     _base_metric_record,
     _metric_values,
     add_bertscore_columns,
+    add_rouge_l_columns,
     build_flat_metric_records,
     parse_model_response,
     question_type_key,
@@ -35,6 +36,7 @@ ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 
 MODALITY_ABLATION_COMBOS = ("all_available", "path_only", "radiology_only")
+MODALITY_ABLATION_REPEAT_ID = 0
 UNIFIED_PATH = ROOT / "data/registry/unified.parquet"
 
 METRIC_ID_COLUMNS = [
@@ -57,6 +59,9 @@ VALUE_COLUMNS = {
     "bertscore_precision_mean",
     "bertscore_recall_mean",
     "bertscore_f1_mean",
+    "rouge_l_precision_mean",
+    "rouge_l_recall_mean",
+    "rouge_l_f1_mean",
 }
 
 
@@ -177,18 +182,7 @@ def _modality_ablation_rows(predictions_df: pd.DataFrame, path_radiology_patient
     ].copy()
     frame["base_question_id"] = frame["base_question_id"].astype(str)
     frame["modality_combination_name"] = frame["modality_combination_name"].astype(str)
-
-    matched_groups: list[pd.DataFrame] = []
-    for _, group in frame.groupby(["question_type", "generation_type", "task_category"], dropna=False, sort=True):
-        combo_sets = group.groupby("base_question_id")["modality_combination_name"].agg(set)
-        matched_base_ids = combo_sets[
-            combo_sets.map(lambda combos: set(MODALITY_ABLATION_COMBOS).issubset(combos))
-        ].index
-        if len(matched_base_ids):
-            matched_groups.append(group[group["base_question_id"].isin(matched_base_ids)])
-    if not matched_groups:
-        return frame.iloc[0:0].copy()
-    return pd.concat(matched_groups, ignore_index=True)
+    return frame.reset_index(drop=True)
 
 
 def build_modality_ablation_records(
@@ -291,6 +285,51 @@ def _aggregate_repeat_records(per_repeat_records: list[dict[str, Any]]) -> list[
     )
 
 
+def _apply_overlap_scoring(
+    predictions_df: pd.DataFrame,
+    score_cfg: Mapping[str, Any],
+) -> pd.DataFrame:
+    overlap_cfg = dict(score_cfg.get("overlap_scoring") or {})
+    if not bool(overlap_cfg.get("enabled", False)):
+        return predictions_df
+
+    modality_name = clean_text(overlap_cfg.get("modality_combination_name")) or "all_available"
+    id_column = clean_text(overlap_cfg.get("id_column")) or "question_id"
+    for column in ["model_display_name", "modality_combination_name", id_column]:
+        if column not in predictions_df.columns:
+            raise ValueError(f"overlap_scoring requires predictions column: {column}")
+
+    overlap_frame = predictions_df[
+        predictions_df["modality_combination_name"].astype(str).eq(modality_name)
+    ].copy()
+    if overlap_frame.empty:
+        raise ValueError(f"overlap_scoring found no rows for modality_combination_name={modality_name!r}.")
+
+    id_sets = {
+        model_name: set(group[id_column].astype(str))
+        for model_name, group in overlap_frame.groupby("model_display_name", dropna=False)
+    }
+    if not id_sets:
+        raise ValueError("overlap_scoring found no model groups.")
+    common_ids = set.intersection(*id_sets.values())
+    if not common_ids:
+        raise ValueError(f"overlap_scoring found zero overlapping {id_column} values.")
+
+    overlap_mask = predictions_df["modality_combination_name"].astype(str).eq(modality_name)
+    keep_overlap = predictions_df[id_column].astype(str).isin(common_ids)
+    out = predictions_df[(~overlap_mask) | keep_overlap].reset_index(drop=True)
+
+    print("\nOverlap scoring")
+    print(f"  Modality: {modality_name}")
+    print(f"  ID column: {id_column}")
+    print(f"  Common IDs: {len(common_ids)}")
+    for model_name, ids in sorted(id_sets.items()):
+        print(f"  {model_name}: input_ids={len(ids)} kept_ids={len(ids & common_ids)} dropped_ids={len(ids - common_ids)}")
+    print(f"  Rows before: {len(predictions_df)}")
+    print(f"  Rows after: {len(out)}")
+    return out
+
+
 def main() -> None:
     cfg = load_cfg()
     score_cfg = cfg.vqa_evaluation
@@ -311,9 +350,14 @@ def main() -> None:
         raise ValueError("Predictions parquet must contain repeat_id. Regenerate predictions with the repeat-aware pipeline.")
     scored_at = datetime.now(timezone.utc).isoformat()
     scored_predictions = _reparse_predictions(predictions)
+    scored_predictions = _apply_overlap_scoring(scored_predictions, score_dict)
     scored_predictions = add_bertscore_columns(
         scored_predictions,
         dict(dict(score_dict.get("metrics") or {}).get("bert_score") or {}),
+    )
+    scored_predictions = add_rouge_l_columns(
+        scored_predictions,
+        dict(dict(score_dict.get("metrics") or {}).get("rouge_l") or {}),
     )
     path_radiology_patient_ids = _path_radiology_patient_ids()
 
@@ -332,14 +376,15 @@ def main() -> None:
             model_display_name=model_display_name,
             backend=backend,
         )
-        records.extend(
-            build_modality_ablation_records(
-                group,
-                model_display_name=model_display_name,
-                backend=backend,
-                path_radiology_patient_ids=path_radiology_patient_ids,
+        if repeat_id == MODALITY_ABLATION_REPEAT_ID:
+            records.extend(
+                build_modality_ablation_records(
+                    group,
+                    model_display_name=model_display_name,
+                    backend=backend,
+                    path_radiology_patient_ids=path_radiology_patient_ids,
+                )
             )
-        )
         for record in records:
             record["repeat_id"] = repeat_id
         per_repeat_records.extend(records)

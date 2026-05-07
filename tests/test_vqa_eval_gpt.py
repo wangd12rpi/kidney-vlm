@@ -397,6 +397,81 @@ def test_apply_group_sampling_uses_ratio_and_minimum_per_group() -> None:
     }
 
 
+def test_apply_group_sampling_protects_radiology_available_test_cases() -> None:
+    frame = pd.DataFrame(
+        [
+            _row(
+                question_id=1,
+                case_id="case-rad",
+                modality_combination_name="path_only",
+                use_pathology=True,
+                use_dnam=False,
+                use_rna=False,
+                task_id="caption_integrated",
+            ),
+            _row(
+                question_id=2,
+                case_id="case-no-rad-a",
+                modality_combination_name="path_only",
+                use_pathology=True,
+                use_dnam=False,
+                use_rna=False,
+                task_id="caption_integrated",
+            ),
+            _row(
+                question_id=3,
+                case_id="case-no-rad-b",
+                modality_combination_name="path_only",
+                use_pathology=True,
+                use_dnam=False,
+                use_rna=False,
+                task_id="caption_integrated",
+            ),
+            _row(
+                question_id=4,
+                case_id="case-no-rad-c",
+                modality_combination_name="path_only",
+                use_pathology=True,
+                use_dnam=False,
+                use_rna=False,
+                task_id="caption_integrated",
+            ),
+            _row(
+                question_id=10,
+                case_id="case-rad",
+                modality_combination_name="radiology_only",
+                use_radiology=True,
+                use_dnam=False,
+                use_rna=False,
+                task_id="caption_integrated",
+                radiology_feature_paths=["rad.pt"],
+            ),
+        ]
+    )
+
+    sampled = apply_group_sampling(
+        frame,
+        {
+            "enabled": True,
+            "ratio": 0.25,
+            "min_per_group": 0,
+            "seed": 7,
+            "protect_radiology_available_cases": True,
+            "protect_split": "test",
+            "group_by": [
+                "question_type",
+                "generation_type",
+                "task_category",
+                "task_id",
+                "modality_combination_name",
+            ],
+        },
+    )
+
+    path_only = sampled[sampled["modality_combination_name"].eq("path_only")]
+    assert path_only["case_id"].tolist() == ["case-rad"]
+
+
 def test_parse_model_response_derives_answer_label_for_mcq() -> None:
     parsed = parse_model_response(_row(), '{"answer": "TP53 mutation absent"}')
 
@@ -442,7 +517,6 @@ def test_build_flat_metric_records_includes_mcq_accuracy_and_f1() -> None:
         predictions,
         model_display_name="gpt_5_1",
         backend="azure_openai_gpt",
-        model_name_or_path="gpt-5.1",
     )
     overall = next(record for record in records if record["metric_group"] == "overall")
 

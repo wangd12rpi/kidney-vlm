@@ -1,10 +1,15 @@
 name: vqa_score_predictions
 
 run:
-  name: actual_run
+  name: experiment_new_condensed_mcq
   output_root: ${project.root_dir}/results
   prediction_filename: predictions.parquet
   metrics_filename: metrics.json
+
+overlap_scoring:
+  enabled: true
+  modality_combination_name: all_available
+  id_column: question_id
 
 metrics:
   bert_score:
@@ -16,3 +21,5 @@ metrics:
     max_length: 512
     rescale_with_baseline: false
     use_fast_tokenizer: true
+  rouge_l:
+    enabled: true
