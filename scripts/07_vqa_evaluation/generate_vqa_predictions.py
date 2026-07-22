@@ -58,7 +58,7 @@ from kidney_vlm.vqa.prompts import (
     row_modalities,
     row_uses_modality,
 )
-from kidney_vlm.vqa.schema import normalize_vqa_df, validate_vqa_df
+from kidney_vlm.vqa.schema import VQA_COLUMNS, normalize_vqa_df, validate_vqa_df
 from kidney_vlm.vqa.stage_config import as_bool, cfg_get, clean_text, resolve_torch_dtype
 
 ROOT = find_repo_root(Path(__file__))
@@ -329,6 +329,49 @@ def _predictions_path(eval_cfg: Mapping[str, Any]) -> Path:
     return _run_output_dir(eval_cfg) / _run_filename(eval_cfg, "prediction_filename", "predictions.parquet")
 
 
+def _reference_prediction_question_ids(eval_cfg: Mapping[str, Any]) -> set[int] | None:
+    filters = dict(eval_cfg.get("filters") or {})
+    block = dict(filters.get("reference_predictions") or {})
+    if not as_bool(block.get("enabled", False)):
+        return None
+
+    path_text = clean_text(block.get("path"))
+    predictions_path = _resolve_path(path_text) if path_text else _predictions_path(eval_cfg)
+    reference_df = pd.read_parquet(predictions_path)
+    if "question_id" not in reference_df.columns:
+        raise ValueError(f"Reference predictions missing question_id column: {predictions_path}")
+
+    model_names = {
+        clean_text(item)
+        for item in block.get("model_display_names", [])
+        if clean_text(item)
+    }
+    if model_names:
+        if "model_display_name" not in reference_df.columns:
+            raise ValueError(
+                f"Reference predictions missing model_display_name column: {predictions_path}"
+            )
+        reference_df = reference_df[
+            reference_df["model_display_name"].astype(str).isin(model_names)
+        ]
+
+    question_ids = set(reference_df["question_id"].astype("int64").tolist())
+    if not question_ids:
+        raise ValueError(f"Reference predictions produced no question IDs: {predictions_path}")
+    return question_ids
+
+
+def _filter_reference_prediction_rows(
+    frame: pd.DataFrame, eval_cfg: Mapping[str, Any]
+) -> pd.DataFrame:
+    question_ids = _reference_prediction_question_ids(eval_cfg)
+    if question_ids is None:
+        return frame.reset_index(drop=True)
+    return frame[
+        frame["question_id"].astype("int64").isin(question_ids)
+    ].reset_index(drop=True)
+
+
 def _model_name_or_path(model_cfg: Mapping[str, Any]) -> str:
     if clean_text(model_cfg.get("model_name_or_path")):
         return clean_text(model_cfg.get("model_name_or_path"))
@@ -532,6 +575,8 @@ def _filter_missing_prefix_cache_rows(
 
 
 def _should_generate_row(row: Mapping[str, Any], model_cfg: Mapping[str, Any]) -> bool:
+    if clean_text(model_cfg.get("backend")) in ONCOVLM_CACHE_BACKENDS:
+        return True
     missing: list[str] = []
     if bool(row.get("use_dnam")) and not clean_text(row.get("dnam_text_summary")):
         missing.append("dnam_text_summary")
@@ -603,12 +648,17 @@ def _prompt_block_for_projector(row: Mapping[str, Any], prompt_cfg: Mapping[str,
         raise ValueError(f"vqa_evaluation.prompts.{key} must be defined.")
     system_prompt = clean_text(block.get("system_prompt"))
     response_instruction = clean_text(block.get("response_instruction"))
+    cot_cfg = dict(prompt_cfg.get("cot") or {})
+    use_cot = as_bool(cot_cfg.get("enabled", False))
+    cot_response_instruction = clean_text(block.get("cot_response_instruction")) or response_instruction
     if not system_prompt or not response_instruction:
         raise ValueError(f"vqa_evaluation.prompts.{key} must define system_prompt and response_instruction.")
     return {
         "system_prompt": system_prompt,
         "mcq_response_instruction": response_instruction,
+        "cot_mcq_response_instruction": cot_response_instruction,
         "open_response_instruction": response_instruction,
+        "use_cot": use_cot,
     }
 
 
@@ -770,7 +820,7 @@ class HFImageTextBackend:
 
 def _oncovlm_stage_cfg(model_cfg: Mapping[str, Any], *, eval_cfg: Mapping[str, Any]) -> dict[str, Any]:
     stage_cfg = dict(model_cfg)
-    stage_cfg["enable_thinking"] = as_bool(stage_cfg.get("enable_thinking", False))
+    stage_cfg["cot"] = dict(stage_cfg.get("cot") or {})
     prefix_cfg = dict(eval_cfg.get("prefix_cache") or {})
     if not prefix_cfg:
         raise ValueError("VQA generation config must define prefix_cache for OncoVLM cache backends.")
@@ -818,15 +868,18 @@ def _cached_prefix_rows_batch(
     tokenizer: Any,
     eval_cfg: Mapping[str, Any],
     stage_cfg: Mapping[str, Any],
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], list[str], list[str]]:
     if not rows:
         raise ValueError("OncoVLM cached-prefix evaluation received an empty row batch.")
 
     token_id_rows: list[list[int]] = []
     prefix_spans: list[list[dict[str, int | str]]] = []
     prompt_texts: list[str] = []
+    response_prefixes: list[str] = []
     prefix_tensors: dict[str, list[torch.Tensor | None]] = {modality: [] for modality in MODALITIES}
-    enable_thinking = as_bool(stage_cfg.get("enable_thinking", False))
+    cot_cfg = dict(stage_cfg.get("cot") or {})
+    enable_thinking = as_bool(cot_cfg.get("enabled", False))
+    thinking_prefill = clean_text(cot_cfg.get("thinking_prefill"))
     prefix_value_override = clean_text(dict(stage_cfg.get("prefix_cache") or {}).get("prefix_value_override")) or "cached"
     if prefix_value_override not in {"cached", "ones", "random"}:
         raise ValueError("prefix_cache.prefix_value_override must be cached, ones, or random.")
@@ -834,6 +887,9 @@ def _cached_prefix_rows_batch(
     for row in rows:
         prompt_text = build_vqa_prompt(row, _prompt_block_for_projector(row, eval_cfg))
         token_ids = _prompt_token_ids(tokenizer, prompt_text, enable_thinking=enable_thinking)
+        response_prefix = thinking_prefill if enable_thinking and thinking_prefill else ""
+        if response_prefix:
+            token_ids += _coerce_token_ids(tokenizer(response_prefix, add_special_tokens=False)["input_ids"])
         spans: list[dict[str, int | str]] = []
         for modality in row_modalities(row):
             start, end = _find_placeholder_span(tokenizer, token_ids, prefix_placeholder_for_modality(modality))
@@ -841,6 +897,7 @@ def _cached_prefix_rows_batch(
         token_id_rows.append(token_ids)
         prefix_spans.append(spans)
         prompt_texts.append(prompt_text)
+        response_prefixes.append(response_prefix)
 
         for modality in MODALITIES:
             if row_uses_modality(row, modality):
@@ -857,7 +914,7 @@ def _cached_prefix_rows_batch(
     batch["prefix_spans"] = prefix_spans
     for modality, tensors in prefix_tensors.items():
         batch.update(pad_optional_prefix_tensors(modality, tensors))
-    return batch, prompt_texts
+    return batch, prompt_texts, response_prefixes
 
 
 class OncoVLMProjectorBackend:
@@ -894,7 +951,7 @@ class OncoVLMProjectorBackend:
     def generate_batch(self, *, rows: list[Mapping[str, Any]], generation_kwargs: Mapping[str, Any]) -> list[tuple[str, str]]:
         if self.dry_run:
             return [('{"answer": "", "rationale": "dry run"}', "") for _ in rows]
-        batch, prompt_texts = _cached_prefix_rows_batch(
+        batch, prompt_texts, response_prefixes = _cached_prefix_rows_batch(
             rows=rows,
             tokenizer=self.tokenizer,
             eval_cfg=prompt_cfg_for_model(self.eval_cfg, self.model_cfg),
@@ -926,7 +983,10 @@ class OncoVLMProjectorBackend:
                 generation_kwargs=generate_kwargs,
             )
         decoded = self.tokenizer.batch_decode(generated, skip_special_tokens=True)
-        return [(text.strip(), prompt_text) for text, prompt_text in zip(decoded, prompt_texts, strict=True)]
+        return [
+            (f"{response_prefix}{text}".strip(), prompt_text)
+            for response_prefix, text, prompt_text in zip(response_prefixes, decoded, prompt_texts, strict=True)
+        ]
 
 
 def _build_backend(model_cfg: Mapping[str, Any], *, eval_cfg: Mapping[str, Any], dry_run: bool):
@@ -1017,9 +1077,14 @@ def main() -> None:
         raise ValueError("vqa_evaluation.data.vqa_parquet_path must be populated.")
     vqa_path = _resolve_path(vqa_path_value)
 
-    vqa_df = normalize_vqa_df(pd.read_parquet(vqa_path))
+    raw_vqa_df = pd.read_parquet(vqa_path)
+    missing_columns = [column for column in VQA_COLUMNS if column not in raw_vqa_df.columns]
+    if missing_columns:
+        raise ValueError(f"VQA parquet is missing required columns: {missing_columns}")
+    vqa_df = normalize_vqa_df(raw_vqa_df[VQA_COLUMNS].copy())
     validate_vqa_df(vqa_df)
     selected_df = select_eval_rows(vqa_df, eval_dict)
+    selected_df = _filter_reference_prediction_rows(selected_df, eval_dict)
     selected_df = apply_group_sampling(selected_df, eval_dict.get("sampling", {}))
     selected_df = _sort_generation_rows(selected_df)
     if selected_df.empty:
@@ -1115,9 +1180,11 @@ def main() -> None:
                         generation_kwargs=generation_kwargs,
                     )
                     for row, (raw_response, projector_prompt) in zip(row_batch, raw_outputs, strict=True):
-                        system_prompt, user_prompt = build_eval_prompt(row, model_prompt_cfg)
                         if projector_prompt:
+                            system_prompt = ""
                             user_prompt = projector_prompt
+                        else:
+                            system_prompt, user_prompt = build_eval_prompt(row, model_prompt_cfg)
                         parsed = parse_model_response(row, raw_response)
                         if dry_run:
                             parsed = {"predicted_answer": "", "predicted_answer_label": "", "parse_status": "dry_run"}
@@ -1204,7 +1271,6 @@ def main() -> None:
             predictions_path, prediction_rows, resume_existing=True
         )
         print(f"  Final prediction rows: {len(final_predictions)}")
-
         del backend
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

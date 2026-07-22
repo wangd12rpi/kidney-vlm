@@ -1,0 +1,101 @@
+defaults:
+  - vqa_common
+  - _self_
+
+name: vqa_grpo
+post_train_method: grpo
+
+cot:
+  enabled: true
+  rationale_column:
+
+prompt:
+  cot_mcq_response_instruction: >-
+    Use only the provided multimodal evidence. In <think>, write 100 to 140 words using exactly
+    "Step 1 — Observation:" followed by "Step 2 — Reasoning:". In Step 1, state only 3 to 5 concrete
+    pathology findings that are visibly present; do not mention choices, diagnoses, conclusions, or
+    absent/not-seen features. In Step 2, explain how the findings work together and distinguish only the
+    closest plausible alternative without walking through every choice. In <answer>, copy exactly one full
+    displayed choice. Do not answer with A/B/C/D.
+
+grpo:
+  init_lora_adapter_path: ${project.root_dir}/outputs/oncovlm/sft/qwen3_5_9b_sft_caption_mcq_all_available_pathology_findings_image_step_cot_n2673_r8_projfrozen_20260715_020332_est/best/lora_adapter
+  thinking_prefill:
+  num_generations: 8
+  max_completion_tokens: 320
+  logprob_micro_batch_size: 2
+  stop_after_answer_tag: true
+  # T=1/top_p=1 keeps rollout sampling consistent with the raw policy log-probabilities.
+  temperature: 1.0
+  top_p: 1.0
+  clip_range: 0.2
+  beta: 0.0
+  reward_weights:
+    correctness: 1.0
+    valid_choice: 0.0
+    format: 0.10
+    observation: 0.0
+    reasoning: 0.0
+  format_reward_requires_correct: true
+  observation_reward_requires_correct: true
+  reasoning_reward_requires_correct: true
+  visual_judge:
+    enabled: false
+    observation_weight: 0.10
+    reasoning_weight: 0.20
+    observation_min_score: 0.50
+    reasoning_min_score: 0.75
+    prompt_version: pathology_observation_reasoning_v7_two_stage_768
+    registry_path: ${project.root_dir}/data/registry/unified.parquet
+    cache_path: ${project.root_dir}/outputs/oncovlm/grpo/visual_judge_cache/pathology_observation_reasoning_v7_two_stage_768.jsonl
+    max_pathology_images: 4
+    max_image_side: 1024
+    jpeg_quality: 85
+    azure:
+      endpoint: "https://azurefoundry-dannong.cognitiveservices.azure.com/"
+      deployment: "gpt-5.4"
+      api_version: 2024-12-01-preview
+      api_key_env: AZURE_OPENAI_API_KEY
+      request_timeout_seconds: 30
+      inventory_max_completion_tokens: 256
+      max_completion_tokens: 768
+      max_retries: 2
+      retry_sleep_seconds: 1.0
+      reasoning_effort: none
+      verbosity: low
+      temperature: 1.0
+      top_p: 1.0
+    max_consecutive_failures: 3
+  observation_min_words: 45
+  observation_max_words: 95
+  reasoning_min_words: 25
+  reasoning_max_words: 90
+  think_min_words: 100
+  think_max_words: 160
+  sample_log_every_n_steps: 1
+  save_adapter_every_n_steps: 100
+  empty_cache_every_n_steps: 0
+
+batch_size: 1
+num_epochs: 1
+learning_rate: 5e-7
+weight_decay: 0.0
+gradient_accumulation_steps: 4
+grad_clip_norm: 1.0
+lr_scheduler_type: constant
+warmup_ratio: 0.03
+warmup_steps:
+dataloader_num_workers: 0
+autocast_dtype: bfloat16
+
+validation:
+  enabled: false
+  required: false
+
+wandb:
+  log_every_n_steps: 1
+  tags:
+    - vqa_train
+    - lora
+    - grpo
+    - cot

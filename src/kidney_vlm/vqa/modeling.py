@@ -142,6 +142,11 @@ def _generate_with_inner_text_model(
     logits = _apply_final_logit_softcap(language_model, logits)
 
     eos_ids = _eos_token_ids(generation_kwargs.get("eos_token_id"))
+    stop_token_sequences = [
+        [int(token_id) for token_id in sequence]
+        for sequence in generation_kwargs.get("stop_token_sequences", [])
+        if sequence
+    ]
     pad_token_id = generation_kwargs.get("pad_token_id")
     if pad_token_id is None:
         pad_token_id = eos_ids[0] if eos_ids else 0
@@ -161,6 +166,18 @@ def _generate_with_inner_text_model(
         if eos_ids:
             eos_tensor = torch.tensor(eos_ids, device=next_token.device, dtype=next_token.dtype)
             finished = finished | (next_token[:, None] == eos_tensor[None, :]).any(dim=1)
+        if stop_token_sequences:
+            generated_so_far = torch.stack(generated, dim=1)
+            for stop_sequence in stop_token_sequences:
+                if int(generated_so_far.shape[1]) < len(stop_sequence):
+                    continue
+                stop_tensor = torch.tensor(
+                    stop_sequence,
+                    device=generated_so_far.device,
+                    dtype=generated_so_far.dtype,
+                )
+                finished = finished | generated_so_far[:, -len(stop_sequence) :].eq(stop_tensor).all(dim=1)
+        if eos_ids or stop_token_sequences:
             if finished.all():
                 break
         if token_idx == max_new_tokens - 1:
@@ -200,6 +217,7 @@ def generate_language_model_with_soft_prefix(
     inputs: Mapping[str, torch.Tensor],
     generation_kwargs: Mapping[str, Any],
 ) -> torch.Tensor:
+    generation_kwargs = dict(generation_kwargs)
     per_layer_inputs = inputs.get("per_layer_inputs")
     inner_modules = _soft_prefix_generation_modules(language_model) if per_layer_inputs is not None else None
     if inner_modules is not None:
@@ -212,8 +230,9 @@ def generate_language_model_with_soft_prefix(
             lm_head=lm_head,
         )
 
+    generation_kwargs.pop("stop_token_sequences", None)
     prompt_len = int(inputs["input_ids"].shape[1])
-    outputs = language_model.generate(**dict(inputs), **dict(generation_kwargs))
+    outputs = language_model.generate(**dict(inputs), **generation_kwargs)
     return outputs[:, prompt_len:] if outputs.shape[1] > prompt_len else outputs
 
 
@@ -654,6 +673,79 @@ class OncoVLMVQASFTModel(nn.Module):
             prefix_token_mask=assembled["prefix_token_mask"],
         )
 
+    def prepare_interleaved_forward_inputs(
+        self,
+        *,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        labels: torch.Tensor | None = None,
+        pathology_features: torch.Tensor | None = None,
+        pathology_feature_mask: torch.Tensor | None = None,
+        radiology_features: torch.Tensor | None = None,
+        radiology_feature_mask: torch.Tensor | None = None,
+        dnam_features: torch.Tensor | None = None,
+        dnam_feature_mask: torch.Tensor | None = None,
+        rna_features: torch.Tensor | None = None,
+        rna_feature_mask: torch.Tensor | None = None,
+        pathology_prefix_embeddings: torch.Tensor | None = None,
+        pathology_prefix_mask: torch.Tensor | None = None,
+        radiology_prefix_embeddings: torch.Tensor | None = None,
+        radiology_prefix_mask: torch.Tensor | None = None,
+        dnam_prefix_embeddings: torch.Tensor | None = None,
+        dnam_prefix_mask: torch.Tensor | None = None,
+        rna_prefix_embeddings: torch.Tensor | None = None,
+        rna_prefix_mask: torch.Tensor | None = None,
+        prefix_spans: list[list[dict[str, Any]]],
+    ) -> dict[str, torch.Tensor | None]:
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids, dtype=torch.long)
+        text_embeddings = self.language_model.get_input_embeddings()(input_ids)
+        prefix_outputs = self._prefix_outputs_from_inputs(
+            attention_mask=attention_mask,
+            pathology_features=pathology_features,
+            pathology_feature_mask=pathology_feature_mask,
+            radiology_features=radiology_features,
+            radiology_feature_mask=radiology_feature_mask,
+            dnam_features=dnam_features,
+            dnam_feature_mask=dnam_feature_mask,
+            rna_features=rna_features,
+            rna_feature_mask=rna_feature_mask,
+            pathology_prefix_embeddings=pathology_prefix_embeddings,
+            pathology_prefix_mask=pathology_prefix_mask,
+            radiology_prefix_embeddings=radiology_prefix_embeddings,
+            radiology_prefix_mask=radiology_prefix_mask,
+            dnam_prefix_embeddings=dnam_prefix_embeddings,
+            dnam_prefix_mask=dnam_prefix_mask,
+            rna_prefix_embeddings=rna_prefix_embeddings,
+            rna_prefix_mask=rna_prefix_mask,
+        )
+        return self._assemble_interleaved_prefix_sequence(
+            input_ids=input_ids,
+            text_embeddings=text_embeddings,
+            attention_mask=attention_mask,
+            labels=labels,
+            prefix_outputs=prefix_outputs,
+            prefix_spans=prefix_spans,
+        )
+
+    def forward_prepared_interleaved_inputs(
+        self,
+        prepared: Mapping[str, torch.Tensor | None],
+        *,
+        logits_to_keep: int | None = None,
+    ) -> Any:
+        return forward_language_model_with_soft_prefix(
+            self.language_model,
+            input_ids=prepared["input_ids"],
+            inputs_embeds=prepared["inputs_embeds"],
+            attention_mask=prepared["attention_mask"],
+            position_ids=prepared["position_ids"],
+            labels=prepared["labels"],
+            prefix_length=0,
+            prefix_token_mask=prepared["prefix_token_mask"],
+            logits_to_keep=logits_to_keep,
+        )
+
     def _forward_with_prepended_prefixes(
         self,
         *,
@@ -976,9 +1068,9 @@ def build_language_model(stage_cfg: Any, *, device: torch.device) -> nn.Module:
     return AutoModelForCausalLM.from_pretrained(str(cfg_get(stage_cfg, "model_name_or_path")), **model_kwargs)
 
 
-def apply_lora(language_model: nn.Module, stage_cfg: Any) -> nn.Module:
+def apply_lora(language_model: nn.Module, stage_cfg: Any, *, adapter_path: str | Path | None = None) -> nn.Module:
     try:
-        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+        from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
     except ImportError as exc:
         raise RuntimeError("peft is required for VQA LoRA training. Install project dependencies first.") from exc
 
@@ -997,6 +1089,9 @@ def apply_lora(language_model: nn.Module, stage_cfg: Any) -> nn.Module:
         language_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
         if hasattr(language_model, "enable_input_require_grads"):
             language_model.enable_input_require_grads()
+
+    if adapter_path not in (None, "", "null"):
+        return PeftModel.from_pretrained(language_model, str(adapter_path), is_trainable=True)
 
     lora_cfg = cfg_get(stage_cfg, "lora", {})
     target_modules = cfg_list(cfg_get(lora_cfg, "target_modules", []))
@@ -1047,6 +1142,10 @@ def save_vqa_model_artifacts(
     if bool(cfg_get(stage_cfg, "save_tokenizer_snapshot", True)):
         tokenizer.save_pretrained(artifact_dir / "tokenizer")
 
+    artifacts = {
+        "artifact_dir": str(artifact_dir),
+        "lora_adapter_dir": str(adapter_dir),
+    }
     payload: dict[str, Any] = {
         "model_name_or_path": str(cfg_get(stage_cfg, "model_name_or_path")),
         "global_step": int(global_step),
@@ -1054,19 +1153,22 @@ def save_vqa_model_artifacts(
         "validation_loss": float(validation_loss) if validation_loss is not None and math.isfinite(validation_loss) else None,
         "projector_metadata": model.projector_metadata,
     }
+    has_projectors = False
     if model.path_projectors is not None:
+        has_projectors = True
         payload["path_projector_state_dict"] = model.path_projectors.state_dict()
     if model.radiology_projectors is not None:
+        has_projectors = True
         payload["radiology_projector_state_dict"] = model.radiology_projectors.state_dict()
     if model.dnam_projectors is not None:
+        has_projectors = True
         payload["dnam_projector_state_dict"] = model.dnam_projectors.state_dict()
     if model.rna_projectors is not None:
+        has_projectors = True
         payload["rna_projector_state_dict"] = model.rna_projectors.state_dict()
 
-    projectors_path = artifact_dir / "projectors.ckpt"
-    torch.save(payload, projectors_path)
-    return {
-        "artifact_dir": str(artifact_dir),
-        "lora_adapter_dir": str(adapter_dir),
-        "projectors_checkpoint": str(projectors_path),
-    }
+    if has_projectors:
+        projectors_path = artifact_dir / "projectors.ckpt"
+        torch.save(payload, projectors_path)
+        artifacts["projectors_checkpoint"] = str(projectors_path)
+    return artifacts

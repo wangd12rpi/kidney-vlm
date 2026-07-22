@@ -456,6 +456,41 @@ def test_model_modality_ablation_filter_only_keeps_ablation_for_listed_models() 
     assert baseline_rows["question_id"].tolist() == [1]
 
 
+def test_reference_predictions_filter_keeps_existing_model_questions(tmp_path) -> None:
+    module = _load_generate_script()
+    predictions_path = tmp_path / "predictions.parquet"
+    pd.DataFrame(
+        [
+            {"question_id": 1, "model_display_name": "cot"},
+            {"question_id": 2, "model_display_name": "other"},
+            {"question_id": 3, "model_display_name": "cot"},
+        ]
+    ).to_parquet(predictions_path, index=False)
+    frame = pd.DataFrame(
+        [
+            {"question_id": 1},
+            {"question_id": 2},
+            {"question_id": 3},
+            {"question_id": 4},
+        ]
+    )
+
+    filtered = module._filter_reference_prediction_rows(
+        frame,
+        {
+            "filters": {
+                "reference_predictions": {
+                    "enabled": True,
+                    "path": str(predictions_path),
+                    "model_display_names": ["cot"],
+                }
+            }
+        },
+    )
+
+    assert filtered["question_id"].tolist() == [1, 3]
+
+
 def test_should_generate_row_skips_missing_genomics_text_with_one_line_warning(capsys) -> None:
     module = _load_generate_script()
 
@@ -474,6 +509,18 @@ def test_should_generate_row_skips_missing_genomics_text_with_one_line_warning(c
     assert output == [
         "Warning: skipping VQA row qid=2 model=m: enabled DNAm/RNA has empty fallback text (dnam_text_summary)."
     ]
+
+
+def test_should_generate_row_keeps_cached_prefix_oncovlm_without_genomics_text(capsys) -> None:
+    module = _load_generate_script()
+
+    keep = module._should_generate_row(
+        {"question_id": 3, "use_dnam": True, "dnam_text_summary": "", "use_rna": True, "rna_text_summary": ""},
+        {"display_name": "oncovlm_qwen_lora_cot", "backend": "oncovlm_lora"},
+    )
+
+    assert keep is True
+    assert capsys.readouterr().out == ""
 
 
 def test_prediction_row_leaves_open_ended_correct_empty() -> None:
@@ -533,6 +580,31 @@ def test_prompt_token_ids_passes_explicit_thinking_flag() -> None:
 
     assert module._prompt_token_ids(tokenizer, "prompt", enable_thinking=False) == [1, 2, 3]
     assert tokenizer.enable_thinking is False
+
+
+def test_oncovlm_cot_config_drives_prompt_and_thinking() -> None:
+    module = _load_generate_script()
+    eval_cfg = _prompt_cfg()
+    eval_cfg["prompts"]["mcq"]["cot_response_instruction"] = "Reason then answer with exact choice text."
+    eval_cfg["prompts"] = {"tuned_oncovlm": eval_cfg["prompts"]}
+    model_cfg = {
+        "backend": "oncovlm_lora",
+        "model_name_or_path": "Qwen/Qwen3.5-9B",
+        "lora_adapter_path": "outputs/oncovlm/cot/lora_adapter",
+        "prompt_profile": "tuned_oncovlm",
+        "cot": {"enabled": True},
+    }
+
+    prompt_cfg = module.prompt_cfg_for_model(eval_cfg, model_cfg)
+    block = module._prompt_block_for_projector(
+        {"question_type": "mcq"},
+        prompt_cfg,
+    )
+    stage_cfg = module._oncovlm_stage_cfg(model_cfg, eval_cfg=eval_cfg)
+
+    assert block["use_cot"] is True
+    assert block["cot_mcq_response_instruction"] == "Reason then answer with exact choice text."
+    assert stage_cfg["cot"] == {"enabled": True}
 
 
 def test_output_preview_prints_model_output_and_ground_truth(capsys) -> None:

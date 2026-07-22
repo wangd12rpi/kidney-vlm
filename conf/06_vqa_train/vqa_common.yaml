@@ -1,4 +1,4 @@
-name: vqa_lora_sft
+name: vqa_common
 instantiate_model: true
 
 model_name_or_path: Qwen/Qwen3.5-9B
@@ -18,17 +18,16 @@ dataset:
   vqa_parquet_path: ${project.root_dir}/data/vqa/merged_vqa.parquet
   train_split: train
   validation_split: val
-  # Empty lists mean "all values". Modality-dropout rows are kept as long as
-  # their use_* flags only require enabled projectors.
   question_types:
     - mcq
-    - qa
-    - open_ended
-    - open ended
-  generation_types: []
+  generation_types:
+    - from_caption
+  modality_combination_names:
+    - all_available
   project_ids: []
   task_categories: []
-  task_ids: []
+  task_ids:
+    - pathology_findings
   max_train_samples:
   max_val_samples:
   sample_train: false
@@ -38,6 +37,7 @@ dataset:
 prompt:
   system_prompt: You are OncoVLM, a multimodal cancer assistant. Use only the provided multimodal evidence to answer the question.
   mcq_response_instruction: Return only the exact text of one choice. Do not explain. Do not say that the information is insufficient.
+  cot_mcq_response_instruction: Use only the provided multimodal evidence. In <think>, write a concise reasoning paragraph that starts from supported patient evidence, compares the displayed choices, and explains why the final choice matches better than the others. In <answer>, put only the exact text of one choice. Do not answer with A/B/C/D.
   open_response_instruction: Answer concisely.
 
 preview:
@@ -96,20 +96,8 @@ projectors:
     checkpoint_path: outputs/projectors/qwen3_5_9b/rna/rna_remote_weights_20260423_000000_EST/best.ckpt
     max_tokens: 8
 
-batch_size: 1
-num_epochs: 3
-learning_rate: 1e-4
-weight_decay: 0.0
-gradient_accumulation_steps: 16
-grad_clip_norm: 1.0
-lr_scheduler_type: cosine
-warmup_ratio: 0.03
-warmup_steps:
 max_text_length: 1024
 dataloader_num_workers: 8
-validation:
-  enabled: true
-  required: false
 
 output_dir: ${project.root_dir}/outputs/oncovlm
 run_name:
@@ -125,4 +113,3 @@ wandb:
   tags:
     - vqa_train
     - lora
-    - sft

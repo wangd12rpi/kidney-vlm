@@ -69,12 +69,14 @@ def build_vqa_prompt(row: Mapping[str, Any], prompt_cfg: Any) -> str:
 
     question_type = clean_text(row.get("question_type", "")).lower()
     options = option_values(row)
+    use_cot = as_bool(cfg_get(prompt_cfg, "use_cot", False))
     if question_type == "mcq":
         if len(options) < 2:
             raise ValueError(f"MCQ question {row.get('question_id', '<unknown>')} has fewer than two choices.")
-        response_instruction = clean_text(cfg_get(prompt_cfg, "mcq_response_instruction", ""))
+        response_instruction_key = "cot_mcq_response_instruction" if use_cot else "mcq_response_instruction"
+        response_instruction = clean_text(cfg_get(prompt_cfg, response_instruction_key, ""))
         if not response_instruction:
-            raise ValueError("vqa_train.prompt.mcq_response_instruction must be populated.")
+            raise ValueError(f"vqa_train.prompt.{response_instruction_key} must be populated.")
         choice_text = "\n".join(f"- {option}" for option in options)
         return (
             f"{system_prompt}\n\n"

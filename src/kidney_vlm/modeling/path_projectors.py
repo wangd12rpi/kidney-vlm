@@ -136,6 +136,7 @@ def forward_language_model_with_soft_prefix(
     labels: torch.Tensor | None,
     prefix_length: int,
     prefix_token_mask: torch.Tensor | None = None,
+    logits_to_keep: int | None = None,
 ) -> Any:
     per_layer_inputs = build_soft_prefix_per_layer_inputs(
         language_model,
@@ -148,6 +149,8 @@ def forward_language_model_with_soft_prefix(
     conditional_modules = _conditional_lm_inner_modules(language_model)
     if per_layer_inputs is None or conditional_modules is None:
         model_kwargs = {"per_layer_inputs": per_layer_inputs} if per_layer_inputs is not None else {}
+        if logits_to_keep is not None:
+            model_kwargs["logits_to_keep"] = int(logits_to_keep)
         return language_model(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
@@ -166,6 +169,8 @@ def forward_language_model_with_soft_prefix(
         return_dict=True,
     )
     hidden_states = outputs.last_hidden_state
+    if logits_to_keep is not None:
+        hidden_states = hidden_states[:, -int(logits_to_keep) :, :]
     logits = lm_head(hidden_states)
     config = _text_config(language_model)
     final_logit_softcapping = getattr(config, "final_logit_softcapping", None)

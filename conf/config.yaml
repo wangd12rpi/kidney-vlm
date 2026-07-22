@@ -9,7 +9,7 @@ defaults:
   - 04_rna_proj@rna_proj: 04_train_rna_projectors
   - demo: demo_projector
   - vlm_train: medgemma_hf
-  - 06_vqa_train@vqa_train: vqa_lora_sft
+  - 06_vqa_train@vqa_train: vqa_sft
   - _self_
 
 project:

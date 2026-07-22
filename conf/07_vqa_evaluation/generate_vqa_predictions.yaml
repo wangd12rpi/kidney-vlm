@@ -1,7 +1,7 @@
-name: final_run
+name: vqa_generate_predictions
 
 run:
-  name: experiment_new_condensed_mcq
+  name: image_step_cot_vs_nocot_pathology_findings_test
   output_root: ${project.root_dir}/results
   resume_existing: true
   prediction_filename: predictions.parquet
@@ -30,7 +30,7 @@ prefix_cache:
 models:
 
   gemma-4-e4b:
-    enabled: true
+    enabled: false
     backend: hf_image_text_to_text
     model_name_or_path: google/gemma-4-E4B-it
     prompt_profile: baseline
@@ -43,25 +43,42 @@ models:
     batch_size: 6
     enable_thinking: false
 
-  oncovlm_qwen_lora: 
+  oncovlm_qwen_lora_image_step_cot:
     enabled: true
     backend: oncovlm_lora
     model_name_or_path: Qwen/Qwen3.5-9B
-    lora_adapter_path: outputs/oncovlm/qwen3_5_9b_merged_vqa_n90641_r8_projfrozen_20260503_213331_est/lora_adapter
+    lora_adapter_path: outputs/oncovlm/sft/qwen3_5_9b_sft_caption_mcq_all_available_pathology_findings_image_step_cot_n2673_r8_projfrozen_20260715_020332_est/best/lora_adapter
     prompt_profile: tuned_oncovlm
     trust_remote_code: true
     load_in_8bit: true
     torch_dtype: bfloat16
-    autocast_dtype: float16
+    autocast_dtype: bfloat16
     attn_implementation: sdpa
     device: cuda:0
-    batch_size: 16
-    enable_thinking: false
+    batch_size: 24
+    cot:
+      enabled: true
+
+  oncovlm_qwen_lora_nocot:
+    enabled: false
+    backend: oncovlm_lora
+    model_name_or_path: Qwen/Qwen3.5-9B
+    lora_adapter_path: outputs/oncovlm/kidneyvlm_nocot_qwen35_9b_2ep_20260616_223227/best/lora_adapter
+    prompt_profile: tuned_oncovlm
+    trust_remote_code: true
+    load_in_8bit: true
+    torch_dtype: bfloat16
+    autocast_dtype: bfloat16
+    attn_implementation: sdpa
+    device: cuda:0
+    batch_size: 36
+    cot:
+      enabled: false
 
 
 
   medgemma-4b-it:
-    enabled: true
+    enabled: false
     backend: hf_image_text_to_text
     model_name_or_path: google/medgemma-4b-it
     prompt_profile: baseline
@@ -73,7 +90,7 @@ models:
     batch_size: 10
 
   oncovlm_qwen_no_finetune:
-    enabled: true
+    enabled: false
     backend: oncovlm_projector
     model_name_or_path: Qwen/Qwen3.5-9B
     prompt_profile: baseline
@@ -87,7 +104,7 @@ models:
     enable_thinking: false
 
   gpt_5_4:
-    enabled: true
+    enabled: false
     backend: azure_openai_gpt
     model_name_or_path: gpt-5.4
     prompt_profile: baseline
@@ -115,17 +132,24 @@ filters:
     enabled: false
     values: [TCGA-BRCA]
   question_types:
-    enabled: false
+    enabled: true
     values: [mcq]
   generation_types:
-    enabled: false
+    enabled: true
     values: [from_caption]
+  modality_combination_names:
+    enabled: true
+    values: [all_available]
   # task_categories:
   #   enabled: false
   #   values: []
-  # task_ids:
-  #   enabled: false
-  #   values: []
+  task_ids:
+    enabled: true
+    values: [pathology_findings]
+  reference_predictions:
+    enabled: false
+    path: ${project.root_dir}/results/cot_vs_nocot_train_split_eval/predictions.parquet
+    model_display_names: []
   # allowed_modality_combo:
   #   enabled: true
   #   values:
@@ -133,16 +157,17 @@ filters:
   #       rad: true
   #       dnam: true
   #       rna: true
-  # row_limit:
-  #   enabled: false
-  #   max_rows: 20
-  #   sample: true
-  #   sample_seed: 17
+  # Fixed tiny safety slice for rapid RL checkpoint iteration. Disable for the final full evaluation.
+  row_limit:
+    enabled: true
+    max_rows: 16
+    sample: true
+    sample_seed: 410
 
 sampling:
   enabled: false
-  ratio: 0.4
-  min_per_group: 16
+  ratio: 0.3
+  min_per_group: 8
   seed: 42
   protect_radiology_available_cases: true
   protect_split: test
@@ -155,15 +180,15 @@ sampling:
     - project_id
 
 modality_ablation:
-  enabled: true
+  enabled: false
   modality_combination_names:
     - path_only
     - radiology_only
   model_display_names:
-    - oncovlm_qwen_lora
+    - oncovlm_qwen_lora_cot
 
 repeats:
-  n: 3
+  n: 1
   seed: 42
   repeat_modality_combination_names:
     - all_available
@@ -187,6 +212,13 @@ prompts:
         You are OncoVLM, a multimodal cancer assistant. Use only the provided multimodal evidence to answer the question.
       response_instruction: >-
         Return only the exact text of one choice. Do not explain. Do not say that the information is insufficient.
+      cot_response_instruction: >-
+        Use only the provided multimodal evidence. In <think>, write 100 to 140 words using exactly
+        "Step 1 — Observation:" followed by "Step 2 — Reasoning:". In Step 1, state only 3 to 5 concrete
+        pathology findings that are visibly present; do not mention choices, diagnoses, conclusions, or
+        absent/not-seen features. In Step 2, explain how the findings work together and distinguish only the
+        closest plausible alternative without walking through every choice. In <answer>, copy exactly one full
+        displayed choice. Do not answer with A/B/C/D.
     qa:
       system_prompt: >-
         You are OncoVLM, a multimodal cancer assistant. Use only the provided multimodal evidence to answer the question.
@@ -194,10 +226,8 @@ prompts:
         Answer concisely.
 
 generation:
-  max_new_tokens: 64
-  do_sample: true
-  temperature: 0.2
-  top_p: 0.9
+  max_new_tokens: 512
+  do_sample: false
 
 image_inputs:
   enabled: true

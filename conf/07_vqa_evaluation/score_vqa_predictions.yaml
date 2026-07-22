@@ -1,7 +1,7 @@
 name: vqa_score_predictions
 
 run:
-  name: experiment_new_condensed_mcq
+  name: image_step_cot_vs_nocot_pathology_findings_test
   output_root: ${project.root_dir}/results
   prediction_filename: predictions.parquet
   metrics_filename: metrics.json
@@ -13,7 +13,7 @@ overlap_scoring:
 
 metrics:
   bert_score:
-    enabled: true
+    enabled: false
     model_type: microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext
     num_layers: 9
     lang: en
@@ -22,4 +22,4 @@ metrics:
     rescale_with_baseline: false
     use_fast_tokenizer: true
   rouge_l:
-    enabled: true
+    enabled: false

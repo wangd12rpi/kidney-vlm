@@ -106,6 +106,7 @@ def _apply_chat_template_tokens(
     messages: list[dict[str, str]],
     *,
     add_generation_prompt: bool,
+    enable_thinking: bool = False,
 ) -> list[int]:
     if not hasattr(tokenizer, "apply_chat_template"):
         raise AttributeError("Tokenizer does not provide apply_chat_template.")
@@ -115,12 +116,12 @@ def _apply_chat_template_tokens(
         "add_generation_prompt": add_generation_prompt,
     }
     try:
-        token_ids = tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
+        token_ids = tokenizer.apply_chat_template(messages, enable_thinking=enable_thinking, **kwargs)
     except TypeError:
         try:
             token_ids = tokenizer.apply_chat_template(
                 messages,
-                chat_template_kwargs={"enable_thinking": False},
+                chat_template_kwargs={"enable_thinking": enable_thinking},
                 **kwargs,
             )
         except TypeError:
@@ -134,6 +135,7 @@ def _build_chat_text_pair(
     prompt_text: str,
     answer_text: str,
     max_text_length: int,
+    enable_thinking: bool = False,
 ) -> tuple[list[int], list[int]]:
     prompt_messages = [{"role": "user", "content": prompt_text}]
     full_messages = prompt_messages + [{"role": "assistant", "content": answer_text}]
@@ -142,11 +144,13 @@ def _build_chat_text_pair(
         tokenizer,
         prompt_messages,
         add_generation_prompt=True,
+        enable_thinking=enable_thinking,
     )
     full_ids = _apply_chat_template_tokens(
         tokenizer,
         full_messages,
         add_generation_prompt=False,
+        enable_thinking=enable_thinking,
     )
     prefix_len = _shared_prefix_length(prompt_ids, full_ids)
     if prefix_len == 0:

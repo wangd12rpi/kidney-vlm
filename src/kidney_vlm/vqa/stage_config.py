@@ -141,9 +141,10 @@ def projector_trainable_summary(stage_cfg: Any) -> str:
 
 def generate_run_name(stage_cfg: Any, *, train_rows: int, now: datetime | None = None) -> str:
     llm_tag = resolve_llm_tag(str(cfg_get(stage_cfg, "model_name_or_path", "llm")))
+    method = slugify_label(cfg_get(stage_cfg, "post_train_method", "sft"), default="sft")
     dataset_cfg = cfg_get(stage_cfg, "dataset", {})
     vqa_stem = slugify_label(Path(str(cfg_get(dataset_cfg, "vqa_parquet_path", "vqa"))).stem, default="vqa")
     lora_cfg = cfg_get(stage_cfg, "lora", {})
     lora_r = int(cfg_get(lora_cfg, "r", 0))
     timestamp = (now or datetime.now(EST)).strftime("%Y%m%d_%H%M%S_EST")
-    return f"{llm_tag}_{vqa_stem}_n{int(train_rows)}_r{lora_r}_{projector_trainable_summary(stage_cfg)}_{timestamp}"
+    return f"{llm_tag}_{method}_{vqa_stem}_n{int(train_rows)}_r{lora_r}_{projector_trainable_summary(stage_cfg)}_{timestamp}"

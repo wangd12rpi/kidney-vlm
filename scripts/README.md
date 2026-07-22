@@ -121,12 +121,12 @@
   - Example:
     - `uv run python scripts/05_vqa_question_generation/generate_gt_mcq.py`
 - `scripts/06_vqa_train/train_vqa_lora.py`
-  - Trains the projector-backed VLM on the single split-aware VQA parquet using PEFT LoRA SFT.
+  - Trains the projector-backed VLM on the single split-aware VQA parquet using PEFT LoRA SFT or GRPO.
   - Injects MCQ choices into the prompt; open-ended rows use the same schema with empty option columns.
-  - Saves LoRA adapters and projector checkpoints under `outputs/oncovlm/<run_name>/`.
-  - Training config lives in `conf/06_vqa_train/vqa_lora_sft.yaml`.
+  - Saves LoRA adapters and projector checkpoints under `outputs/oncovlm/<method>/<run_name>/`.
+  - Training config is split across `conf/06_vqa_train/vqa_common.yaml`, `vqa_sft.yaml`, and `vqa_grpo.yaml`.
   - Example:
-    - `uv run python scripts/06_vqa_train/train_vqa_lora.py projectors.pathology.checkpoint_path=/path/to/path.ckpt`
+    - `uv run python scripts/06_vqa_train/train_vqa_lora.py method=grpo projectors.pathology.checkpoint_path=/path/to/path.ckpt`
 - `scripts/07_vqa_evaluation/generate_vqa_predictions.py`
   - Multi-model VQA generation runner. Every model with `enabled: true` in the YAML is evaluated sequentially.
   - Supports Azure GPT, HF image-text VLMs, and the projector-only `oncovlm_qwen_no_finetune` baseline.

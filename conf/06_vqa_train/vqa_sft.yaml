@@ -1,0 +1,45 @@
+defaults:
+  - vqa_common
+  - _self_
+
+name: vqa_sft
+post_train_method: sft
+autocast_dtype: bfloat16
+
+dataset:
+  vqa_parquet_path: ${project.root_dir}/data/21_cot_rationale_gen/caption_mcq_all_available_pathology_findings_image_step_cot.parquet
+
+cot:
+  enabled: true
+  rationale_column: rationale
+
+sft:
+  init_lora_adapter_path: ${project.root_dir}/outputs/oncovlm/kidneyvlm_nocot_qwen35_9b_2ep_20260616_223227/best/lora_adapter
+
+prompt:
+  cot_mcq_response_instruction: >-
+    Use only the provided multimodal evidence. In <think>, write 100 to 140 words using exactly
+    "Step 1 — Observation:" followed by "Step 2 — Reasoning:". First state 3 to 5 concrete visible
+    pathology findings, then explain how they work together and distinguish only the closest plausible
+    alternative without walking through every choice. In <answer>, copy exactly one full displayed choice.
+    Do not answer with A/B/C/D.
+
+batch_size: 1
+num_epochs: 2
+learning_rate: 2e-5
+weight_decay: 0.0
+gradient_accumulation_steps: 16
+grad_clip_norm: 1.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+warmup_steps:
+
+validation:
+  enabled: true
+  required: false
+
+wandb:
+  tags:
+    - vqa_train
+    - lora
+    - sft

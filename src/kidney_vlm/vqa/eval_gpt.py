@@ -219,6 +219,13 @@ def select_eval_rows(vqa_df: pd.DataFrame, cfg: Mapping[str, Any]) -> pd.DataFra
         generation_types = _required_filter_values(generation_type_filter, "generation_types")
         out = out[out["generation_type"].astype(str).isin(generation_types)]
 
+    modality_name_filter = _enabled_filter(filters, "modality_combination_names")
+    if modality_name_filter:
+        modality_names = _required_filter_values(
+            modality_name_filter, "modality_combination_names"
+        )
+        out = out[out["modality_combination_name"].astype(str).isin(modality_names)]
+
     project_filter = _enabled_filter(filters, "project_ids")
     if project_filter:
         project_ids = _required_filter_values(project_filter, "project_ids")
@@ -368,7 +375,11 @@ def prompt_cfg_for_model(cfg: Mapping[str, Any], model_cfg: Mapping[str, Any]) -
     profile = prompts.get(profile_name)
     if not isinstance(profile, Mapping):
         raise ValueError(f"vqa_evaluation.prompts.{profile_name} must be defined.")
-    return {"prompts": dict(profile), "image_inputs": cfg.get("image_inputs", {})}
+    return {
+        "prompts": dict(profile),
+        "image_inputs": cfg.get("image_inputs", {}),
+        "cot": dict(model_cfg.get("cot") or {}),
+    }
 
 
 def _prompt_block_for_row(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> dict[str, Any]:
@@ -593,6 +604,11 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _extract_answer_tag(text: str) -> str:
+    match = re.search(r"<answer>\s*(.*?)\s*</answer>", str(text), flags=re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
 def parse_mcq_response(response_text: str, options: Sequence[str]) -> dict[str, str]:
     options_list = [str(option).strip() for option in options if str(option).strip()]
     normalized_options = {option.casefold(): option for option in options_list}
@@ -633,6 +649,14 @@ def parse_mcq_response(response_text: str, options: Sequence[str]) -> dict[str, 
 def parse_model_response(row: Mapping[str, Any], response_text: str) -> dict[str, str]:
     prompt_key = question_type_key(row.get("question_type", ""))
     if prompt_key == "mcq":
+        answer_tag = _extract_answer_tag(response_text)
+        if answer_tag:
+            parsed = parse_mcq_response(answer_tag, option_values(row))
+            predicted_answer = parsed["predicted_answer"]
+            parsed["predicted_answer_label"] = answer_label_for_text(row, predicted_answer)
+            if parsed["parse_status"] != "failed":
+                parsed["parse_status"] = f"answer_tag_{parsed['parse_status']}"
+            return parsed
         parsed = parse_mcq_response(response_text, option_values(row))
         predicted_answer = parsed["predicted_answer"]
         parsed["predicted_answer_label"] = answer_label_for_text(row, predicted_answer)

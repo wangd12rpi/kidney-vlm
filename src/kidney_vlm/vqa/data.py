@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
@@ -10,6 +11,7 @@ import torch
 from torch.utils.data import Dataset
 
 from kidney_vlm.training.collator import (
+    _apply_chat_template_tokens,
     _build_chat_text_pair,
     _load_h5_patch_features,
     _load_pt_feature_tensor,
@@ -28,7 +30,7 @@ from kidney_vlm.vqa.prompts import (
     row_modalities,
     row_uses_modality,
 )
-from kidney_vlm.vqa.stage_config import cfg_get, cfg_list, clean_text, enabled_modality_names
+from kidney_vlm.vqa.stage_config import as_bool, cfg_get, cfg_list, clean_text, enabled_modality_names
 
 
 class VQADataset(Dataset):
@@ -95,6 +97,7 @@ def build_text_pair(
     prompt_text: str,
     answer_text: str,
     max_text_length: int,
+    enable_thinking: bool = False,
 ) -> tuple[list[int], list[int]]:
     if hasattr(tokenizer, "apply_chat_template"):
         return _build_chat_text_pair(
@@ -102,6 +105,7 @@ def build_text_pair(
             prompt_text=prompt_text,
             answer_text=answer_text,
             max_text_length=max_text_length,
+            enable_thinking=enable_thinking,
         )
 
     eos_text = tokenizer.eos_token or ""
@@ -119,6 +123,7 @@ def build_text_pair_with_prefix_spans(
     prompt_cfg: Any,
     answer_text: str,
     max_text_length: int,
+    enable_thinking: bool = False,
 ) -> tuple[list[int], list[int], list[dict[str, int | str]], str]:
     prompt_text = build_vqa_prompt(row, prompt_cfg)
     input_ids, labels = build_text_pair(
@@ -126,6 +131,7 @@ def build_text_pair_with_prefix_spans(
         prompt_text=prompt_text,
         answer_text=answer_text,
         max_text_length=max_text_length,
+        enable_thinking=enable_thinking,
     )
 
     spans: list[dict[str, int | str]] = []
@@ -144,6 +150,71 @@ def build_text_pair_with_prefix_spans(
         if int(left["end"]) > int(right["start"]):
             raise ValueError(f"Overlapping VQA prefix placeholders: {spans}")
     return input_ids, labels, spans, prompt_text
+
+
+def build_prompt_with_prefix_spans(
+    tokenizer: Any,
+    *,
+    row: Mapping[str, Any],
+    prompt_cfg: Any,
+    max_text_length: int,
+    enable_thinking: bool = False,
+) -> tuple[list[int], list[dict[str, int | str]], str]:
+    prompt_text = build_vqa_prompt(row, prompt_cfg)
+    if hasattr(tokenizer, "apply_chat_template"):
+        input_ids = _apply_chat_template_tokens(
+            tokenizer,
+            [{"role": "user", "content": prompt_text}],
+            add_generation_prompt=True,
+            enable_thinking=enable_thinking,
+        )
+    else:
+        input_ids = _coerce_token_ids(tokenizer(prompt_text, add_special_tokens=False)["input_ids"])
+    input_ids = input_ids[:max_text_length]
+
+    spans: list[dict[str, int | str]] = []
+    for modality in row_modalities(row):
+        placeholder = prefix_placeholder_for_modality(modality)
+        start, end = _find_placeholder_span(tokenizer, input_ids, placeholder)
+        spans.append({"modality": modality, "start": start, "end": end})
+    return input_ids, sorted(spans, key=lambda item: int(item["start"])), prompt_text
+
+
+def _tag_text(text: str, tag: str) -> str:
+    match = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", text, flags=re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def build_vqa_training_target(row: Mapping[str, Any], stage_cfg: Any) -> str:
+    cot_cfg = cfg_get(stage_cfg, "cot", {})
+    if not as_bool(cfg_get(cot_cfg, "enabled", False)):
+        answer = clean_text(row.get("answer", ""))
+        if not answer:
+            raise ValueError(f"Question {row.get('question_id', '<unknown>')} has empty answer text.")
+        return answer
+
+    rationale_column = clean_text(cfg_get(cot_cfg, "rationale_column", "rationale")) or "rationale"
+    rationale = clean_text(row.get(rationale_column, ""))
+    if not rationale:
+        raise ValueError(
+            f"Question {row.get('question_id', '<unknown>')} has empty CoT rationale column {rationale_column!r}."
+        )
+
+    think_text = _tag_text(rationale, "think")
+    answer_text = _tag_text(rationale, "answer")
+    if not think_text or not answer_text:
+        raise ValueError(
+            f"Question {row.get('question_id', '<unknown>')} CoT rationale must contain <think> and <answer> tags."
+        )
+    expected_answer = clean_text(row.get("answer", ""))
+    if not expected_answer:
+        raise ValueError(f"Question {row.get('question_id', '<unknown>')} has empty answer text.")
+    if answer_text != expected_answer:
+        raise ValueError(
+            f"Question {row.get('question_id', '<unknown>')} CoT answer tag {answer_text!r} "
+            f"does not match answer {expected_answer!r}."
+        )
+    return rationale
 
 
 def apply_token_dropout(feature_tensor: torch.Tensor, dropout_prob: float) -> torch.Tensor:
@@ -399,20 +470,22 @@ class VQATrainingCollator:
     def __post_init__(self) -> None:
         self.root_dir = Path(self.root_dir).expanduser().resolve()
         self.max_text_length = int(cfg_get(self.stage_cfg, "max_text_length", 1024))
-        self.prompt_cfg = cfg_get(self.stage_cfg, "prompt", {})
+        self.cot_cfg = cfg_get(self.stage_cfg, "cot", {})
+        self.use_cot = as_bool(cfg_get(self.cot_cfg, "enabled", False))
+        self.prompt_cfg = dict(cfg_get(self.stage_cfg, "prompt", {}) or {})
+        self.prompt_cfg["use_cot"] = self.use_cot
         self.projectors_cfg = cfg_get(self.stage_cfg, "projectors", {})
         self.use_prefix_cache = prefix_cache_enabled(self.stage_cfg)
 
     def _build_text_pair(self, row: Mapping[str, Any]) -> tuple[list[int], list[int], list[dict[str, int | str]], str]:
-        answer = clean_text(row.get("answer", ""))
-        if not answer:
-            raise ValueError(f"Question {row.get('question_id', '<unknown>')} has empty answer text.")
+        answer = build_vqa_training_target(row, self.stage_cfg)
         return build_text_pair_with_prefix_spans(
             self.tokenizer,
             row=row,
             prompt_cfg=self.prompt_cfg,
             answer_text=answer,
             max_text_length=self.max_text_length,
+            enable_thinking=self.use_cot,
         )
 
     def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
@@ -479,6 +552,111 @@ class VQATrainingCollator:
         return batch
 
 
+@dataclass
+class VQAGRPOCollator:
+    tokenizer: Any
+    root_dir: str | Path
+    stage_cfg: Any
+
+    def __post_init__(self) -> None:
+        self.root_dir = Path(self.root_dir).expanduser().resolve()
+        self.max_text_length = int(cfg_get(self.stage_cfg, "max_text_length", 1024))
+        self.cot_cfg = cfg_get(self.stage_cfg, "cot", {})
+        self.use_cot = as_bool(cfg_get(self.cot_cfg, "enabled", False))
+        self.prompt_cfg = dict(cfg_get(self.stage_cfg, "prompt", {}) or {})
+        self.prompt_cfg["use_cot"] = self.use_cot
+        self.grpo_cfg = cfg_get(self.stage_cfg, "grpo", {})
+        self.thinking_prefill = clean_text(cfg_get(self.grpo_cfg, "thinking_prefill", ""))
+        self.projectors_cfg = cfg_get(self.stage_cfg, "projectors", {})
+        self.use_prefix_cache = prefix_cache_enabled(self.stage_cfg)
+
+    def _build_prompt(self, row: Mapping[str, Any]) -> tuple[list[int], list[dict[str, int | str]], str]:
+        input_ids, prefix_spans, prompt_text = build_prompt_with_prefix_spans(
+            self.tokenizer,
+            row=row,
+            prompt_cfg=self.prompt_cfg,
+            max_text_length=self.max_text_length,
+            enable_thinking=self.use_cot,
+        )
+        if self.use_cot and self.thinking_prefill:
+            prefill_ids = _coerce_token_ids(self.tokenizer(self.thinking_prefill, add_special_tokens=False)["input_ids"])
+            input_ids = input_ids + prefill_ids
+        return input_ids, prefix_spans, prompt_text
+
+    def __call__(self, features: list[dict[str, Any]]) -> dict[str, Any]:
+        if not features:
+            raise ValueError("VQAGRPOCollator received an empty batch.")
+
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            raise ValueError("Tokenizer must define pad_token_id before batching VQA data.")
+
+        text_input_ids: list[list[int]] = []
+        prefix_spans: list[list[dict[str, int | str]]] = []
+        prompt_texts: list[str] = []
+        modality_tensors: dict[str, list[torch.Tensor | None]] = {modality: [] for modality in MODALITIES}
+        prefix_tensors: dict[str, list[torch.Tensor | None]] = {modality: [] for modality in MODALITIES}
+        metadata_keys = (
+            "question_id",
+            "case_id",
+            "project_id",
+            "task_id",
+            "question_type",
+            "generation_type",
+            "question",
+            "answer",
+        )
+        metadata: dict[str, list[Any]] = {key: [] for key in metadata_keys}
+        choices: list[list[str]] = []
+        completion_score_prefixes: list[str] = []
+
+        for row in features:
+            input_ids, row_prefix_spans, prompt_text = self._build_prompt(row)
+            text_input_ids.append(input_ids)
+            prefix_spans.append(row_prefix_spans)
+            prompt_texts.append(prompt_text)
+            choices.append(option_values(row))
+            completion_score_prefixes.append(self.thinking_prefill if self.use_cot else "")
+            for modality in MODALITIES:
+                if row_uses_modality(row, modality):
+                    if self.use_prefix_cache:
+                        prefix_tensors[modality].append(load_row_cached_prefix_tensor(self.root_dir, self.stage_cfg, row, modality))
+                    else:
+                        block_cfg = cfg_get(self.projectors_cfg, modality, {})
+                        modality_tensors[modality].append(load_modality_feature_tensor(self.root_dir, row, modality, block_cfg))
+                else:
+                    modality_tensors[modality].append(None)
+                    prefix_tensors[modality].append(None)
+            for key in metadata_keys:
+                metadata[key].append(row.get(key))
+
+        batch_size = len(features)
+        max_text_tokens = max(len(item) for item in text_input_ids)
+        input_ids_tensor = torch.full((batch_size, max_text_tokens), int(pad_token_id), dtype=torch.long)
+        attention_mask = torch.zeros((batch_size, max_text_tokens), dtype=torch.long)
+        for row_index, token_ids in enumerate(text_input_ids):
+            token_count = len(token_ids)
+            input_ids_tensor[row_index, :token_count] = torch.tensor(token_ids, dtype=torch.long)
+            attention_mask[row_index, :token_count] = 1
+
+        batch: dict[str, Any] = {
+            "input_ids": input_ids_tensor,
+            "attention_mask": attention_mask,
+            "prefix_spans": prefix_spans,
+            "prompt_text": prompt_texts,
+            "choices": choices,
+            "completion_score_prefix": completion_score_prefixes,
+        }
+        if self.use_prefix_cache:
+            for modality, tensors in prefix_tensors.items():
+                batch.update(pad_optional_prefix_tensors(modality, tensors))
+        else:
+            for modality, tensors in modality_tensors.items():
+                batch.update(pad_optional_feature_tensors(modality, tensors))
+        batch.update(metadata)
+        return batch
+
+
 def apply_row_limit(frame: pd.DataFrame, *, max_rows: Any, sample: bool, seed: int) -> pd.DataFrame:
     if max_rows in (None, "", "null"):
         return frame.reset_index(drop=True)
@@ -501,6 +679,7 @@ def select_vqa_rows(frame: pd.DataFrame, stage_cfg: Any, *, split: str, max_samp
     for column, values_key in [
         ("question_type", "question_types"),
         ("generation_type", "generation_types"),
+        ("modality_combination_name", "modality_combination_names"),
         ("project_id", "project_ids"),
         ("task_category", "task_categories"),
         ("task_id", "task_ids"),

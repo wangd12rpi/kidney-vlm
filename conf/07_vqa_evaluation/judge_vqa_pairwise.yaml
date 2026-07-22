@@ -1,0 +1,71 @@
+name: judge_vqa_pairwise
+
+run:
+  predictions_path: ${project.root_dir}/results/experiment_new_condensed_mcq/predictions.parquet
+  detailed_case_summary_path: ${project.root_dir}/scripts/mcq_from_caption_gen_ahnaf/caption_all.parquet
+  metric_filename: llm_as_judge_metric.json
+  print_each: true
+  dry_run: false
+
+models:
+  target_model: oncovlm_qwen_lora
+  baseline_model: gpt_5_4
+
+filters:
+  project_id: TCGA-BRCA
+  repeat_id: 0
+  question_types: [qa]
+  generation_types: [from_caption]
+  task_categories: []
+  modality_combination_name: all_available
+  max_pairs_per_task: 50
+  sample: true
+  sample_seed: 42
+  pair_order_seed: 123
+
+azure:
+  api_style: anthropic_messages # azure_openai | anthropic_messages
+  endpoint: "https://azurefoundry-dannong.services.ai.azure.com/anthropic/"
+  deployment: "claude-sonnet-4-6"
+  api_version: 2024-12-01-preview
+  api_key_env: AZURE_OPENAI_API_KEY
+  max_completion_tokens: 100
+  max_retries: 2
+  retry_sleep_seconds: 1.0
+  reasoning_effort: none
+  verbosity: low
+  temperature: 1.0
+  top_p: 1.0
+
+prompt:
+  system_prompt: >-
+    You are an expert oncology VQA judge. Compare two model answers using the
+    detailed case summary and reference answer. Prefer the answer that is more
+    medically correct, case-grounded, specific, and complete. Ignore wording
+    style unless it changes correctness. Some answers may be truncated because
+    generation used an aggressive max-token limit; do not penalize cutoff by
+    itself. Judge the medically relevant content that is present, and only count
+    truncation against an answer if it removes the essential conclusion or makes
+    the answer unusable. If both answers are similarly correct or similarly
+    flawed, choose tie.
+  user_template: |-
+    Detailed case summary:
+    ```text
+    {case_summary}
+    ```
+
+    Question:
+    {question}
+
+    Reference answer:
+    {reference_answer}
+
+    Model A answer:
+    {answer_a}
+
+    Model B answer:
+    {answer_b}
+
+    Do not explain beyond the JSON. Keep the reason extremely short.
+    Return strict JSON only:
+    {{"preference":"A|B|tie","reason":"2 to 15 words"}}

@@ -1,0 +1,139 @@
+name: cot_rationale_gen
+
+run:
+  output_parquet_path: ${project.root_dir}/data/21_cot_rationale_gen/caption_mcq_all_available_pathology_findings_image_step_cot.parquet
+  error_attempts_subdir: errors
+  override_existing: false
+  save_every_n: 10
+  dry_run: false
+  print_first_n_outputs: 3
+
+prompt_inspection:
+  enabled: false
+  max_rows: 4
+  group_by_modality_availability: true
+  include_system_prompt: true
+  include_user_prompt: true
+  include_image_paths: true
+
+data:
+  vqa_parquet_path: ${project.root_dir}/data/vqa/merged_vqa.parquet
+  registry_path: ${project.root_dir}/data/registry/unified.parquet
+
+filters:
+  split:
+    enabled: true
+    values: [train, val]
+  question_types:
+    enabled: true
+    values: [mcq]
+  generation_types:
+    enabled: true
+    values: [from_caption]
+  modality_combination_names:
+    enabled: true
+    values: [all_available]
+  project_ids:
+    enabled: false
+    values: []
+  task_ids:
+    enabled: true
+    values: [pathology_findings]
+  task_categories:
+    enabled: false
+    values: []
+  case_ids:
+    enabled: false
+    values: []
+  allowed_modality_combo:
+    enabled: false
+    values:
+      - path: true
+        rad: true
+        dnam: true
+        rna: true
+  row_limit:
+    enabled: false
+    max_rows: 50
+    sample: true
+    sample_seed: 17
+
+image_inputs:
+  enabled: true
+  skip_rows_missing_required_images: true
+  max_pathology_images: 4
+  max_radiology_images: 6
+  max_image_side: 1024
+  jpeg_quality: 85
+  allowed_extensions: [.png, .jpg, .jpeg]
+
+artifact_fallbacks:
+  enabled: true
+  include_text_fallback_for_task_ids: []
+  radiology_png_root: data/radiology_png
+  max_radiology_images: 6
+  populate_genomics_text_summaries: false
+  dnam_text_summary_max_beta_values: 50000
+  rna_text_summary_max_top_genes: 8
+
+azure:
+  endpoint: "https://azurefoundry-dannong.cognitiveservices.azure.com/"
+  deployment: "gpt-5.4"
+  api_version: 2024-12-01-preview
+  api_key_env: AZURE_OPENAI_API_KEY
+  max_concurrent_requests: 8
+  request_timeout_seconds: 20
+  max_completion_tokens: 1024
+  max_retries: 2
+  retry_sleep_seconds: 1.0
+  reasoning_effort: low
+  verbosity: low
+  temperature: 1.0
+  top_p: 1.0
+
+teacher_attempts:
+  max_attempts: 2
+
+prompts:
+  mcq:
+    system_prompt: >-
+      You are a pathology VQA teacher. Solve the question using only morphology visible in the attached pathology ROI images.
+    user_template: |-
+      Question:
+      {{question}}
+
+      Choices:
+      - {{option_a}}
+      - {{option_b}}
+      - {{option_c}}
+      - {{option_d}}
+
+      Rules:
+      1. Treat the choices as candidates, not evidence. Independently select the best-supported choice.
+      2. Use only findings visible in the sampled pathology ROIs. Do not use captions, reports, stage, grade, genes, clinical metadata, or other modalities.
+      3. Step 1 — Observation must describe 3 to 5 concrete visible findings before interpreting the choices. Cover the most useful combination of architecture, cytology, stroma, interface, inflammation, necrosis, or other morphology actually visible.
+      4. Step 2 — Reasoning must explain how those findings work together to identify the morphology and distinguish the closest plausible alternative. Explain the decisive relationship between findings rather than restating option text.
+      5. Do not walk through all four choices, paraphrase each choice, or merely say that one description fits while the others do not. Mention at most two competing patterns and only their decisive mismatch.
+      6. Do not claim a feature is absent from the whole case. If needed, say it is "not apparent in the sampled ROIs."
+      7. Do not mention answer letters, option positions, the source of the question, or a full choice inside <think>. Exact short pathology terms may be reused.
+      8. Write 100 to 140 words total inside <think>, targeting about 120 words.
+      9. Inside <answer>, copy exactly one full displayed choice.
+      10. Output exactly this format and nothing else:
+
+      <think>
+      Step 1 — Observation: ...
+      Step 2 — Reasoning: ...
+      </think>
+      <answer>
+      exact displayed choice
+      </answer>
+  qa:
+    system_prompt: ""
+    user_template: ""
+
+response_validation:
+  enabled: true
+  min_think_words: 100
+  max_think_words: 140
+  reject_answer_text_in_think: true
+  require_two_steps: true

@@ -160,6 +160,27 @@ def test_parse_mcq_response_requires_semantic_answer_not_letter() -> None:
     }
 
 
+def test_parse_model_response_reads_full_text_answer_tag_not_letter() -> None:
+    row = _row()
+
+    parsed = parse_model_response(
+        row,
+        "<think>The evidence supports the absence choice.</think><answer>TP53 mutation absent</answer>",
+    )
+    label_parsed = parse_model_response(row, "<think>text</think><answer>B</answer>")
+
+    assert parsed == {
+        "predicted_answer": "TP53 mutation absent",
+        "parse_status": "answer_tag_exact",
+        "predicted_answer_label": "B",
+    }
+    assert label_parsed == {
+        "predicted_answer": "",
+        "parse_status": "failed",
+        "predicted_answer_label": "",
+    }
+
+
 def test_select_eval_rows_uses_explicit_enabled_filter_blocks() -> None:
     frame = pd.DataFrame(
         [
@@ -214,6 +235,28 @@ def test_select_eval_rows_filters_allowed_modality_combos() -> None:
     selected = select_eval_rows(frame, cfg)
 
     assert selected["question_id"].tolist() == [1, 3]
+
+
+def test_select_eval_rows_filters_modality_combination_names() -> None:
+    frame = pd.DataFrame(
+        [
+            _row(question_id=1, modality_combination_name="all_available"),
+            _row(question_id=2, modality_combination_name="path_only"),
+            _row(question_id=3, modality_combination_name="radiology_only"),
+        ]
+    )
+    cfg = {
+        "filters": {
+            "modality_combination_names": {
+                "enabled": True,
+                "values": ["all_available"],
+            }
+        }
+    }
+
+    selected = select_eval_rows(frame, cfg)
+
+    assert selected["question_id"].tolist() == [1]
 
 
 def test_select_eval_rows_returns_empty_for_unmatched_modality_combo() -> None:
