@@ -1,0 +1,125 @@
+data:
+  train_files: ./data/oncovlm_pathology_mcq/train_batch8.parquet
+  val_files: ./data/oncovlm_pathology_mcq/val_monitor64.parquet
+  prompt_key: problem
+  answer_key: answer
+  image_key: images
+  video_key: videos
+  image_dir: null
+  video_fps: 2.0
+  max_prompt_length: 3072
+  max_response_length: 320
+  rollout_batch_size: 8
+  mini_rollout_batch_size: null
+  val_batch_size: 8
+  format_prompt: ./examples/format_prompt/oncovlm_pathology_mcq.jinja
+  override_chat_template: null
+  shuffle: true
+  seed: 417
+  min_pixels: 262144
+  max_pixels: 262144
+  filter_overlong_prompts: true
+  filter_overlong_prompts_workers: 8
+
+algorithm:
+  adv_estimator: grpo
+  disable_kl: false
+  use_kl_loss: true
+  kl_penalty: low_var_kl
+  kl_coef: 1.0e-2
+  online_filtering: false
+  filter_key: overall
+  filter_low: 0.01
+  filter_high: 0.99
+
+worker:
+  actor:
+    global_batch_size: 8
+    micro_batch_size_per_device_for_update: 1
+    micro_batch_size_per_device_for_experience: 1
+    max_grad_norm: 1.0
+    padding_free: true
+    dynamic_batching: true
+    ulysses_size: 1
+    model:
+      model_path: Qwen/Qwen2.5-VL-3B-Instruct
+      enable_gradient_checkpointing: true
+      trust_remote_code: false
+      freeze_vision_tower: false
+      lora:
+        rank: 0
+        alpha: 64
+        target_modules: all-linear
+        exclude_modules: .*visual.*
+    optim:
+      lr: 1.0e-6
+      weight_decay: 1.0e-2
+      strategy: adamw_bf16
+      lr_warmup_ratio: 0.0
+      lr_scheduler_type: constant
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: false
+      enable_rank0_init: true
+      torch_dtype: bf16
+      mp_param_dtype: bf16
+      mp_reduce_dtype: fp32
+      mp_buffer_dtype: fp32
+    offload:
+      offload_params: true
+      offload_optimizer: true
+
+  rollout:
+    n: 4
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    seed: 417
+    limit_images: 4
+    dtype: bf16
+    gpu_memory_utilization: 0.45
+    ignore_eos: false
+    enforce_eager: false
+    enable_chunked_prefill: false
+    tensor_parallel_size: 1
+    max_model_len: 3392
+    max_num_batched_tokens: 8192
+    disable_log_stats: true
+    disable_tqdm: false
+    val_override_config:
+      temperature: 0.6
+      top_p: 0.95
+      n: 1
+
+  ref:
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: true
+      enable_rank0_init: true
+      torch_dtype: bf16
+    offload:
+      offload_params: false
+
+  reward:
+    reward_function: ./examples/reward_function/oncovlm_pathology_mcq.py:compute_score
+    num_cpus: 1
+
+trainer:
+  total_epochs: 1
+  max_steps: null
+  project_name: oncovlm
+  experiment_name: easyr1_pathology_mcq_qwen25vl3b_bf16_full
+  logger: ["file", "wandb"]
+  nnodes: 1
+  n_gpus_per_node: 1
+  max_try_make_batch: 20
+  val_freq: 25
+  val_before_train: true
+  val_only: false
+  val_generations_to_log: 64
+  save_freq: 25
+  save_limit: 2
+  save_model_only: false
+  save_checkpoint_path: null
+  load_checkpoint_path: null
+  find_last_checkpoint: true
