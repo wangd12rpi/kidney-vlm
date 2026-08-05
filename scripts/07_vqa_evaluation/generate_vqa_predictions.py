@@ -32,8 +32,11 @@ from kidney_vlm.vqa.data import (
     _coerce_token_ids,
     _find_placeholder_span,
     filter_rows_with_prefix_cache,
+    load_modality_feature_tensor,
     load_row_cached_prefix_tensor,
+    pad_optional_feature_tensors,
     pad_optional_prefix_tensors,
+    prefix_cache_enabled,
 )
 from kidney_vlm.vqa.eval_gpt import (
     apply_group_sampling,
@@ -50,8 +53,10 @@ from kidney_vlm.vqa.modeling import (
     build_language_model,
     build_tokenizer,
     generate_language_model_with_soft_prefix,
+    load_projectors,
     move_batch_to_device,
 )
+from kidney_vlm.modeling.path_projectors import resolve_language_model_hidden_size
 from kidney_vlm.vqa.prompts import (
     build_vqa_prompt,
     prefix_placeholder_for_modality,
@@ -64,12 +69,14 @@ from kidney_vlm.vqa.stage_config import as_bool, cfg_get, clean_text, resolve_to
 ROOT = find_repo_root(Path(__file__))
 os.environ["KIDNEY_VLM_ROOT"] = str(ROOT)
 ONCOVLM_CACHE_BACKENDS = {"oncovlm_projector", "oncovlm_lora"}
+DEFAULT_CONFIG_RELATIVE_PATH = "07_vqa_evaluation/generate_vqa_predictions.yaml"
+CONFIG_PATH_ENV = "KIDNEY_VLM_VQA_GENERATION_CONFIG"
 
 
 def load_cfg():
     return load_script_cfg(
         repo_root=ROOT,
-        config_relative_path="07_vqa_evaluation/generate_vqa_predictions.yaml",
+        config_relative_path=os.getenv(CONFIG_PATH_ENV, DEFAULT_CONFIG_RELATIVE_PATH),
         overrides=sys.argv[1:],
     )
 
@@ -769,11 +776,29 @@ class HFImageTextBackend:
             model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
             if "device_map" not in model_kwargs:
                 model_kwargs["device_map"] = {"": self.device.index or 0}
-        self.processor = AutoProcessor.from_pretrained(
-            model_name,
-            trust_remote_code=bool(self.model_cfg.get("trust_remote_code", True)),
-        )
+        processor_kwargs: dict[str, Any] = {
+            "trust_remote_code": bool(self.model_cfg.get("trust_remote_code", True)),
+        }
+        for key in ("min_pixels", "max_pixels"):
+            if self.model_cfg.get(key) not in (None, "", "null"):
+                processor_kwargs[key] = int(self.model_cfg[key])
+        self.processor = AutoProcessor.from_pretrained(model_name, **processor_kwargs)
+        self.processor.tokenizer.padding_side = "left"
         self.model = AutoModelForImageTextToText.from_pretrained(model_name, **model_kwargs)
+        adapter_path_text = clean_text(self.model_cfg.get("lora_adapter_path"))
+        if adapter_path_text:
+            adapter_path = _resolve_path(adapter_path_text)
+            if not adapter_path.is_dir():
+                raise FileNotFoundError(f"LoRA adapter directory does not exist: {adapter_path}")
+            try:
+                from peft import PeftModel
+            except ImportError as exc:
+                raise RuntimeError("peft is required for HF image-text LoRA evaluation.") from exc
+            self.model = PeftModel.from_pretrained(
+                self.model,
+                str(adapter_path),
+                is_trainable=False,
+            )
         if "device_map" not in model_kwargs and not load_in_8bit:
             self.model.to(self.device)
         self.model.eval()
@@ -802,13 +827,17 @@ class HFImageTextBackend:
             for request in requests
         ]
         message_payload = messages[0] if len(messages) == 1 else messages
+        template_kwargs: dict[str, Any] = {}
+        if "enable_thinking" in self.model_cfg:
+            template_kwargs["enable_thinking"] = bool(self.model_cfg["enable_thinking"])
         inputs = self.processor.apply_chat_template(
             message_payload,
             add_generation_prompt=True,
             tokenize=True,
             return_dict=True,
             return_tensors="pt",
-            processor_kwargs={"padding": True},
+            padding=True,
+            **template_kwargs,
         )
         inputs = inputs.to(getattr(self.model, "device", self.device))
         input_len = int(inputs["input_ids"].shape[1]) if "input_ids" in inputs else 0
@@ -822,13 +851,14 @@ def _oncovlm_stage_cfg(model_cfg: Mapping[str, Any], *, eval_cfg: Mapping[str, A
     stage_cfg = dict(model_cfg)
     stage_cfg["cot"] = dict(stage_cfg.get("cot") or {})
     prefix_cfg = dict(eval_cfg.get("prefix_cache") or {})
+    prefix_cfg.update(dict(stage_cfg.get("prefix_cache") or {}))
     if not prefix_cfg:
-        raise ValueError("VQA generation config must define prefix_cache for OncoVLM cache backends.")
-    if not as_bool(prefix_cfg.get("enabled", True)):
-        raise ValueError("OncoVLM evaluation is cache-only; prefix_cache.enabled must be true.")
-    prefix_cfg["enabled"] = True
+        raise ValueError("VQA generation config must define prefix_cache for OncoVLM backends.")
     stage_cfg["prefix_cache"] = prefix_cfg
-    stage_cfg.pop("projectors", None)
+    if not as_bool(prefix_cfg.get("enabled", True)) and not dict(stage_cfg.get("projectors") or {}):
+        raise ValueError(
+            "Live-projector OncoVLM evaluation requires model.projectors when prefix_cache.enabled=false."
+        )
     return stage_cfg
 
 
@@ -917,6 +947,74 @@ def _cached_prefix_rows_batch(
     return batch, prompt_texts, response_prefixes
 
 
+def _live_projector_rows_batch(
+    *,
+    rows: list[Mapping[str, Any]],
+    tokenizer: Any,
+    eval_cfg: Mapping[str, Any],
+    stage_cfg: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    if not rows:
+        raise ValueError("OncoVLM live-projector evaluation received an empty row batch.")
+
+    token_id_rows: list[list[int]] = []
+    prefix_spans: list[list[dict[str, int | str]]] = []
+    prompt_texts: list[str] = []
+    response_prefixes: list[str] = []
+    feature_tensors: dict[str, list[torch.Tensor | None]] = {
+        modality: [] for modality in MODALITIES
+    }
+    cot_cfg = dict(stage_cfg.get("cot") or {})
+    enable_thinking = as_bool(cot_cfg.get("enabled", False))
+    thinking_prefill = clean_text(cot_cfg.get("thinking_prefill"))
+    projectors_cfg = dict(stage_cfg.get("projectors") or {})
+
+    for row in rows:
+        prompt_text = build_vqa_prompt(row, _prompt_block_for_projector(row, eval_cfg))
+        token_ids = _prompt_token_ids(
+            tokenizer,
+            prompt_text,
+            enable_thinking=enable_thinking,
+        )
+        response_prefix = thinking_prefill if enable_thinking and thinking_prefill else ""
+        if response_prefix:
+            token_ids += _coerce_token_ids(
+                tokenizer(response_prefix, add_special_tokens=False)["input_ids"]
+            )
+        spans: list[dict[str, int | str]] = []
+        for modality in row_modalities(row):
+            start, end = _find_placeholder_span(
+                tokenizer,
+                token_ids,
+                prefix_placeholder_for_modality(modality),
+            )
+            spans.append({"modality": modality, "start": start, "end": end})
+        token_id_rows.append(token_ids)
+        prefix_spans.append(spans)
+        prompt_texts.append(prompt_text)
+        response_prefixes.append(response_prefix)
+
+        for modality in MODALITIES:
+            if row_uses_modality(row, modality):
+                block_cfg = dict(projectors_cfg.get(modality) or {})
+                if not as_bool(block_cfg.get("enabled", False)):
+                    raise ValueError(
+                        f"Question {row.get('question_id')} uses {modality}, "
+                        "but its live projector is disabled."
+                    )
+                feature_tensors[modality].append(
+                    load_modality_feature_tensor(ROOT, row, modality, block_cfg)
+                )
+            else:
+                feature_tensors[modality].append(None)
+
+    batch = _pad_prompt_batch(tokenizer, token_id_rows)
+    batch["prefix_spans"] = prefix_spans
+    for modality, tensors in feature_tensors.items():
+        batch.update(pad_optional_feature_tensors(modality, tensors))
+    return batch, prompt_texts, response_prefixes
+
+
 class OncoVLMProjectorBackend:
     def __init__(self, model_cfg: Mapping[str, Any], *, eval_cfg: Mapping[str, Any], dry_run: bool):
         self.model_cfg = dict(model_cfg)
@@ -924,9 +1022,13 @@ class OncoVLMProjectorBackend:
         self.stage_cfg = _oncovlm_stage_cfg(model_cfg, eval_cfg=eval_cfg)
         self.dry_run = dry_run
         self.device = _resolve_device(self.stage_cfg.get("device"))
+        self.use_prefix_cache = prefix_cache_enabled(self.stage_cfg)
         self.tokenizer = None
         self.model = None
         self.prefix_dtype = None
+        self.projector_dtype = resolve_torch_dtype(
+            self.stage_cfg.get("projector_dtype", "float32")
+        )
         self.autocast_dtype = resolve_torch_dtype(self.stage_cfg.get("autocast_dtype", "bfloat16")) or torch.bfloat16
         if dry_run:
             return
@@ -937,11 +1039,23 @@ class OncoVLMProjectorBackend:
         language_model = build_language_model(self.stage_cfg, device=self.device)
         if clean_text(self.model_cfg.get("backend")) == "oncovlm_lora":
             language_model = _load_lora_adapter(language_model, self.stage_cfg)
+        projectors = {}
+        projector_metadata = {}
+        if not self.use_prefix_cache:
+            projectors, projector_metadata = load_projectors(
+                self.stage_cfg,
+                repo_root=ROOT,
+                hidden_size=resolve_language_model_hidden_size(language_model),
+            )
         self.model = OncoVLMVQASFTModel(
             language_model=language_model,
+            projectors=projectors,
+            projector_metadata=projector_metadata,
         )
-        if not bool(self.stage_cfg.get("load_in_8bit", False)):
+        if self.use_prefix_cache and not bool(self.stage_cfg.get("load_in_8bit", False)):
             self.model.to(self.device)
+        elif not self.use_prefix_cache:
+            self.model.move_projectors_to(self.device, dtype=self.projector_dtype)
         self.prefix_dtype = self.model.language_model.get_input_embeddings().weight.dtype
         self.model.eval()
 
@@ -951,18 +1065,38 @@ class OncoVLMProjectorBackend:
     def generate_batch(self, *, rows: list[Mapping[str, Any]], generation_kwargs: Mapping[str, Any]) -> list[tuple[str, str]]:
         if self.dry_run:
             return [('{"answer": "", "rationale": "dry run"}', "") for _ in rows]
-        batch, prompt_texts, response_prefixes = _cached_prefix_rows_batch(
+        batch_builder = (
+            _cached_prefix_rows_batch
+            if self.use_prefix_cache
+            else _live_projector_rows_batch
+        )
+        batch, prompt_texts, response_prefixes = batch_builder(
             rows=rows,
             tokenizer=self.tokenizer,
             eval_cfg=prompt_cfg_for_model(self.eval_cfg, self.model_cfg),
             stage_cfg=self.stage_cfg,
         )
-        batch = move_batch_to_device(batch, self.device, floating_dtype=self.prefix_dtype)
+        floating_dtype = (
+            self.prefix_dtype if self.use_prefix_cache else self.projector_dtype
+        )
+        batch = move_batch_to_device(
+            batch,
+            self.device,
+            floating_dtype=floating_dtype,
+        )
         use_autocast = self.device.type == "cuda" and self.autocast_dtype != torch.float32
         with torch.no_grad(), torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype, enabled=use_autocast):
             inputs = self.model.prepare_interleaved_generation_inputs(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
+                pathology_features=batch.get("pathology_features"),
+                pathology_feature_mask=batch.get("pathology_feature_mask"),
+                radiology_features=batch.get("radiology_features"),
+                radiology_feature_mask=batch.get("radiology_feature_mask"),
+                dnam_features=batch.get("dnam_features"),
+                dnam_feature_mask=batch.get("dnam_feature_mask"),
+                rna_features=batch.get("rna_features"),
+                rna_feature_mask=batch.get("rna_feature_mask"),
                 pathology_prefix_embeddings=batch.get("pathology_prefix_embeddings"),
                 pathology_prefix_mask=batch.get("pathology_prefix_mask"),
                 radiology_prefix_embeddings=batch.get("radiology_prefix_embeddings"),

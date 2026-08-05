@@ -202,3 +202,29 @@ def test_vqa_scoring_script_cfg_uses_stage_07_path() -> None:
         == "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext"
     )
     assert int(cfg.vqa_evaluation.metrics.bert_score.num_layers) == 9
+
+
+def test_qwen25vl_easyr1_test_cfg_selects_full_test_pair() -> None:
+    pytest.importorskip("hydra")
+
+    from kidney_vlm.script_config import load_script_cfg
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg = load_script_cfg(
+        repo_root=repo_root,
+        config_relative_path="07_vqa_evaluation/qwen25vl_easyr1_test.yaml",
+    )
+
+    eval_cfg = cfg.vqa_evaluation
+    assert bool(eval_cfg.filters.row_limit.enabled) is False
+    assert str(eval_cfg.filters.split.value) == "test"
+    assert list(eval_cfg.filters.task_ids["values"]) == ["pathology_findings"]
+    assert bool(eval_cfg.models.qwen25vl3b_base.enabled) is True
+    assert bool(eval_cfg.models.qwen25vl3b_grpo_final.enabled) is True
+    assert str(eval_cfg.models.qwen25vl3b_grpo_final.lora_adapter_path).endswith(
+        "/global_step_485/actor/lora_adapter"
+    )
+    assert int(eval_cfg.image_inputs.max_pathology_images) == 4
+    assert str(eval_cfg.image_inputs.pathology_selection) == "evenly_spaced"
+    assert int(eval_cfg.generation.max_new_tokens) == 320
+    assert bool(eval_cfg.generation.do_sample) is False

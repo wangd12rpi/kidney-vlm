@@ -1,0 +1,83 @@
+defaults:
+  - vqa_common
+  - _self_
+
+name: vqa_sft_projector_ft_all_caption_mcq
+post_train_method: sft
+
+# Continue the focused trainable-projector checkpoint on every caption-derived
+# MCQ, across all task IDs and modality combinations.
+dataset:
+  vqa_parquet_path: ${project.root_dir}/data/vqa/merged_vqa.parquet
+  question_types:
+    - mcq
+  generation_types:
+    - from_caption
+  modality_combination_names: []
+  project_ids: []
+  task_categories: []
+  task_ids: []
+
+cot:
+  enabled: false
+  rationale_column: rationale
+
+sft:
+  init_lora_adapter_path: >-
+    ${project.root_dir}/outputs/oncovlm/sft/qwen35_pathology_mcq_nocot_projft_4ep_b2_ga8_20260729/best/lora_adapter
+
+prefix_cache:
+  enabled: false
+  scan_before_training: false
+
+projectors:
+  pathology:
+    trainable: true
+    checkpoint_path: >-
+      ${project.root_dir}/outputs/oncovlm/sft/qwen35_pathology_mcq_nocot_projft_4ep_b2_ga8_20260729/best/projectors.ckpt
+  radiology:
+    trainable: true
+    checkpoint_path: >-
+      ${project.root_dir}/outputs/oncovlm/sft/qwen35_pathology_mcq_nocot_projft_4ep_b2_ga8_20260729/best/projectors.ckpt
+  dnam:
+    trainable: true
+    checkpoint_path: >-
+      ${project.root_dir}/outputs/oncovlm/sft/qwen35_pathology_mcq_nocot_projft_4ep_b2_ga8_20260729/best/projectors.ckpt
+  rna:
+    trainable: true
+    checkpoint_path: >-
+      ${project.root_dir}/outputs/oncovlm/sft/qwen35_pathology_mcq_nocot_projft_4ep_b2_ga8_20260729/best/projectors.ckpt
+
+autocast_dtype: bfloat16
+projector_dtype: float32
+batch_size: 2
+num_epochs: 4
+learning_rate: 1e-4
+projector_learning_rate: 1e-5
+weight_decay: 0.0
+projector_weight_decay: 0.0
+gradient_accumulation_steps: 8
+grad_clip_norm: 1.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+warmup_steps:
+dataloader_num_workers: 4
+
+validation:
+  enabled: true
+  required: true
+
+# Make a meeting-ready checkpoint available after each completed epoch.
+save_every_epoch: true
+
+# The local credential store is verified before launching the full run.
+wandb:
+  enabled: true
+  mode: online
+  tags:
+    - vqa_train
+    - lora
+    - sft
+    - projector_ft
+    - all_caption_mcq
+    - no_cot

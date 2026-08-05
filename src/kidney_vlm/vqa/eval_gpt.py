@@ -459,7 +459,13 @@ def build_eval_prompt(row: Mapping[str, Any], cfg: Mapping[str, Any]) -> tuple[s
         options = option_values(row)
         if len(options) < 2:
             raise ValueError(f"MCQ question {row.get('question_id', '<unknown>')} has fewer than two options.")
-        option_lines = [f"- {option}" for option in options]
+        if bool(prompt_block.get("label_choices", False)):
+            option_lines = [
+                f"{label}. {option}"
+                for label, option in zip(ANSWER_LABELS, options)
+            ]
+        else:
+            option_lines = [f"- {option}" for option in options]
         user_prompt = (
             f"{user_prompt}\n\n"
             "<choices>\n"
@@ -487,6 +493,7 @@ def _collect_images_from_dir(
     max_images: int,
     allowed_extensions: Sequence[str],
     field_name: str,
+    selection: str = "first",
 ) -> list[Path]:
     if not str(dir_value).strip():
         raise FileNotFoundError(
@@ -512,7 +519,28 @@ def _collect_images_from_dir(
         raise FileNotFoundError(
             f"No image files found in required image directory '{field_name}': {image_dir}"
         )
-    return image_paths[:max_images]
+    return _select_image_paths(image_paths, max_images=max_images, selection=selection)
+
+
+def _select_image_paths(
+    image_paths: list[Path], *, max_images: int, selection: str
+) -> list[Path]:
+    if max_images < 1:
+        raise ValueError("Maximum image count must be at least 1.")
+    if len(image_paths) <= max_images:
+        return image_paths
+    if selection == "first":
+        return image_paths[:max_images]
+    if selection == "evenly_spaced":
+        if max_images == 1:
+            return image_paths[:1]
+        last_index = len(image_paths) - 1
+        indices = [
+            (index * last_index) // (max_images - 1)
+            for index in range(max_images)
+        ]
+        return [image_paths[index] for index in indices]
+    raise ValueError(f"Unsupported image selection strategy: {selection!r}")
 
 
 def _collect_images_from_file_list(
@@ -568,6 +596,7 @@ def collect_required_image_paths(
                 max_images=int(image_cfg.get("max_pathology_images", 2)),
                 allowed_extensions=allowed_extensions,
                 field_name="pathology_roi_png_dir",
+                selection=str(image_cfg.get("pathology_selection", "first")).strip(),
             )
         )
     if bool(row.get("use_radiology")):

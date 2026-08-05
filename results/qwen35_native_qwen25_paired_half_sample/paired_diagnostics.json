@@ -1,0 +1,101 @@
+{
+  "sample": {
+    "n": 321,
+    "seed": 417,
+    "filter": "test / mcq / from_caption / all_available / pathology_findings"
+  },
+  "models": {
+    "qwen25vl3b_base": {
+      "n": 321,
+      "correct": 97,
+      "accuracy": 0.30218068535825543,
+      "accuracy_wilson_95": [
+        0.254528863408272,
+        0.3545111881262169
+      ],
+      "f1_macro": 0.298545089706068,
+      "f1_weighted": 0.3034189600636983,
+      "parse_failed": 7,
+      "parsed_only_accuracy": 0.3089171974522293
+    },
+    "qwen25vl3b_grpo_final": {
+      "n": 321,
+      "correct": 114,
+      "accuracy": 0.35514018691588783,
+      "accuracy_wilson_95": [
+        0.3047841441150337,
+        0.4089223503157338
+      ],
+      "f1_macro": 0.3516110138597969,
+      "f1_weighted": 0.35495593732214153,
+      "parse_failed": 4,
+      "parsed_only_accuracy": 0.35962145110410093
+    },
+    "qwen35_9b_native_base": {
+      "n": 321,
+      "correct": 148,
+      "accuracy": 0.46105919003115264,
+      "accuracy_wilson_95": [
+        0.4073100015765826,
+        0.515729378646742
+      ],
+      "f1_macro": 0.4566166810196202,
+      "f1_weighted": 0.4609674463562296,
+      "parse_failed": 7,
+      "parsed_only_accuracy": 0.4713375796178344
+    }
+  },
+  "paired": {
+    "qwen25vl3b_base__to__qwen25vl3b_grpo_final": {
+      "delta_accuracy": 0.052959501557632405,
+      "delta_pp": 5.29595015576324,
+      "wrong_to_right": 49,
+      "right_to_wrong": 32,
+      "both_correct": 65,
+      "both_wrong": 175,
+      "mcnemar_exact_two_sided_p": 0.07478815428283364,
+      "paired_bootstrap_95": [
+        -0.0031152647975077885,
+        0.10903426791277257
+      ],
+      "paired_bootstrap_95_pp": [
+        -0.31152647975077885,
+        10.903426791277257
+      ]
+    },
+    "qwen25vl3b_base__to__qwen35_9b_native_base": {
+      "delta_accuracy": 0.15887850467289721,
+      "delta_pp": 15.887850467289722,
+      "wrong_to_right": 87,
+      "right_to_wrong": 36,
+      "both_correct": 61,
+      "both_wrong": 137,
+      "mcnemar_exact_two_sided_p": 4.848718134555307e-06,
+      "paired_bootstrap_95": [
+        0.09345794392523366,
+        0.22429906542056077
+      ],
+      "paired_bootstrap_95_pp": [
+        9.345794392523366,
+        22.429906542056077
+      ]
+    },
+    "qwen25vl3b_grpo_final__to__qwen35_9b_native_base": {
+      "delta_accuracy": 0.10591900311526481,
+      "delta_pp": 10.59190031152648,
+      "wrong_to_right": 81,
+      "right_to_wrong": 47,
+      "both_correct": 67,
+      "both_wrong": 126,
+      "mcnemar_exact_two_sided_p": 0.003374185020092195,
+      "paired_bootstrap_95": [
+        0.03738317757009346,
+        0.1744548286604361
+      ],
+      "paired_bootstrap_95_pp": [
+        3.738317757009346,
+        17.44548286604361
+      ]
+    }
+  }
+}

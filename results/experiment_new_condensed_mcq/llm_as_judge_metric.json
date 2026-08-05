@@ -1,0 +1,93 @@
+{
+  "metrics": [
+    {
+      "baseline_model": "gpt_5_4",
+      "baseline_wins": 18,
+      "metric_group": "overall",
+      "n": 121,
+      "parse_failed": 0,
+      "target_model": "oncovlm_qwen_lora",
+      "target_win_rate_excluding_ties": 0.788235294117647,
+      "target_win_rate_ties_half": 0.7024793388429752,
+      "target_wins": 67,
+      "task_id": "ALL",
+      "ties": 36
+    },
+    {
+      "baseline_model": "gpt_5_4",
+      "baseline_wins": 1,
+      "metric_group": "by_task",
+      "n": 7,
+      "parse_failed": 0,
+      "target_model": "oncovlm_qwen_lora",
+      "target_win_rate_excluding_ties": 0.8,
+      "target_win_rate_ties_half": 0.7142857142857143,
+      "target_wins": 4,
+      "task_id": "CO1",
+      "ties": 2
+    },
+    {
+      "baseline_model": "gpt_5_4",
+      "baseline_wins": 12,
+      "metric_group": "by_task",
+      "n": 37,
+      "parse_failed": 0,
+      "target_model": "oncovlm_qwen_lora",
+      "target_win_rate_excluding_ties": 0.5714285714285714,
+      "target_win_rate_ties_half": 0.5540540540540541,
+      "target_wins": 16,
+      "task_id": "CO2",
+      "ties": 9
+    },
+    {
+      "baseline_model": "gpt_5_4",
+      "baseline_wins": 4,
+      "metric_group": "by_task",
+      "n": 36,
+      "parse_failed": 0,
+      "target_model": "oncovlm_qwen_lora",
+      "target_win_rate_excluding_ties": 0.84,
+      "target_win_rate_ties_half": 0.7361111111111112,
+      "target_wins": 21,
+      "task_id": "CO3",
+      "ties": 11
+    },
+    {
+      "baseline_model": "gpt_5_4",
+      "baseline_wins": 1,
+      "metric_group": "by_task",
+      "n": 41,
+      "parse_failed": 0,
+      "target_model": "oncovlm_qwen_lora",
+      "target_win_rate_excluding_ties": 0.9629629629629629,
+      "target_win_rate_ties_half": 0.8048780487804879,
+      "target_wins": 26,
+      "task_id": "CO4",
+      "ties": 14
+    }
+  ],
+  "run": {
+    "baseline_model": "gpt_5_4",
+    "detailed_case_summary_path": "/media/volume/patho_meth/kidney-vlm/scripts/mcq_from_caption_gen_ahnaf/caption_all.parquet",
+    "evaluated_at": "2026-05-07T04:52:49.030605+00:00",
+    "filters": {
+      "generation_types": [
+        "from_caption"
+      ],
+      "max_pairs_per_task": 50,
+      "modality_combination_name": "all_available",
+      "pair_order_seed": 123,
+      "project_id": "TCGA-BRCA",
+      "question_types": [
+        "qa"
+      ],
+      "repeat_id": 0,
+      "sample": true,
+      "sample_seed": 42,
+      "task_categories": []
+    },
+    "judge_deployment": "claude-sonnet-4-6",
+    "predictions_path": "/media/volume/patho_meth/kidney-vlm/results/experiment_new_condensed_mcq/predictions.parquet",
+    "target_model": "oncovlm_qwen_lora"
+  }
+}

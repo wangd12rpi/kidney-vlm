@@ -1,0 +1,19 @@
+{
+  "test": {
+    "jointly_correct_questions": 21.0,
+    "new_accuracy_shared": 0.26199261992619927,
+    "new_mean_words_jointly_correct": 126.66666666666667,
+    "new_two_step_rate_jointly_correct": 1.0,
+    "old_accuracy_shared": 0.25461254612546125,
+    "old_four_choice_walkthrough_rate_jointly_correct": 1.0,
+    "old_mean_words_jointly_correct": 149.9047619047619,
+    "shared_test_questions": 271.0
+  },
+  "training": {
+    "new_mean_words": 129.9300149700599,
+    "new_two_step_rate": 1.0,
+    "old_four_choice_walkthrough_rate": 1.0,
+    "old_mean_words": 163.17589820359282,
+    "shared_train_questions": 2672.0
+  }
+}

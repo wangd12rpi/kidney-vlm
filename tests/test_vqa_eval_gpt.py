@@ -89,6 +89,16 @@ def test_build_mcq_prompt_uses_semantic_options_without_letters() -> None:
     assert "answer_letter" not in user_prompt
 
 
+def test_build_mcq_prompt_can_show_labeled_choices() -> None:
+    cfg = _prompt_cfg()
+    cfg["prompts"]["mcq"]["label_choices"] = True
+
+    _, user_prompt = build_mcq_prompt(_row(), cfg)
+
+    assert "A. TP53 mutation present" in user_prompt
+    assert "B. TP53 mutation absent" in user_prompt
+
+
 def test_build_mcq_prompt_marks_required_images_without_fake_text() -> None:
     _, user_prompt = build_mcq_prompt(
         _row(
@@ -683,6 +693,33 @@ def test_collect_required_image_paths_reads_real_pathology_images(tmp_path) -> N
     )
 
     assert [path.name for path in paths] == ["a.jpg"]
+
+
+def test_collect_required_image_paths_can_select_evenly_spaced_images(tmp_path) -> None:
+    roi_dir = tmp_path / "roi"
+    roi_dir.mkdir()
+    for index in range(10):
+        (roi_dir / f"{index}.png").write_bytes(b"png")
+
+    paths = collect_required_image_paths(
+        _row(
+            use_pathology=True,
+            use_dnam=False,
+            use_rna=False,
+            pathology_roi_png_dir=str(roi_dir),
+        ),
+        {
+            "image_inputs": {
+                "enabled": True,
+                "max_pathology_images": 4,
+                "pathology_selection": "evenly_spaced",
+                "allowed_extensions": [".png"],
+            }
+        },
+        repo_root=tmp_path,
+    )
+
+    assert [path.name for path in paths] == ["0.png", "3.png", "6.png", "9.png"]
 
 
 def test_collect_required_image_paths_fails_when_images_disabled(tmp_path) -> None:

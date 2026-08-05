@@ -1,0 +1,100 @@
+name: vqa_generate_predictions
+
+run:
+  name: easyr1_qwen25vl3b_pathology_mcq_test
+  output_root: ${project.root_dir}/results
+  resume_existing: true
+  prediction_filename: predictions.parquet
+  save_every_n_predictions: 8
+  include_prompt_in_predictions: true
+  print_first_n_outputs: 2
+  dry_run: false
+
+data:
+  vqa_parquet_path: ${project.root_dir}/data/vqa/merged_vqa.parquet
+
+models:
+  qwen25vl3b_base:
+    enabled: true
+    display_name: qwen25vl3b_base
+    backend: hf_image_text_to_text
+    model_name_or_path: Qwen/Qwen2.5-VL-3B-Instruct
+    prompt_profile: easyr1_pathology_mcq
+    trust_remote_code: false
+    load_in_8bit: false
+    torch_dtype: bfloat16
+    attn_implementation: sdpa
+    device: cuda:0
+    batch_size: 4
+    min_pixels: 262144
+    max_pixels: 262144
+
+  qwen25vl3b_grpo_final:
+    enabled: true
+    display_name: qwen25vl3b_grpo_final
+    backend: hf_image_text_to_text
+    model_name_or_path: Qwen/Qwen2.5-VL-3B-Instruct
+    lora_adapter_path: >-
+      ${project.root_dir}/external/EasyR1/checkpoints/oncovlm/easyr1_pathology_mcq_qwen25vl3b_lora64_full/global_step_485/actor/lora_adapter
+    prompt_profile: easyr1_pathology_mcq
+    trust_remote_code: false
+    load_in_8bit: false
+    torch_dtype: bfloat16
+    attn_implementation: sdpa
+    device: cuda:0
+    batch_size: 4
+    min_pixels: 262144
+    max_pixels: 262144
+
+filters:
+  split:
+    enabled: true
+    value: test
+  question_types:
+    enabled: true
+    values: [mcq]
+  generation_types:
+    enabled: true
+    values: [from_caption]
+  modality_combination_names:
+    enabled: true
+    values: [all_available]
+  task_ids:
+    enabled: true
+    values: [pathology_findings]
+  row_limit:
+    enabled: false
+
+sampling:
+  enabled: false
+
+repeats:
+  n: 1
+  seed: 417
+  repeat_modality_combination_names: [all_available]
+
+prompts:
+  easyr1_pathology_mcq:
+    mcq:
+      system_prompt: >-
+        You are a multimodal cancer assistant. Use only the provided multimodal evidence.
+      label_choices: true
+      response_instruction: >-
+        Briefly explain the discriminating evidence for your choice inside <think> and </think>;
+        focus on relevant findings instead of restating the choices. Do not rely on captions,
+        reports, hidden labels, or answer keys. Then place exactly one complete displayed choice
+        inside <answer> and </answer>, copying its full text without its A/B/C/D label. Do not
+        answer with a choice letter. Respond exactly as:
+        <think>brief, evidence-grounded reasoning</think><answer>complete choice text without its letter label</answer>
+
+generation:
+  max_new_tokens: 320
+  do_sample: false
+
+image_inputs:
+  enabled: true
+  ignore_radiology_biomarker: true
+  max_pathology_images: 4
+  pathology_selection: evenly_spaced
+  max_radiology_images: 4
+  allowed_extensions: [.png, .jpg, .jpeg]

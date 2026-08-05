@@ -125,6 +125,23 @@ def _extract_method(overrides: list[str]) -> tuple[str, list[str]]:
     return method or "sft", kept
 
 
+def _extract_profile(overrides: list[str]) -> tuple[str, list[str]]:
+    profile = ""
+    kept: list[str] = []
+    for override in overrides:
+        if override.startswith("profile="):
+            profile = override.split("=", 1)[1].strip()
+        else:
+            kept.append(override)
+    if profile and not all(
+        character.isalnum() or character in {"_", "-"} for character in profile
+    ):
+        raise ValueError(
+            "Training profile names may contain only letters, numbers, underscores, and hyphens."
+        )
+    return profile, kept
+
+
 def _wrap_vqa_train_cfg(raw_cfg: Any) -> Any:
     if "defaults" in raw_cfg:
         del raw_cfg["defaults"]
@@ -138,12 +155,16 @@ def _wrap_vqa_train_cfg(raw_cfg: Any) -> Any:
 def load_cfg_from_overrides(overrides: list[str] | None = None):
     overrides = list(overrides or [])
     method, kept_overrides = _extract_method(overrides)
+    profile, kept_overrides = _extract_profile(kept_overrides)
     cfg = load_script_cfg(
         repo_root=ROOT,
         config_relative_path="06_vqa_train/vqa_common.yaml",
         overrides=[],
     )
-    method_path = ROOT / "conf" / "06_vqa_train" / f"vqa_{method}.yaml"
+    config_stem = f"vqa_{method}_{profile}" if profile else f"vqa_{method}"
+    method_path = ROOT / "conf" / "06_vqa_train" / f"{config_stem}.yaml"
+    if not method_path.exists():
+        raise FileNotFoundError(f"VQA training profile not found: {method_path}")
     method_cfg = _wrap_vqa_train_cfg(OmegaConf.load(method_path))
     cfg = OmegaConf.merge(cfg, method_cfg)
     if kept_overrides:
@@ -281,6 +302,73 @@ def _compute_total_optimizer_steps(
         num_batches_per_epoch / max(1, gradient_accumulation_steps)
     )
     return updates_per_epoch * num_epochs
+
+
+def _build_sft_optimizer(
+    *,
+    model: OncoVLMVQASFTModel,
+    train_model: torch.nn.Module,
+    stage_cfg: Any,
+) -> tuple[torch.optim.Optimizer, list[torch.nn.Parameter]]:
+    trainable_parameters = [
+        parameter for parameter in train_model.parameters() if parameter.requires_grad
+    ]
+    if not trainable_parameters:
+        raise RuntimeError("No trainable parameters found for VQA LoRA training.")
+
+    projector_parameter_ids = {
+        id(parameter)
+        for _, module in model.projector_modules()
+        for parameter in module.parameters()
+        if parameter.requires_grad
+    }
+    projector_parameters = [
+        parameter
+        for parameter in trainable_parameters
+        if id(parameter) in projector_parameter_ids
+    ]
+    language_parameters = [
+        parameter
+        for parameter in trainable_parameters
+        if id(parameter) not in projector_parameter_ids
+    ]
+
+    learning_rate = float(cfg_get(stage_cfg, "learning_rate", 2e-5))
+    weight_decay = float(cfg_get(stage_cfg, "weight_decay", 0.0))
+    raw_projector_lr = cfg_get(stage_cfg, "projector_learning_rate", None)
+    projector_learning_rate = (
+        learning_rate
+        if raw_projector_lr in (None, "", "null")
+        else float(raw_projector_lr)
+    )
+    raw_projector_weight_decay = cfg_get(stage_cfg, "projector_weight_decay", None)
+    projector_weight_decay = (
+        weight_decay
+        if raw_projector_weight_decay in (None, "", "null")
+        else float(raw_projector_weight_decay)
+    )
+
+    parameter_groups: list[dict[str, Any]] = []
+    if language_parameters:
+        parameter_groups.append(
+            {
+                "params": language_parameters,
+                "lr": learning_rate,
+                "weight_decay": weight_decay,
+                "group_name": "language_lora",
+            }
+        )
+    if projector_parameters:
+        parameter_groups.append(
+            {
+                "params": projector_parameters,
+                "lr": projector_learning_rate,
+                "weight_decay": projector_weight_decay,
+                "group_name": "projectors",
+            }
+        )
+    optimizer = torch.optim.AdamW(parameter_groups)
+    return optimizer, trainable_parameters
 
 
 def _resolve_warmup_steps(
@@ -2120,17 +2208,10 @@ def main() -> None:
                 ),
             )
 
-        trainable_parameters = [
-            parameter
-            for parameter in train_model.parameters()
-            if parameter.requires_grad
-        ]
-        if not trainable_parameters:
-            raise RuntimeError("No trainable parameters found for VQA LoRA training.")
-        optimizer = torch.optim.AdamW(
-            trainable_parameters,
-            lr=float(cfg_get(stage_cfg, "learning_rate", 2e-5)),
-            weight_decay=float(cfg_get(stage_cfg, "weight_decay", 0.0)),
+        optimizer, trainable_parameters = _build_sft_optimizer(
+            model=model,
+            train_model=train_model,
+            stage_cfg=stage_cfg,
         )
 
         if is_main:
@@ -2193,6 +2274,12 @@ def main() -> None:
             print(f"Scheduler: {scheduler_type}")
             print(f"Warmup steps: {warmup_steps}")
             print(f"Total optimizer steps: {total_optimizer_steps}")
+            for parameter_group in optimizer.param_groups:
+                print(
+                    f"Optimizer group {parameter_group.get('group_name', '<unnamed>')}: "
+                    f"lr={float(parameter_group['lr']):.3g}, "
+                    f"weight_decay={float(parameter_group['weight_decay']):.3g}"
+                )
             if validation_loader is None:
                 print(
                     "Validation loader is unavailable; only final artifacts will be saved."

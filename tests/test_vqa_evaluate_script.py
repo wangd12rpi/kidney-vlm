@@ -140,6 +140,8 @@ def test_hf_image_text_backend_passes_8bit_load_kwargs(monkeypatch) -> None:
     calls: dict[str, object] = {}
 
     class FakeProcessor:
+        tokenizer = SimpleNamespace(padding_side="right")
+
         @classmethod
         def from_pretrained(cls, model_name, **kwargs):
             calls["processor_model_name"] = model_name
@@ -200,7 +202,7 @@ def test_hf_image_text_backend_passes_8bit_load_kwargs(monkeypatch) -> None:
     assert calls["eval"] is True
 
 
-def test_hf_image_text_backend_passes_padding_in_processor_kwargs(monkeypatch) -> None:
+def test_hf_image_text_backend_enables_batch_padding(monkeypatch) -> None:
     module = _load_generate_script()
     calls: dict[str, object] = {}
 
@@ -210,6 +212,8 @@ def test_hf_image_text_backend_passes_padding_in_processor_kwargs(monkeypatch) -
             return self
 
     class FakeProcessor:
+        tokenizer = SimpleNamespace(padding_side="right")
+
         @classmethod
         def from_pretrained(cls, model_name, **kwargs):
             return cls()
@@ -257,6 +261,7 @@ def test_hf_image_text_backend_passes_padding_in_processor_kwargs(monkeypatch) -
             "backend": "hf_image_text_to_text",
             "model_name_or_path": "google/medgemma-4b-it",
             "device": "cpu",
+            "enable_thinking": False,
         },
         dry_run=False,
     )
@@ -265,11 +270,79 @@ def test_hf_image_text_backend_passes_padding_in_processor_kwargs(monkeypatch) -
         generation_kwargs={},
     ) == ["answer"]
 
-    assert calls["chat_template_kwargs"]["processor_kwargs"] == {"padding": True}
-    assert "padding" not in calls["chat_template_kwargs"]
+    assert calls["chat_template_kwargs"]["padding"] is True
+    assert calls["chat_template_kwargs"]["enable_thinking"] is False
+    assert "processor_kwargs" not in calls["chat_template_kwargs"]
+    assert backend.processor.tokenizer.padding_side == "left"
 
 
-def test_oncovlm_projector_backend_dry_run_is_cache_only() -> None:
+def test_hf_image_text_backend_loads_lora_and_image_pixel_limits(monkeypatch, tmp_path) -> None:
+    module = _load_generate_script()
+    calls: dict[str, object] = {}
+    adapter_path = tmp_path / "adapter"
+    adapter_path.mkdir()
+
+    class FakeProcessor:
+        tokenizer = SimpleNamespace(padding_side="right")
+
+        @classmethod
+        def from_pretrained(cls, model_name, **kwargs):
+            calls["processor_model_name"] = model_name
+            calls["processor_kwargs"] = kwargs
+            return cls()
+
+    class FakeModel:
+        device = module.torch.device("cpu")
+
+        @classmethod
+        def from_pretrained(cls, model_name, **kwargs):
+            return cls()
+
+        def to(self, device):
+            calls["to_device"] = device
+
+        def eval(self):
+            calls["eval"] = True
+
+    class FakePeftModel:
+        @classmethod
+        def from_pretrained(cls, model, path, is_trainable):
+            calls["adapter"] = (model, path, is_trainable)
+            return model
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoModelForImageTextToText=FakeModel,
+            AutoProcessor=FakeProcessor,
+            BitsAndBytesConfig=object,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "peft", SimpleNamespace(PeftModel=FakePeftModel))
+
+    module.HFImageTextBackend(
+        {
+            "backend": "hf_image_text_to_text",
+            "model_name_or_path": "Qwen/Qwen2.5-VL-3B-Instruct",
+            "lora_adapter_path": str(adapter_path),
+            "device": "cpu",
+            "min_pixels": 262144,
+            "max_pixels": 262144,
+        },
+        dry_run=False,
+    )
+
+    assert calls["processor_kwargs"] == {
+        "trust_remote_code": True,
+        "min_pixels": 262144,
+        "max_pixels": 262144,
+    }
+    assert calls["adapter"][1:] == (str(adapter_path.resolve()), False)
+    assert calls["eval"] is True
+
+
+def test_oncovlm_projector_backend_dry_run_supports_cached_prefixes() -> None:
     module = _load_generate_script()
     backend = module._build_backend(
         _projector_model_cfg(),
@@ -286,6 +359,45 @@ def test_oncovlm_projector_backend_dry_run_is_cache_only() -> None:
         ('{"answer": "", "rationale": "dry run"}', ""),
         ('{"answer": "", "rationale": "dry run"}', ""),
     ]
+
+
+def test_oncovlm_projector_backend_dry_run_supports_live_projectors() -> None:
+    module = _load_generate_script()
+    eval_cfg = _prompt_cfg()
+    eval_cfg["prefix_cache"]["enabled"] = False
+    model_cfg = _projector_model_cfg()
+    model_cfg["projectors"] = {
+        "pathology": {
+            "enabled": True,
+            "trainable": False,
+            "checkpoint_path": "outputs/projectors/pathology/best.ckpt",
+        }
+    }
+
+    backend = module._build_backend(
+        model_cfg,
+        eval_cfg=eval_cfg,
+        dry_run=True,
+    )
+
+    assert backend.use_prefix_cache is False
+    assert backend.generate(row={}, generation_kwargs={}) == (
+        '{"answer": "", "rationale": "dry run"}',
+        "",
+    )
+
+
+def test_oncovlm_live_projector_requires_projector_config() -> None:
+    module = _load_generate_script()
+    eval_cfg = _prompt_cfg()
+    eval_cfg["prefix_cache"]["enabled"] = False
+
+    with pytest.raises(ValueError, match="requires model.projectors"):
+        module._build_backend(
+            _projector_model_cfg(),
+            eval_cfg=eval_cfg,
+            dry_run=True,
+        )
 
 
 def test_oncovlm_lora_backend_dry_run_uses_cache_backend() -> None:

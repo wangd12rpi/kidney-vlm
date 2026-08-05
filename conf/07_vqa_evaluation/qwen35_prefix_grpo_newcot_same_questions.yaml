@@ -1,0 +1,124 @@
+name: vqa_generate_predictions
+
+run:
+  name: qwen35_prefix_grpo_newcot_same_questions
+  output_root: ${project.root_dir}/results
+  resume_existing: true
+  prediction_filename: predictions.parquet
+  save_every_n_predictions: 8
+  include_prompt_in_predictions: true
+  print_first_n_outputs: 2
+  dry_run: false
+
+data:
+  vqa_parquet_path: ${project.root_dir}/data/vqa/merged_vqa.parquet
+
+prefix_cache:
+  enabled: true
+  cache_root: data/vqa/prefix_cache
+  prefix_value_override: cached
+  scan_before_training: true
+  skip_missing_rows: true
+  max_missing_examples: 10
+  max_prefix_tokens:
+    pathology: 512
+    radiology: 256
+    dnam: null
+    rna: null
+
+models:
+  oncovlm_qwen35_grpo_newcot_v7_final:
+    enabled: true
+    display_name: oncovlm_qwen35_grpo_newcot_v7_final
+    backend: oncovlm_lora
+    model_name_or_path: Qwen/Qwen3.5-9B
+    lora_adapter_path: >-
+      ${project.root_dir}/outputs/oncovlm/grpo/grpo_newcot_v7judge768_correctgated_structured_fmt10_obs10min50_reason20_g8_t1_lr5e7_constant_n512_seed417/lora_adapter
+    prompt_profile: newcot_step_by_step
+    trust_remote_code: true
+    load_in_8bit: true
+    torch_dtype: bfloat16
+    autocast_dtype: bfloat16
+    attn_implementation: sdpa
+    device: cuda:0
+    batch_size: 32
+    cot:
+      enabled: true
+
+  oncovlm_qwen35_cot_sft_same_prompt:
+    enabled: true
+    display_name: oncovlm_qwen35_cot_sft_same_prompt
+    backend: oncovlm_lora
+    model_name_or_path: Qwen/Qwen3.5-9B
+    lora_adapter_path: >-
+      ${project.root_dir}/outputs/oncovlm/sft/qwen3_5_9b_sft_caption_mcq_all_available_pathology_findings_image_step_cot_n2673_r8_projfrozen_20260715_020332_est/best/lora_adapter
+    prompt_profile: newcot_step_by_step
+    trust_remote_code: true
+    load_in_8bit: true
+    torch_dtype: bfloat16
+    autocast_dtype: bfloat16
+    attn_implementation: sdpa
+    device: cuda:0
+    batch_size: 64
+    cot:
+      enabled: true
+
+filters:
+  split:
+    enabled: true
+    value: test
+  question_types:
+    enabled: true
+    values: [mcq]
+  generation_types:
+    enabled: true
+    values: [from_caption]
+  modality_combination_names:
+    enabled: true
+    values: [all_available]
+  task_ids:
+    enabled: true
+    values: [pathology_findings]
+  reference_predictions:
+    enabled: true
+    path: ${project.root_dir}/results/qwen35_9b_native_base_same_questions/predictions.parquet
+    model_display_names: [qwen35_9b_native_base]
+  row_limit:
+    enabled: true
+    max_rows: 321
+    sample: true
+    sample_seed: 417
+
+sampling:
+  enabled: false
+
+repeats:
+  n: 1
+  seed: 417
+  repeat_modality_combination_names: [all_available]
+
+prompts:
+  newcot_step_by_step:
+    mcq:
+      system_prompt: >-
+        You are OncoVLM, a multimodal cancer assistant. Use only the provided multimodal
+        evidence to answer the question.
+      response_instruction: >-
+        Return only the exact text of one choice. Do not explain. Do not say that the
+        information is insufficient.
+      cot_response_instruction: >-
+        Use only the provided multimodal evidence. In <think>, write 100 to 140 words using
+        exactly "Step 1 — Observation:" followed by "Step 2 — Reasoning:". In Step 1,
+        state only 3 to 5 concrete pathology findings that are visibly present; do not mention
+        choices, diagnoses, conclusions, or absent/not-seen features. In Step 2, explain how
+        the findings work together and distinguish only the closest plausible alternative
+        without walking through every choice. In <answer>, copy exactly one full displayed
+        choice. Do not answer with A/B/C/D.
+
+generation:
+  max_new_tokens: 320
+  do_sample: false
+
+image_inputs:
+  enabled: false
+  ignore_radiology_biomarker: false

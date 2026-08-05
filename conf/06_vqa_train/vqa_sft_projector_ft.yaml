@@ -1,0 +1,64 @@
+defaults:
+  - vqa_common
+  - _self_
+
+name: vqa_sft_projector_ft
+post_train_method: sft
+
+# Controlled follow-up to the focused no-CoT pathology-findings SFT:
+# use the same rows and exact-answer target, but project live modality features so
+# the pathology projector can receive gradients.
+dataset:
+  vqa_parquet_path: ${project.root_dir}/data/21_cot_rationale_gen/caption_mcq_all_available_pathology_findings_cot.parquet
+
+cot:
+  enabled: false
+  rationale_column: rationale
+
+sft:
+  init_lora_adapter_path:
+
+prefix_cache:
+  enabled: false
+  scan_before_training: false
+
+projectors:
+  pathology:
+    trainable: true
+  radiology:
+    trainable: false
+  dnam:
+    trainable: false
+  rna:
+    trainable: false
+
+autocast_dtype: bfloat16
+projector_dtype: float32
+batch_size: 2
+num_epochs: 4
+learning_rate: 1e-4
+# Preserve the established no-CoT LoRA learning rate while adapting the much
+# larger pretrained projector more conservatively.
+projector_learning_rate: 1e-5
+weight_decay: 0.0
+projector_weight_decay: 0.0
+gradient_accumulation_steps: 8
+grad_clip_norm: 1.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+warmup_steps:
+dataloader_num_workers: 4
+
+validation:
+  enabled: true
+  required: true
+
+wandb:
+  enabled: false
+  tags:
+    - vqa_train
+    - lora
+    - sft
+    - projector_ft
+    - pathology_findings
+    - no_cot

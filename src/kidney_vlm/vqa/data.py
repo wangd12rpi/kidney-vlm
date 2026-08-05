@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 import re
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
@@ -232,22 +233,90 @@ def apply_token_dropout(feature_tensor: torch.Tensor, dropout_prob: float) -> to
     return feature_tensor[keep_mask]
 
 
+ROI_BOX_PATTERN = re.compile(r"_x(\d+)_y(\d+)_w(\d+)_h(\d+)\.png$", re.IGNORECASE)
+
+
+def roi_boxes_for_slide(root_dir: Path, case_id: str, slide_stem: str) -> list[tuple[int, int, int, int]]:
+    """Level-0 pixel boxes of the representative ROI tiles the teacher model saw.
+
+    The tile filenames under data/pathology_png/<case_id>/ encode the crop box, and
+    the UNI h5 `coords` are in the same level-0 pixel space, so the intersection is exact.
+    """
+    tile_dir = root_dir / "data" / "pathology_png" / str(case_id).strip()
+    if not tile_dir.is_dir():
+        return []
+    boxes: list[tuple[int, int, int, int]] = []
+    for tile_path in sorted(tile_dir.iterdir()):
+        if tile_path.suffix.lower() != ".png" or not tile_path.name.startswith(slide_stem):
+            continue
+        match = ROI_BOX_PATTERN.search(tile_path.name)
+        if match:
+            boxes.append(tuple(int(value) for value in match.groups()))  # type: ignore[arg-type]
+    return boxes
+
+
+def _load_h5_patch_features_within_rois(
+    path: Path, boxes: Sequence[tuple[int, int, int, int]], *, max_patch_tokens: int
+) -> torch.Tensor | None:
+    """Patch features whose coords fall inside any ROI box; None when unavailable."""
+    import h5py
+
+    if not boxes:
+        return None
+    with h5py.File(path, "r") as handle:
+        if "features" not in handle or "coords" not in handle:
+            return None
+        coords = np.asarray(handle["coords"])
+        keep = np.zeros(coords.shape[0], dtype=bool)
+        for x, y, width, height in boxes:
+            keep |= (
+                (coords[:, 0] >= x)
+                & (coords[:, 0] < x + width)
+                & (coords[:, 1] >= y)
+                & (coords[:, 1] < y + height)
+            )
+        if not keep.any():
+            return None
+        features = np.asarray(handle["features"][:])[keep]
+    tensor = torch.from_numpy(features).to(dtype=torch.float32)
+    return _sample_sequence_features(tensor, max_tokens=max_patch_tokens)
+
+
 def load_pathology_feature_tensor(root_dir: Path, row: Mapping[str, Any], block_cfg: Any) -> torch.Tensor:
     values = _normalize_list(row.get("pathology_feature_paths", []))
     if not values:
         raise FileNotFoundError(f"Question {row.get('question_id', '<unknown>')} requires pathology features, but paths are empty.")
 
+    restrict_to_rois = as_bool(cfg_get(block_cfg, "roi_restrict", False))
+    case_id = clean_text(row.get("case_id", ""))
+    max_patch_tokens = int(cfg_get(block_cfg, "max_tokens", 4096))
+    resolved_paths = [_resolve_existing_path(root_dir, raw_value) for raw_value in values]
+
     tensors: list[torch.Tensor] = []
-    for raw_value in values:
-        path = _resolve_existing_path(root_dir, raw_value)
-        tensors.append(
-            _load_h5_patch_features(
+    if restrict_to_rois and case_id:
+        # Keep only the patches inside the representative ROI tiles the teacher model
+        # saw. A slide with no tiles is skipped rather than contributing its whole
+        # patch bag, which would defeat the restriction.
+        for path in resolved_paths:
+            roi_tensor = _load_h5_patch_features_within_rois(
                 path,
-                max_patch_tokens=int(cfg_get(block_cfg, "max_tokens", 4096)),
-                compression_method=str(cfg_get(block_cfg, "patch_compression_method", "none")),
-                compression_kernel_size=int(cfg_get(block_cfg, "patch_compression_kernel_size", 1)),
+                roi_boxes_for_slide(root_dir, case_id, path.name.split(".")[0]),
+                max_patch_tokens=max_patch_tokens,
             )
-        )
+            if roi_tensor is not None:
+                tensors.append(roi_tensor)
+
+    if not tensors:
+        # No ROI tiles resolvable for this row (or restriction disabled): full slides.
+        for path in resolved_paths:
+            tensors.append(
+                _load_h5_patch_features(
+                    path,
+                    max_patch_tokens=max_patch_tokens,
+                    compression_method=str(cfg_get(block_cfg, "patch_compression_method", "none")),
+                    compression_kernel_size=int(cfg_get(block_cfg, "patch_compression_kernel_size", 1)),
+                )
+            )
     tensor = torch.cat(tensors, dim=0) if len(tensors) > 1 else tensors[0]
     tensor = _sample_sequence_features(tensor, max_tokens=int(cfg_get(block_cfg, "max_tokens", 4096)))
     return apply_token_dropout(tensor, float(cfg_get(block_cfg, "token_dropout_prob", 0.0)))

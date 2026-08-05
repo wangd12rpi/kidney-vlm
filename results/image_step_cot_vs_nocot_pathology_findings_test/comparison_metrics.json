@@ -1,0 +1,29 @@
+{
+  "full_new_cot": {
+    "n": 642,
+    "correct": 175,
+    "accuracy": 0.27258566978193144,
+    "f1_macro": 0.27133879261129346,
+    "parse_failed": 0
+  },
+  "matched_existing_results": {
+    "n": 271,
+    "new_image_step_cot": {
+      "correct": 71,
+      "accuracy": 0.26199261992619927,
+      "f1_macro": 0.2639480252718233,
+      "parse_failed": 0
+    },
+    "existing_nocot": {
+      "correct": 79,
+      "accuracy": 0.2915129151291513,
+      "f1_macro": 0.2913659429348256,
+      "parse_failed": 0
+    },
+    "new_cot_minus_existing_nocot": {
+      "correct": -8,
+      "accuracy": -0.02952029520295204,
+      "f1_macro": -0.0274179176630023
+    }
+  }
+}

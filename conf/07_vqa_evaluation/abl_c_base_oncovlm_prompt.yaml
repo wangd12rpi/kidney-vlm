@@ -1,0 +1,87 @@
+name: vqa_generate_predictions
+
+# Ablation arm C: zero-shot Qwen3.5-9B on the SAME 321 rows and SAME inputs as
+# run A, but using OncoVLM's answer-only `tuned_oncovlm` prompt instead of the
+# reasoning-style `easyr1_pathology_mcq` prompt.
+# A - C isolates how much of run A's score came from the prompt rather than the
+# input pathway. Only the zero-shot model is re-prompted; no SFT checkpoint is
+# ever run outside its training prompt.
+
+run:
+  name: abl_c_base_oncovlm_prompt
+  output_root: ${project.root_dir}/results
+  resume_existing: true
+  prediction_filename: predictions.parquet
+  save_every_n_predictions: 8
+  include_prompt_in_predictions: true
+  print_first_n_outputs: 2
+  dry_run: false
+
+data:
+  vqa_parquet_path: ${project.root_dir}/data/tmp/abl_full_321.parquet
+
+models:
+  qwen35_9b_native_base_oncovlm_prompt:
+    enabled: true
+    display_name: qwen35_9b_native_base_oncovlm_prompt
+    backend: hf_image_text_to_text
+    model_name_or_path: Qwen/Qwen3.5-9B
+    prompt_profile: tuned_oncovlm
+    trust_remote_code: false
+    load_in_8bit: false
+    torch_dtype: bfloat16
+    attn_implementation: sdpa
+    device: cuda:0
+    batch_size: 16
+    enable_thinking: false
+    min_pixels: 262144
+    max_pixels: 262144
+
+filters:
+  split:
+    enabled: true
+    value: test
+  question_types:
+    enabled: true
+    values: [mcq]
+  generation_types:
+    enabled: true
+    values: [from_caption]
+  modality_combination_names:
+    enabled: true
+    values: [all_available]
+  task_ids:
+    enabled: true
+    values: [pathology_findings]
+  reference_predictions:
+    enabled: false
+  row_limit:
+    enabled: false
+
+sampling:
+  enabled: false
+
+repeats:
+  n: 1
+  seed: 417
+  repeat_modality_combination_names: [all_available]
+
+prompts:
+  tuned_oncovlm:
+    mcq:
+      system_prompt: >-
+        You are OncoVLM, a multimodal cancer assistant. Use only the provided multimodal evidence to answer the question.
+      response_instruction: >-
+        Return only the exact text of one choice. Do not explain. Do not say that the information is insufficient.
+
+generation:
+  max_new_tokens: 512
+  do_sample: false
+
+image_inputs:
+  enabled: true
+  ignore_radiology_biomarker: true
+  max_pathology_images: 4
+  pathology_selection: evenly_spaced
+  max_radiology_images: 4
+  allowed_extensions: [.png, .jpg, .jpeg]

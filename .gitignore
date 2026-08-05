@@ -66,3 +66,37 @@ external/Medical-SAM3/**/*.pyc
 data/radiology_png
 
 results/*/tables*
+results/easyr1_qwen25vl3b_pathology_mcq_test/
+
+# Weights & Biases local run data
+wandb/
+
+# Papers / binary docs
+*.pdf
+
+# Test + scratch artifacts
+.test_artifacts/
+logs/
+legacy/
+
+# Evaluation run artifacts.
+# Deny-by-default so new run directories never pollute the tree; only curated
+# summaries are tracked. Add further "!results/**/<name>" lines to keep a file.
+results/**
+!results/**/
+!results/**/metrics.json
+!results/**/comparison.md
+!results/**/comparison_metrics.json
+!results/**/summary.json
+!results/**/paired_diagnostics.json
+!results/**/llm_as_judge_metric.json
+!results/**/README.md
+
+# Process/run droppings
+nohup.out
+*.out
+*.pid
+core
+core.*
+slurm-*.out
+.ipynb_checkpoints/

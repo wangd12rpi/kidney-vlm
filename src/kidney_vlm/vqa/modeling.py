@@ -259,6 +259,16 @@ def checkpoint_float(checkpoint: Mapping[str, Any], block_cfg: Any, key: str, *,
     return float(value)
 
 
+def saved_projector_metadata(
+    checkpoint: Mapping[str, Any], modality: str
+) -> Mapping[str, Any]:
+    all_metadata = checkpoint.get("projector_metadata")
+    if not isinstance(all_metadata, Mapping):
+        return {}
+    modality_metadata = all_metadata.get(modality)
+    return modality_metadata if isinstance(modality_metadata, Mapping) else {}
+
+
 def build_projector_module(
     *,
     repo_root: Path,
@@ -280,20 +290,49 @@ def build_projector_module(
     if state_key not in checkpoint:
         raise KeyError(f"{modality} projector checkpoint is missing state key '{state_key}': {checkpoint_path}")
 
-    checkpoint_hidden_size = checkpoint.get("hidden_size")
+    saved_metadata = saved_projector_metadata(checkpoint, modality)
+    checkpoint_hidden_size = saved_metadata.get(
+        "hidden_size", checkpoint.get("hidden_size")
+    )
     if checkpoint_hidden_size is not None and int(checkpoint_hidden_size) != int(hidden_size):
         raise ValueError(
             f"{modality} projector hidden_size={int(checkpoint_hidden_size)} does not match "
             f"language model hidden_size={int(hidden_size)}."
         )
 
-    embedding_dim = checkpoint_int(checkpoint, block_cfg, PROJECTOR_EMBEDDING_DIM_KEYS[modality])
-    projector_type = str(checkpoint.get("projector_type") or cfg_get(block_cfg, "projector_type", "mlp")).strip() or "mlp"
-    projector_num_latents = checkpoint_int(checkpoint, block_cfg, "projector_num_latents", default=64)
-    projector_depth = checkpoint_int(checkpoint, block_cfg, "projector_depth", default=2)
-    projector_num_heads = checkpoint_int(checkpoint, block_cfg, "projector_num_heads", default=8)
-    projector_mlp_ratio = checkpoint_float(checkpoint, block_cfg, "projector_mlp_ratio", default=4.0)
-    projector_dropout = checkpoint_float(checkpoint, block_cfg, "projector_dropout", default=0.0)
+    saved_embedding_dim = saved_metadata.get("embedding_dim")
+    embedding_dim = (
+        int(saved_embedding_dim)
+        if saved_embedding_dim is not None
+        else checkpoint_int(
+            checkpoint, block_cfg, PROJECTOR_EMBEDDING_DIM_KEYS[modality]
+        )
+    )
+    projector_type = (
+        str(
+            saved_metadata.get("projector_type")
+            or checkpoint.get("projector_type")
+            or cfg_get(block_cfg, "projector_type", "mlp")
+        ).strip()
+        or "mlp"
+    )
+    topology_checkpoint = dict(checkpoint)
+    topology_checkpoint.update(saved_metadata)
+    projector_num_latents = checkpoint_int(
+        topology_checkpoint, block_cfg, "projector_num_latents", default=64
+    )
+    projector_depth = checkpoint_int(
+        topology_checkpoint, block_cfg, "projector_depth", default=2
+    )
+    projector_num_heads = checkpoint_int(
+        topology_checkpoint, block_cfg, "projector_num_heads", default=8
+    )
+    projector_mlp_ratio = checkpoint_float(
+        topology_checkpoint, block_cfg, "projector_mlp_ratio", default=4.0
+    )
+    projector_dropout = checkpoint_float(
+        topology_checkpoint, block_cfg, "projector_dropout", default=0.0
+    )
 
     module = nn.ModuleDict(
         {
@@ -312,12 +351,20 @@ def build_projector_module(
     prefix_tokens = 0
     prefix_expander_mlp_ratio = 1.0
     if modality == "dnam":
-        prefix_tokens = checkpoint_int(checkpoint, block_cfg, "dnam_prefix_tokens", default=0)
-        prefix_expander_mlp_ratio = checkpoint_float(
-            checkpoint,
-            block_cfg,
-            "dnam_prefix_expander_mlp_ratio",
-            default=1.0,
+        prefix_tokens = int(
+            saved_metadata.get("prefix_tokens")
+            or checkpoint_int(
+                checkpoint, block_cfg, "dnam_prefix_tokens", default=0
+            )
+        )
+        prefix_expander_mlp_ratio = float(
+            saved_metadata.get("prefix_expander_mlp_ratio")
+            or checkpoint_float(
+                checkpoint,
+                block_cfg,
+                "dnam_prefix_expander_mlp_ratio",
+                default=1.0,
+            )
         )
         if projector_type == "mlp" and prefix_tokens > 0:
             module["dnam_prefix_expander"] = DnamPrefixExpander(
@@ -327,12 +374,20 @@ def build_projector_module(
                 dropout=projector_dropout,
             )
     if modality == "rna":
-        prefix_tokens = checkpoint_int(checkpoint, block_cfg, "rna_prefix_tokens", default=0)
-        prefix_expander_mlp_ratio = checkpoint_float(
-            checkpoint,
-            block_cfg,
-            "rna_prefix_expander_mlp_ratio",
-            default=1.0,
+        prefix_tokens = int(
+            saved_metadata.get("prefix_tokens")
+            or checkpoint_int(
+                checkpoint, block_cfg, "rna_prefix_tokens", default=0
+            )
+        )
+        prefix_expander_mlp_ratio = float(
+            saved_metadata.get("prefix_expander_mlp_ratio")
+            or checkpoint_float(
+                checkpoint,
+                block_cfg,
+                "rna_prefix_expander_mlp_ratio",
+                default=1.0,
+            )
         )
         if projector_type == "mlp" and prefix_tokens > 0:
             module["rna_prefix_expander"] = RnaPrefixExpander(
@@ -1148,6 +1203,7 @@ def save_vqa_model_artifacts(
     }
     payload: dict[str, Any] = {
         "model_name_or_path": str(cfg_get(stage_cfg, "model_name_or_path")),
+        "hidden_size": int(model.hidden_size),
         "global_step": int(global_step),
         "epoch": int(epoch) if epoch is not None else None,
         "validation_loss": float(validation_loss) if validation_loss is not None and math.isfinite(validation_loss) else None,

@@ -1,0 +1,90 @@
+name: vqa_generate_predictions
+
+# Ablation arm B: zero-shot Qwen3.5-9B, SAME prompt as run A, but pathology
+# evidence removed. Genomics text summaries and radiology images are retained.
+# A - B isolates the value of pathology ROI pixels to the native vision path.
+
+run:
+  name: abl_b_base_nopath
+  output_root: ${project.root_dir}/results
+  resume_existing: true
+  prediction_filename: predictions.parquet
+  save_every_n_predictions: 8
+  include_prompt_in_predictions: true
+  print_first_n_outputs: 2
+  dry_run: false
+
+data:
+  vqa_parquet_path: ${project.root_dir}/data/tmp/abl_nopath_315.parquet
+
+models:
+  qwen35_9b_native_base_nopath:
+    enabled: true
+    display_name: qwen35_9b_native_base_nopath
+    backend: hf_image_text_to_text
+    model_name_or_path: Qwen/Qwen3.5-9B
+    prompt_profile: easyr1_pathology_mcq
+    trust_remote_code: false
+    load_in_8bit: false
+    torch_dtype: bfloat16
+    attn_implementation: sdpa
+    device: cuda:0
+    batch_size: 16
+    enable_thinking: false
+    min_pixels: 262144
+    max_pixels: 262144
+
+filters:
+  split:
+    enabled: true
+    value: test
+  question_types:
+    enabled: true
+    values: [mcq]
+  generation_types:
+    enabled: true
+    values: [from_caption]
+  modality_combination_names:
+    enabled: true
+    values: [all_available]
+  task_ids:
+    enabled: true
+    values: [pathology_findings]
+  reference_predictions:
+    enabled: false
+  row_limit:
+    enabled: false
+
+sampling:
+  enabled: false
+
+repeats:
+  n: 1
+  seed: 417
+  repeat_modality_combination_names: [all_available]
+
+prompts:
+  easyr1_pathology_mcq:
+    mcq:
+      system_prompt: >-
+        You are a multimodal cancer assistant. Use only the provided multimodal evidence.
+      label_choices: true
+      response_instruction: >-
+        Briefly explain the discriminating evidence for your choice inside <think> and </think>;
+        focus on relevant findings instead of restating the choices. Do not rely on captions,
+        reports, hidden labels, or answer keys. Then place exactly one complete displayed choice
+        inside <answer> and </answer>, copying its full text without its A/B/C/D label. Do not
+        answer with a choice letter. Respond exactly as:
+        <think>brief, evidence-grounded reasoning</think><answer>complete choice text without its letter label</answer>
+
+generation:
+  max_new_tokens: 512
+  do_sample: false
+
+image_inputs:
+  enabled: true
+  ignore_radiology_biomarker: true
+  max_pathology_images: 4
+  pathology_selection: evenly_spaced
+  max_radiology_images: 4
+  allowed_extensions: [.png, .jpg, .jpeg]

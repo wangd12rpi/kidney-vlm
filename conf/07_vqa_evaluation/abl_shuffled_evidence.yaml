@@ -1,0 +1,109 @@
+name: vqa_generate_predictions
+
+run:
+  name: abl_shuffled_evidence
+  output_root: ${project.root_dir}/results
+  resume_existing: true
+  prediction_filename: predictions.parquet
+  save_every_n_predictions: 12
+  include_prompt_in_predictions: false
+  print_first_n_outputs: 2
+  dry_run: false
+
+data:
+  vqa_parquet_path: ${project.root_dir}/data/tmp/abl_shuffled_1017.parquet
+
+prefix_cache:
+  enabled: false
+  scan_before_training: false
+
+models:
+  oncovlm_projft_ep2_shuffled:
+    enabled: true
+    display_name: oncovlm_projft_ep2_shuffled
+    backend: oncovlm_lora
+    model_name_or_path: Qwen/Qwen3.5-9B
+    lora_adapter_path: >-
+      ${project.root_dir}/outputs/oncovlm/sft/qwen35_all_caption_mcq_projft_cont_4ep_b2_ga8_20260729/epoch_002/lora_adapter
+    prompt_profile: tuned_oncovlm
+    trust_remote_code: true
+    load_in_8bit: true
+    torch_dtype: bfloat16
+    autocast_dtype: bfloat16
+    projector_dtype: float32
+    attn_implementation: sdpa
+    device: cuda:0
+    batch_size: 32
+    cot:
+      enabled: false
+    projectors:
+      pathology:
+        enabled: true
+        trainable: false
+        checkpoint_path: >-
+          ${project.root_dir}/outputs/oncovlm/sft/qwen35_all_caption_mcq_projft_cont_4ep_b2_ga8_20260729/epoch_002/projectors.ckpt
+        max_tokens: 4096
+        patch_compression_method: none
+        patch_compression_kernel_size: 1
+        token_dropout_prob: 0.0
+      radiology:
+        enabled: true
+        trainable: false
+        checkpoint_path: >-
+          ${project.root_dir}/outputs/oncovlm/sft/qwen35_all_caption_mcq_projft_cont_4ep_b2_ga8_20260729/epoch_002/projectors.ckpt
+        max_tokens: 32
+        token_dropout_prob: 0.0
+      dnam:
+        enabled: true
+        trainable: false
+        checkpoint_path: >-
+          ${project.root_dir}/outputs/oncovlm/sft/qwen35_all_caption_mcq_projft_cont_4ep_b2_ga8_20260729/epoch_002/projectors.ckpt
+        max_tokens: 8
+      rna:
+        enabled: true
+        trainable: false
+        checkpoint_path: >-
+          ${project.root_dir}/outputs/oncovlm/sft/qwen35_all_caption_mcq_projft_cont_4ep_b2_ga8_20260729/epoch_002/projectors.ckpt
+        max_tokens: 8
+
+filters:
+  split:
+    enabled: true
+    value: test
+  question_types:
+    enabled: true
+    values: [mcq]
+  generation_types:
+    enabled: true
+    values: [from_caption]
+  modality_combination_names:
+    enabled: false
+  task_ids:
+    enabled: false
+  reference_predictions:
+    enabled: false
+  row_limit:
+    enabled: false
+
+sampling:
+  enabled: false
+
+repeats:
+  n: 1
+  seed: 42
+  repeat_modality_combination_names: []
+
+prompts:
+  tuned_oncovlm:
+    mcq:
+      system_prompt: >-
+        You are OncoVLM, a multimodal cancer assistant. Use only the provided multimodal evidence to answer the question.
+      response_instruction: >-
+        Return only the exact text of one choice. Do not explain. Do not say that the information is insufficient.
+
+generation:
+  max_new_tokens: 512
+  do_sample: false
+
+image_inputs:
+  enabled: false
